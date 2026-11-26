@@ -262,6 +262,16 @@ const QUARANTINE_DENY_HOSTS = new Set([
   '[::1]',
   'metadata.google.internal',
   'instance-data',
+  // Card 8f1c9795 req 3: IPv6 alias names /etc/hosts ships by default on most Linux systems --
+  // reachable the same way "localhost" is, without ever looking like a numeric address.
+  'ip6-localhost',
+  'ip6-loopback',
+  'ip6-localnet',
+  'ip6-allnodes',
+  'ip6-allrouters',
+  // Azure Instance Metadata Service -- same role as 169.254.169.254 (already covered by
+  // isPrivateIPv4's link-local range) but reachable on this separate, non-link-local literal.
+  '168.63.129.16',
 ])
 
 const QUARANTINE_DENY_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa', '.lan']
@@ -271,14 +281,30 @@ const QUARANTINE_DENY_SUFFIXES = ['.localhost', '.local', '.internal', '.home.ar
 function isPrivateIPv4(host) {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
   if (!m) return false
-  const [a, b] = [Number(m[1]), Number(m[2])]
+  const [a, b, c] = [Number(m[1]), Number(m[2]), Number(m[3])]
   if (m.slice(1).some((x) => Number(x) > 255)) return true // malformed -> deny
   if (a === 10 || a === 127 || a === 0) return true
   if (a === 172 && b >= 16 && b <= 31) return true
   if (a === 192 && b === 168) return true
   if (a === 169 && b === 254) return true
   if (a === 100 && b >= 64 && b <= 127) return true // CGNAT
+  if (a === 192 && b === 0 && c === 0) return true // 192.0.0.0/24, IETF protocol assignments (card 8f1c9795 req 3)
   return false
+}
+
+// Decodes a 32-bit value spread across two 16-bit hex groups (or a dotted-decimal tail) into an
+// IPv4 dotted string, the way every embedded-v4 IPv6 form below needs it. Returns null when the
+// tail is not one of those two recognised shapes, so each caller can decide fail-closed on an
+// unrecognised tail (card 8f1c9795 requirement 5: this is the exact branch RedHat's mutation
+// battery found two copies of, both now routed through one function so a pin on this one covers
+// both call sites instead of two copies that can drift apart).
+function decodeEmbeddedV4(rest) {
+  if (rest.includes('.')) return /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(rest) ? rest : null
+  const hexPair = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(rest)
+  if (!hexPair) return null
+  const hi = parseInt(hexPair[1], 16)
+  const lo = parseInt(hexPair[2], 16)
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`
 }
 
 // IPv6 loopback / unique-local / link-local, with or without brackets.
@@ -286,32 +312,55 @@ function isPrivateIPv6(host) {
   const h = host.replace(/^\[|\]$/g, '').toLowerCase()
   if (!h.includes(':')) return false
   if (h === '::1' || h === '::') return true
-  if (h.startsWith('fc') || h.startsWith('fd')) return true // unique-local
-  if (h.startsWith('fe80')) return true // link-local
+  if (h.startsWith('fc') || h.startsWith('fd')) return true // unique-local, fc00::/7
+  // fe80::/10 (link-local), fec0::/10 (deprecated site-local), ff00::/8 (multicast) -- card
+  // 8f1c9795 req 2. The previous check matched the literal string "fe80" only, missing fe9x/
+  // feax/febx (still inside fe80::/10) and fec0::/10 entirely. Checked by VALUE on the first
+  // 16-bit group, not by string prefix, so the whole /10 and /8 ranges are covered exactly.
+  const firstGroup = h.split(':')[0]
+  const firstVal = firstGroup && /^[0-9a-f]{1,4}$/.test(firstGroup) ? parseInt(firstGroup, 16) : NaN
+  if (!Number.isNaN(firstVal)) {
+    if (firstVal >= 0xfe80 && firstVal <= 0xfebf) return true // fe80::/10
+    if (firstVal >= 0xfec0 && firstVal <= 0xfeff) return true // fec0::/10
+    if (firstVal >= 0xff00 && firstVal <= 0xffff) return true // ff00::/8
+  }
+  // RFC 8215 local-use NAT64 prefix 64:ff9b:1::/48 -- a SEPARATE, narrower prefix from the
+  // global 64:ff9b::/96 handled below (card 8f1c9795 req 2); denied outright, not decoded,
+  // because the prefix itself marks "local network only", independent of what is embedded in
+  // the remaining 80 bits.
+  if (h.startsWith('64:ff9b:1:')) return true
   // IPv4-mapped ::ffff: in dotted-decimal (::ffff:10.0.0.1) OR pure-hex 32-bit
   // (::ffff:0a00:0001). Both encode an IPv4 address; reuse the v4 rules.
   if (h.startsWith('::ffff:')) {
-    const rest = h.slice(7)
-    if (rest.includes('.')) return isPrivateIPv4(rest) // dotted decimal
-    const hexPair = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(rest)
-    if (hexPair) {
-      const hi = parseInt(hexPair[1], 16)
-      const lo = parseInt(hexPair[2], 16)
-      return isPrivateIPv4(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`)
-    }
-    return true // ::ffff: with unrecognised tail -- deny to be safe
+    const v4 = decodeEmbeddedV4(h.slice(7))
+    return v4 === null ? true : isPrivateIPv4(v4) // unrecognised tail -- deny to be safe
   }
   // NAT64 well-known prefix 64:ff9b::/96 -- the low 32 bits are the IPv4 address.
   if (h.startsWith('64:ff9b::')) {
-    const rest = h.slice(9)
-    if (rest.includes('.')) return isPrivateIPv4(rest)
-    const hexPair = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(rest)
-    if (hexPair) {
-      const hi = parseInt(hexPair[1], 16)
-      const lo = parseInt(hexPair[2], 16)
-      return isPrivateIPv4(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`)
+    const v4 = decodeEmbeddedV4(h.slice(9))
+    return v4 === null ? true : isPrivateIPv4(v4) // unrecognised tail -- deny to be safe
+  }
+  // Deprecated IPv4-compatible IPv6, the whole ::/96 range (card 8f1c9795 req 0): the ENTIRE
+  // address is "::" followed by exactly the 32 bits of an embedded IPv4 and nothing else, e.g.
+  // ::7f00:1 (127.0.0.1) or ::a9fe:a9fe (169.254.169.254). Must be its own branch, not folded
+  // into the generic tail fallback below: that fallback only looks at the LAST segment, which
+  // for "::7f00:1" is just "1" -- not IPv4-shaped, so it would silently pass.
+  if (h.startsWith('::') && h.slice(2).length > 0) {
+    const v4 = decodeEmbeddedV4(h.slice(2))
+    if (v4 !== null) return isPrivateIPv4(v4)
+  }
+  // 2002::/16 (6to4): the embedded v4 is bits 16-47, i.e. the next two 16-bit groups
+  // (2002:AABB:CCDD:... -> v4 = AA.BB.CC.DD). Card 8f1c9795 req 2.
+  if (h.startsWith('2002:')) {
+    const parts = h.split(':')
+    const g1 = parts[1] ?? ''
+    const g2 = parts[2] ?? ''
+    if (/^[0-9a-f]{1,4}$/.test(g1) && /^[0-9a-f]{1,4}$/.test(g2)) {
+      const v1 = parseInt(g1, 16)
+      const v2 = parseInt(g2, 16)
+      return isPrivateIPv4(`${(v1 >> 8) & 0xff}.${v1 & 0xff}.${(v2 >> 8) & 0xff}.${v2 & 0xff}`)
     }
-    return true // 64:ff9b:: with unrecognised tail -- deny to be safe
+    return true // unrecognised tail -- deny to be safe
   }
   // Fallback: other address forms whose last colon-separated segment is a dotted IPv4.
   const tail = h.split(':').pop() ?? ''
@@ -319,10 +368,13 @@ function isPrivateIPv6(host) {
   return false
 }
 
-// KNOWN LIMIT, stated rather than papered over: this checks the hostname as
-// written. A public name that RESOLVES to a private address (DNS rebinding)
-// still passes, because the hook sees the URL, not the socket. Closing that
-// needs resolution at fetch time, which is not this layer's job.
+// KNOWN LIMIT, stated rather than papered over (card 8f1c9795 req 6): this checks the hostname
+// as written. A public name that RESOLVES to a private address (DNS rebinding) still passes,
+// because the hook sees the URL, not the socket -- closing that needs resolution at fetch time,
+// which is not this layer's job. The same gap covers wildcard-DNS "my-ip-in-the-name" services
+// such as nip.io/sslip.io (e.g. 169-254-169-254.sslip.io resolves to the IP spelled out in its
+// own label): the HOSTNAME is a public dotted name with no deny-listed literal in it at all, so
+// nothing above catches it without resolving it first. Out of scope for the same reason.
 export function isQuarantineDenied(url) {
   let parsed
   try {
@@ -331,14 +383,23 @@ export function isQuarantineDenied(url) {
     return true // unparseable -> deny
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return true
-  // Strip trailing dot: FQDN normalisation (localhost. → localhost).
-  // Node's URL parser does NOT always strip it, so we do it here.
-  const host = parsed.hostname.toLowerCase().replace(/\.$/, '')
+  // Strip ALL trailing dots (card 8f1c9795 req 1): "localhost.." was left denied-looking but
+  // actually NOT caught by the old single-dot strip, since one `replace(/\.$/, '')` on
+  // "localhost.." leaves "localhost." -- still not equal to "localhost". FQDN normalisation,
+  // repeated: Node's URL parser does not collapse a repeated trailing dot either.
+  const host = parsed.hostname.toLowerCase().replace(/\.+$/, '')
   if (!host) return true
   if (QUARANTINE_DENY_HOSTS.has(host)) return true
   if (QUARANTINE_DENY_SUFFIXES.some((s) => host.endsWith(s))) return true
   if (isPrivateIPv4(host)) return true
   if (isPrivateIPv6(host)) return true
+  // Single-label hosts (card 8f1c9795 req 4): a bare name like "metadata" can resolve to the
+  // cloud metadata service via a VPC's DNS search-domain suffix (GCE appends
+  // "c.<project-id>.internal" etc. automatically) without the full name ever appearing in the
+  // URL. Denied unless allowlisted -- nothing is allowlisted today, since every entry in
+  // QUARANTINE_DOMAINS and ALLOWED_PREFIXES is a dotted name; a bracketed IPv6 literal (which
+  // contains ':') is not a "label" in this sense and is already judged by isPrivateIPv6 above.
+  if (!host.includes('.') && !host.includes(':')) return true
   return false
 }
 
