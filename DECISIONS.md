@@ -32915,3 +32915,21 @@ card branch, no other agent had based work on them). Gate: QA + Cybersec (WhiteH
 **Teszt:** `npx tsc --noEmit` tiszta. `store/decisions-append-only-guard.sh DECISIONS.md` PASS. Celzott `connector-infobox-claudeai.test.ts`, `connectors-banner-module.test.ts`, `connectors-mcp-cli-async.test.ts`, `connectors-module.test.ts`, `connectors-project-stdio-auth-gate.test.ts`: 5 Test Files passed (5), 46 Tests passed (46), 12.73s.
 
 **Ki döntött:** a kártya saját gate-sorozata (1d3cd7e57) áll, csak a merge-feloldás technikai; backend3 végezte. Gate: a meglévő QA + QA2 + CYBERED + CYBERSEC verdiktek (1d3cd7e57) delta re-gate alá esnek a merge-sha-n.
+
+## 2026-11-25 21:00 -- F7 kezdő lépés: `agent-worktree.sh --card` mód mopsionhoz (kártya 380a5e16)
+
+**Döntés:** `store/agent-worktree.sh` kapott egy `--card <id>` módot mopsionhoz, ugyanazzal a
+mechanizmussal mint az F4 (marveen) kártya-módú worktree-je: a kártya saját, eldobható worktree-jét
+`card/<id>` ágon hozza létre/tartja karban, a kártyánkénti `node_modules`-linkeléssel együtt.
+Selftest hozzáadva (`store/agent-worktree.selftest.sh`).
+**Miért:** a kártya 1. követelménye (`agent-worktree.sh --card <id> for mopsion`); Peti 13099
+döntése szerint a t3code/kártya-worktree mechanizmus az EGYETLEN irány, nem opcionális párhuzamos
+út.
+**Ellenőrzés:** `store/agent-worktree.selftest.sh` zöld (a `--card` ágra épülő új esetekkel).
+**Nincs ebben a bejegyzésben:** a kártya 2. (`mopsion-land.sh --card <id>`) és 3. (egy valós
+mopsion kártya kártya-módban landolva) követelménye -- ez a bejegyzés csak az 1. követelményt
+fedi; a kártya emiatt `waiting`-re ment review-ra, de a cím `[0%]` jelzése szándékosan nem lett
+felülírva, amíg a 2-3. pont nincs kész.
+**Ki döntött:** DevO (fullstack), kártya leírása szerint.
+**Hivatkozás:** kártya 380a5e16; commit 39a412993 (`feat(mopsion): add --card mode to
+agent-worktree.sh`); `store/agent-worktree.sh`, `store/agent-worktree.selftest.sh`.
