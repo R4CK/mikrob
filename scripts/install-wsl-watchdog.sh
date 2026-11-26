@@ -196,6 +196,7 @@ cat > "$WATCHDOG_WSL" <<PS1EOF
 \$RollbackCmd = "$INSTALL_DIR/scripts/wsl-watchdog-rollback-notify.sh"
 \$UnplannedRestartNotifyCmd = "$INSTALL_DIR/scripts/wsl-watchdog-unplanned-restart-notify.sh"
 \$HolderEnsureCmd = "$INSTALL_DIR/scripts/wsl-watchdog-holder-ensure.sh"
+\$HolderCapNotifyCmd = "$INSTALL_DIR/scripts/wsl-watchdog-holder-cap-notify.sh"
 \$MaxFails    = 3   # consecutive fails (~15 min @ 5-min cadence) before a restart
 # Peti 2026-08-05: "if you can't start on the first try, try 2 more times, then
 # restore yourself to the last working backup -- I shouldn't have to start WSL
@@ -221,6 +222,17 @@ cat > "$WATCHDOG_WSL" <<PS1EOF
 \$RestartCountFile = "\$StateDir\\wsl-watchdog-restart-count.txt"
 \$FreshSkipCountFile = "\$StateDir\\wsl-watchdog-freshskip-count.txt"
 \$LastUptimeFile = "\$StateDir\\wsl-watchdog-last-uptime.txt"
+# CYBERSEC NO-GO F-2 / QA FAIL (card 3f6bb903): cap holder relaunches per
+# rolling window so a misfiring check (or a holder that keeps dying right
+# after being launched) cannot pile up hidden wsl.exe+sleep processes
+# forever. \$MaxHolderRelaunchesPerWindow=6 in a \$HolderRelaunchWindowSec=3600
+# window is roughly half the 12 ticks/hour the 5-min cadence would otherwise
+# allow -- generous enough for a real, repeated recovery, tight enough to
+# catch a genuine loop well before it accumulates double-digit processes.
+\$HolderRelaunchCountFile = "\$StateDir\\wsl-watchdog-holder-relaunch-count.txt"
+\$HolderRelaunchWindowStartFile = "\$StateDir\\wsl-watchdog-holder-relaunch-window-start.txt"
+\$MaxHolderRelaunchesPerWindow = 6
+\$HolderRelaunchWindowSec = 3600
 \$LogFile     = "\$StateDir\\wsl-watchdog.log"
 New-Item -ItemType Directory -Force -Path \$StateDir | Out-Null
 function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf8 \$LogFile }
@@ -264,9 +276,36 @@ function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf
 \$holderOut = & wsl.exe -d \$Distro -u \$WslUser -e bash -lc \$HolderEnsureCmd 2>\$null
 \$holderCheckExit = \$LASTEXITCODE
 if (\$holderCheckExit -eq 1 -and (\$holderOut -cmatch '^HOLDER_MISSING')) {
-  Log "no keepalive holder found on this tick (out='\$holderOut') -- launching one"
-  Start-Process -WindowStyle Hidden -FilePath "wsl.exe" -ArgumentList @("-d", \$Distro, "--exec", "/bin/sleep", "infinity")
-} elseif (\$holderCheckExit -ne 0) {
+  # CYBERSEC NO-GO F-2 / QA FAIL: a relaunch decision is capped per rolling
+  # window BEFORE acting on it -- a holder that keeps dying right after
+  # launch (or a persistently misfiring check) must give up and alert
+  # instead of piling up hidden processes every tick forever.
+  \$holderRelaunchWindowStart = 0
+  if (Test-Path \$HolderRelaunchWindowStartFile) { \$holderRelaunchWindowStart = [long](Get-Content \$HolderRelaunchWindowStartFile -ErrorAction SilentlyContinue) }
+  \$nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  if (\$holderRelaunchWindowStart -eq 0 -or (\$nowEpoch - \$holderRelaunchWindowStart) -gt \$HolderRelaunchWindowSec) {
+    \$holderRelaunchWindowStart = \$nowEpoch
+    Set-Content -Path \$HolderRelaunchWindowStartFile -Value "\$holderRelaunchWindowStart"
+    Set-Content -Path \$HolderRelaunchCountFile -Value "0"
+  }
+  \$holderRelaunchCount = 0
+  if (Test-Path \$HolderRelaunchCountFile) { \$holderRelaunchCount = [int](Get-Content \$HolderRelaunchCountFile -ErrorAction SilentlyContinue) }
+
+  if (\$holderRelaunchCount -ge \$MaxHolderRelaunchesPerWindow) {
+    Log "holder-ensure: relaunch cap reached (\$holderRelaunchCount/\$MaxHolderRelaunchesPerWindow in the current \${HolderRelaunchWindowSec}s window) -- NOT relaunching again, alerting instead"
+    & wsl.exe -d \$Distro -u \$WslUser -e bash -lc \$HolderCapNotifyCmd 2>\$null
+  } else {
+    \$holderRelaunchCount++
+    Set-Content -Path \$HolderRelaunchCountFile -Value "\$holderRelaunchCount"
+    Log "no keepalive holder found on this tick (out='\$holderOut') -- launching one (\$holderRelaunchCount/\$MaxHolderRelaunchesPerWindow this window)"
+    Start-Process -WindowStyle Hidden -FilePath "wsl.exe" -ArgumentList @("-d", \$Distro, "--exec", "/bin/sleep", "infinity")
+  }
+} elseif (\$holderCheckExit -eq 0) {
+  # A holder is confirmed present -- reset the relaunch cap so a PAST
+  # incident does not leave a near-exhausted counter sitting around for the
+  # NEXT time a holder genuinely goes missing.
+  Set-Content -Path \$HolderRelaunchCountFile -Value "0"
+} else {
   Log "holder-ensure check inconclusive (exit=\$holderCheckExit out='\$holderOut') -- NOT relaunching (fail-closed; avoids an unbounded relaunch flood on a VM/probe failure or an ambiguous multi-holder state)"
 }
 

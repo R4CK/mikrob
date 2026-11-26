@@ -280,7 +280,7 @@ else
     "if (\$holderCheckExit -eq 1 -and (\$holderOut -cmatch '^HOLDER_MISSING')) {" \
     "$PS1_CODE"
   check_line "F-2 fix: any other inconclusive result explicitly does NOT relaunch (fail-closed)" \
-    '} elseif ($holderCheckExit -ne 0) {' "$PS1_CODE"
+    '} else {' "$(printf '%s\n' "$PS1_CODE" | sed -n '/holderCheckExit -eq 0/,/^}/p')"
   # The holder-ensure block (lines pinned above) must appear BEFORE the
   # healthy early-exit in the rendered code -- otherwise a healthy tick would
   # never reach it, reintroducing exactly the bug this card fixes.
@@ -308,6 +308,43 @@ else
     fail=1
   else
     echo "  ok   heredoc-safety: dry-run render produced zero stderr (guards against backtick/\$(...) command substitution inside the unquoted PS1EOF heredoc)"
+  fi
+
+  # --- CYBERSEC NO-GO F-2 / QA FAIL: relaunch cap + give-up alert -----------
+  check "F-2 fix: holder relaunch cap variable declared" '$MaxHolderRelaunchesPerWindow = 6' "$PS1_CONTENT"
+  check "F-2 fix: holder relaunch window variable declared" '$HolderRelaunchWindowSec = 3600' "$PS1_CONTENT"
+  check "F-2 fix: cap-notify command declared" '$HolderCapNotifyCmd' "$PS1_CONTENT"
+  check_line "F-2 fix: cap check happens before relaunching (not after)" \
+    '  if ($holderRelaunchCount -ge $MaxHolderRelaunchesPerWindow) {' "$PS1_CODE"
+  check_line "F-2 fix: cap-reached branch alerts instead of relaunching" \
+    '    & wsl.exe -d $Distro -u $WslUser -e bash -lc $HolderCapNotifyCmd 2>$null' "$PS1_CONTENT"
+  check_line "F-2 fix: a confirmed-present holder resets the relaunch cap" \
+    '  Set-Content -Path $HolderRelaunchCountFile -Value "0"' "$PS1_CODE"
+  # The give-up alert must be reached only AFTER the counter would exceed the
+  # cap, not before -- i.e. the cap check line precedes the relaunch
+  # Start-Process line within the same branch.
+  CAP_CHECK_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n 'holderRelaunchCount -ge \$MaxHolderRelaunchesPerWindow' | head -1 | cut -d: -f1)"
+  RELAUNCH_ACT_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n 'ArgumentList @("-d", \$Distro, "--exec", "/bin/sleep", "infinity")' | head -1 | cut -d: -f1)"
+  if [ -n "$CAP_CHECK_IDX" ] && [ -n "$RELAUNCH_ACT_IDX" ] && [ "$CAP_CHECK_IDX" -lt "$RELAUNCH_ACT_IDX" ]; then
+    echo "  ok   F-2 fix: the cap is checked BEFORE the relaunch action (line $CAP_CHECK_IDX < $RELAUNCH_ACT_IDX)"
+  else
+    echo "  FAIL F-2 fix: cap check must precede the relaunch action (got cap=$CAP_CHECK_IDX relaunch=$RELAUNCH_ACT_IDX)"
+    fail=1
+  fi
+
+  # wsl-watchdog-holder-cap-notify.sh exists, is executable, and is a
+  # zero-argument fixed-message script (same shape as its two siblings --
+  # deliberately NOT parameterized, to avoid crossing the wsl.exe argument
+  # boundary with free text).
+  CAP_NOTIFY_SCRIPT="$(dirname "$0")/wsl-watchdog-holder-cap-notify.sh"
+  if [ -x "$CAP_NOTIFY_SCRIPT" ]; then
+    echo "  ok   wsl-watchdog-holder-cap-notify.sh exists and is executable"
+    grep -q 'ENV_FILE="\$HOME/.claude/channels/telegram/.env"' "$CAP_NOTIFY_SCRIPT" \
+      && echo "  ok   holder-cap-notify.sh reads the token from the same trusted local .env as its siblings" \
+      || { echo "  FAIL holder-cap-notify.sh does not read the token from the expected .env path"; fail=1; }
+  else
+    echo "  FAIL wsl-watchdog-holder-cap-notify.sh not found or not executable at $CAP_NOTIFY_SCRIPT"
+    fail=1
   fi
 
   # --- card 3f6bb903: unplanned-restart detection + alert -------------------
