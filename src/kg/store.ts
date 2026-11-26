@@ -464,30 +464,58 @@ export function kgEmbedText(
     .join(' ')
 }
 
+// F-1b (card 6d542dc9, CYBERSEC comment 24952): an unbounded fire-and-forget fan-out (one
+// generateEmbedding call per upsertNode) let a bulk re-import spawn far more concurrent Ollama
+// calls than it could finish before an external abort, leaving most rows NULL. Capped at a small
+// concurrency limit with a bounded queue -- requests beyond the bound are dropped (the row stays
+// NULL and backfillKgNodeEmbeddings picks it up later), never queued without limit.
+export const EMBED_CONCURRENCY_LIMIT = 4
+export const EMBED_QUEUE_BOUND = 50
+
+let embedActive = 0
+const embedQueue: Array<() => void> = []
+
+function runEmbedSlot(run: () => Promise<void>): void {
+  const start = (): void => {
+    embedActive++
+    run().finally(() => {
+      embedActive--
+      const next = embedQueue.shift()
+      if (next) next()
+    })
+  }
+  if (embedActive < EMBED_CONCURRENCY_LIMIT) {
+    start()
+  } else if (embedQueue.length < EMBED_QUEUE_BOUND) {
+    embedQueue.push(start)
+  }
+  // else: dropped -- same outcome as a down Ollama backend, the row stays NULL for backfill.
+}
+
 /** Fire-and-forget, same posture as src/db.ts's scheduleEmbedding for memories: a down/missing
  *  Ollama backend leaves the column NULL and backfillKgNodeEmbeddings picks the row up later --
  *  caught, not thrown, so a write never fails because the embedding backend is unavailable. */
 function scheduleKgNodeEmbedding(db: Database.Database, id: string, text: string): void {
-  try {
-    // generateEmbedding itself can throw synchronously, not just reject -- e.g. a test double
-    // (several kg capture-pipeline tests mock '../db.js' down to only getKanbanCard/
-    // getKanbanComments) leaves it undefined, and calling undefined() throws before any Promise
-    // exists to .catch(). Caught here so that stays a silent no-embedding outcome, same as a
-    // real Ollama outage, instead of failing the whole node write.
-    generateEmbedding(text)
-      .then((emb) => {
-        if (emb) {
-          db.prepare('UPDATE kg_nodes SET embedding = ?, embed_model = ? WHERE id = ?').run(
-            Buffer.from(JSON.stringify(emb)),
-            EMBED_MODEL,
-            id,
-          )
-        }
-      })
-      .catch(() => {})
-  } catch {
-    // see comment above
-  }
+  runEmbedSlot(async () => {
+    try {
+      // generateEmbedding itself can throw synchronously, not just reject -- e.g. a test double
+      // (several kg capture-pipeline tests mock '../db.js' down to only getKanbanCard/
+      // getKanbanComments) leaves it undefined, and calling undefined() inside this async
+      // function turns the throw into a rejection the catch below still sees. Caught here so
+      // that stays a silent no-embedding outcome, same as a real Ollama outage, instead of
+      // failing the whole node write.
+      const emb = await generateEmbedding(text)
+      if (emb) {
+        db.prepare('UPDATE kg_nodes SET embedding = ?, embed_model = ? WHERE id = ?').run(
+          Buffer.from(JSON.stringify(emb)),
+          EMBED_MODEL,
+          id,
+        )
+      }
+    } catch {
+      // see comment above
+    }
+  })
 }
 
 export function upsertNode(db: Database.Database, input: KgNodeInput): void {
@@ -526,6 +554,8 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
   const title = capLength(piiRedactedTitle, 200) as string
   const body = capLength(piiRedactedBody ?? null, 8000)
   const snippet = capLength(piiRedactedSnippet ?? null, 12000)
+  const newEmbedText = kgEmbedText(title, body, snippet, piiRedactedKeywords ?? null)
+  let textChanged = true
 
   const tx = db.transaction(() => {
     // F1 (eeb57483, WhiteHat GO condition on ee9ee17b): a re-import (e.g. importFromRelations
@@ -537,8 +567,13 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
     // 'superseded' is set by the exact same sanctioned, audited path (setNodeStatus) and is just
     // as deliberate a decision, but a re-import still silently flipped it back to 'active'
     // with no audit trail at all. Protect both terminal-ish states the same way.
-    const existing = db.prepare('SELECT status FROM kg_nodes WHERE id = ?').get(input.id) as
-      | { status: string }
+    // F-1a (card 6d542dc9, CYBERSEC comment 24952): also fetch the fields that feed the embedding
+    // text, so a re-import that changes nothing about the embedded text can skip recomputing it
+    // (see textChanged below) -- avoids both a wasted Ollama call and the fan-out F-1b caps.
+    const existing = db.prepare('SELECT status, title, body, snippet, keywords FROM kg_nodes WHERE id = ?').get(
+      input.id,
+    ) as
+      | { status: string; title: string; body: string | null; snippet: string | null; keywords: string | null }
       | undefined
     const requestedStatus = input.status ?? 'active'
     const isProtected = existing?.status !== undefined && PROTECTED_STATUSES.has(existing.status)
@@ -548,6 +583,10 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
         'INSERT INTO kg_audit (node_id, action, actor, before, after, created_at) VALUES (?, ?, ?, ?, ?, ?)',
       ).run(input.id, 'import_reactivation_blocked', input.extractor, existing!.status, requestedStatus, now)
     }
+
+    textChanged =
+      existing === undefined ||
+      kgEmbedText(existing.title, existing.body, existing.snippet, existing.keywords) !== newEmbedText
 
     db.prepare(
       `INSERT INTO kg_nodes
@@ -559,7 +598,8 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
          title=excluded.title, body=excluded.body, snippet=excluded.snippet,
          snippet_lang=excluded.snippet_lang, keywords=excluded.keywords, status=excluded.status,
          source_ref=excluded.source_ref, gate_sha=excluded.gate_sha, extractor=excluded.extractor,
-         embedding=excluded.embedding, embed_model=excluded.embed_model, updated_at=excluded.updated_at`,
+         embedding=COALESCE(excluded.embedding, embedding),
+         embed_model=COALESCE(excluded.embed_model, embed_model), updated_at=excluded.updated_at`,
     ).run({
       id: input.id,
       type: input.type,
@@ -584,9 +624,11 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
   // and hybridKgSearch's semantic branch was dead graph-wide. Auto-embed every new/changed write
   // UNLESS the caller already supplied one (even explicitly null, e.g. a caller doing its own
   // backfill pass) -- same "don't duplicate what the caller already decided" reasoning as
-  // defaultCaptureEnabled's single read of the kill switch.
-  if (input.embedding === undefined) {
-    scheduleKgNodeEmbedding(db, input.id, kgEmbedText(title, body, snippet, piiRedactedKeywords ?? null))
+  // defaultCaptureEnabled's single read of the kill switch. F-1a: also skip when the embedded
+  // text itself did not change (a re-import), since the conflict SQL above now keeps the old
+  // embedding -- recomputing an identical embedding would just be a wasted Ollama call.
+  if (input.embedding === undefined && textChanged) {
+    scheduleKgNodeEmbedding(db, input.id, newEmbedText)
   }
 }
 
