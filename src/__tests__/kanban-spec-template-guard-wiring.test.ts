@@ -65,7 +65,10 @@ describe('specTemplateGuardCheck wiring in kanban.ts', () => {
   })
 
   it('POST /move handler: the call is AFTER the dependency 409 guard, not before it', () => {
-    const dependencyIdxInMove = SOURCE.indexOf('dependencyBlockBody(id, status, force')
+    // Koteg 27 ("evidence on done"): the guards below moveKanbanCard now see effectiveStatus
+    // (the done->testing redirect target), not the raw requested status -- the marker tracks
+    // that, not the pre-merge literal.
+    const dependencyIdxInMove = SOURCE.indexOf('dependencyBlockBody(id, effectiveStatus, force')
     const moveCallIdx = SOURCE.lastIndexOf('specTemplateGuardCheck(')
     expect(dependencyIdxInMove).toBeGreaterThan(-1)
     expect(moveCallIdx).toBeGreaterThan(dependencyIdxInMove)

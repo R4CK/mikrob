@@ -259,6 +259,124 @@ else
   # --- unaffected behavior: MaxFails/MaxRestarts bound still intact --------
   check_line "MaxFails bound intact (exact line)" '$MaxFails    = 3   # consecutive fails (~15 min @ 5-min cadence) before a restart' "$PS1_CONTENT"
   check_line "MaxRestarts bound intact (exact line)" '$MaxRestarts = 3' "$PS1_CONTENT"
+
+  # --- card 3f6bb903: holder-ensure runs on EVERY tick, before either early
+  #     exit (healthy, or fresh-boot-grace skip) ---------------------------
+  # CYBERED NO-GO (comment 38947, F-1/F-2): the original form called
+  # `pgrep -f "sleep infinity"` directly through wsl.exe's `--` hop, which is
+  # unproven and measured both ways (self-match through a non-bash parent
+  # shell -> never relaunches; lost quoting -> relaunches every tick
+  # unboundedly). Replaced with a dedicated, Linux-testable script invoked
+  # the same way the rollback/notify scripts already are.
+  check_absent "F-1/F-2 regression: the vulnerable inline pgrep form through wsl.exe's -- hop is gone" \
+    'wsl.exe -d $Distro -u $WslUser -- pgrep -f "sleep infinity"' "$PS1_CONTENT"
+  check_absent "F-1/F-2 regression: the old any-nonzero-relaunches condition is gone" \
+    'if ($LASTEXITCODE -ne 0 -or -not $holderOut) {' "$PS1_CODE"
+  check "3f6bb903: holder-ensure command variable declared" '$HolderEnsureCmd' "$PS1_CONTENT"
+  check_line "3f6bb903: holder-ensure is invoked as a named script via bash -lc (same pattern as rollback/notify, nothing left for wsl.exe to mis-quote)" \
+    '$holderOut = & wsl.exe -d $Distro -u $WslUser -e bash -lc $HolderEnsureCmd 2>$null' \
+    "$PS1_CONTENT"
+  check_line "F-2 fix: a relaunch requires BOTH exit=1 AND the HOLDER_MISSING marker, not just a nonzero exit" \
+    "if (\$holderCheckExit -eq 1 -and (\$holderOut -cmatch '^HOLDER_MISSING')) {" \
+    "$PS1_CODE"
+  check_line "F-2 fix: any other inconclusive result explicitly does NOT relaunch (fail-closed)" \
+    '} else {' "$(printf '%s\n' "$PS1_CODE" | sed -n '/holderCheckExit -eq 0/,/^}/p')"
+  # The holder-ensure block (lines pinned above) must appear BEFORE the
+  # healthy early-exit in the rendered code -- otherwise a healthy tick would
+  # never reach it, reintroducing exactly the bug this card fixes.
+  HOLDER_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n '\$HolderEnsureCmd 2>\$null' | head -1 | cut -d: -f1)"
+  HEALTHY_EXIT_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n 'if ($healthy) {' | head -1 | cut -d: -f1)"
+  if [ -n "$HOLDER_IDX" ] && [ -n "$HEALTHY_EXIT_IDX" ] && [ "$HOLDER_IDX" -lt "$HEALTHY_EXIT_IDX" ]; then
+    echo "  ok   3f6bb903: holder-ensure runs BEFORE the healthy early-exit (line $HOLDER_IDX < $HEALTHY_EXIT_IDX)"
+  else
+    echo "  FAIL 3f6bb903: holder-ensure must run before the healthy early-exit (got holder=$HOLDER_IDX healthy-exit=$HEALTHY_EXIT_IDX)"
+    fail=1
+  fi
+
+  # Regression guard for the EXACT bug this delta introduced and caught on
+  # its own render (markdown-style backticks in a PS1-comment inside the
+  # UNQUOTED <<PS1EOF heredoc get command-substituted at render time, since a
+  # heredoc body is not shell-comment-aware regardless of a leading '#').
+  # A clean render must produce ZERO stderr; this would have caught it.
+  DRYRUN_STDERR="$TMP/render-stderr.txt"
+  mkdir -p "$TMP/run-stderr-check"
+  : > "$CALL_LOG"
+  INSTALL_WSL_WATCHDOG_DRY_RUN=1 INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR="$TMP/run-stderr-check" \
+    run_isolated >/dev/null 2>"$DRYRUN_STDERR"
+  if [ -s "$DRYRUN_STDERR" ]; then
+    echo "  FAIL heredoc-safety: dry-run produced stderr output (a backtick or \$(...) inside the PS1EOF heredoc body gets command-substituted at render time, since heredoc bodies ignore a leading '#'): $(cat "$DRYRUN_STDERR")"
+    fail=1
+  else
+    echo "  ok   heredoc-safety: dry-run render produced zero stderr (guards against backtick/\$(...) command substitution inside the unquoted PS1EOF heredoc)"
+  fi
+
+  # --- CYBERSEC NO-GO F-2 / QA FAIL: relaunch cap + give-up alert -----------
+  check "F-2 fix: holder relaunch cap variable declared" '$MaxHolderRelaunchesPerWindow = 6' "$PS1_CONTENT"
+  check "F-2 fix: holder relaunch window variable declared" '$HolderRelaunchWindowSec = 3600' "$PS1_CONTENT"
+  check "F-2 fix: cap-notify command declared" '$HolderCapNotifyCmd' "$PS1_CONTENT"
+  check_line "F-2 fix: cap check happens before relaunching (not after)" \
+    '  if ($holderRelaunchCount -ge $MaxHolderRelaunchesPerWindow) {' "$PS1_CODE"
+  check_line "F-2 fix: cap-reached branch alerts instead of relaunching" \
+    '    & wsl.exe -d $Distro -u $WslUser -e bash -lc $HolderCapNotifyCmd 2>$null' "$PS1_CONTENT"
+  check_line "F-2 fix: a confirmed-present holder resets the relaunch cap" \
+    '  Set-Content -Path $HolderRelaunchCountFile -Value "0"' "$PS1_CODE"
+
+  # --- CYBERED NO-GO round 3 (comment 39005, F-1 PowerShell side: P4/P6/P7/P9
+  #     survived as unpinned text) -- the window-expiry compare, the count
+  #     increment, and both persisted Set-Content writes had no pin at all,
+  #     so a mutant on any of them kept this selftest green.
+  check_line "F-1 round3: relaunch window expiry compare (-eq 0 OR elapsed -gt window)" \
+    '  if ($holderRelaunchWindowStart -eq 0 -or ($nowEpoch - $holderRelaunchWindowStart) -gt $HolderRelaunchWindowSec) {' "$PS1_CODE"
+  check_line "F-1 round3: new window start is persisted" \
+    '    Set-Content -Path $HolderRelaunchWindowStartFile -Value "$holderRelaunchWindowStart"' "$PS1_CODE"
+  check_line "F-1 round3: relaunch count is actually incremented" \
+    '    $holderRelaunchCount++' "$PS1_CODE"
+  check_line "F-1 round3: incremented relaunch count is persisted" \
+    '    Set-Content -Path $HolderRelaunchCountFile -Value "$holderRelaunchCount"' "$PS1_CODE"
+  # The give-up alert must be reached only AFTER the counter would exceed the
+  # cap, not before -- i.e. the cap check line precedes the relaunch
+  # Start-Process line within the same branch.
+  CAP_CHECK_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n 'holderRelaunchCount -ge \$MaxHolderRelaunchesPerWindow' | head -1 | cut -d: -f1)"
+  RELAUNCH_ACT_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n 'ArgumentList @("-d", \$Distro, "--exec", "/bin/sleep", "infinity")' | head -1 | cut -d: -f1)"
+  if [ -n "$CAP_CHECK_IDX" ] && [ -n "$RELAUNCH_ACT_IDX" ] && [ "$CAP_CHECK_IDX" -lt "$RELAUNCH_ACT_IDX" ]; then
+    echo "  ok   F-2 fix: the cap is checked BEFORE the relaunch action (line $CAP_CHECK_IDX < $RELAUNCH_ACT_IDX)"
+  else
+    echo "  FAIL F-2 fix: cap check must precede the relaunch action (got cap=$CAP_CHECK_IDX relaunch=$RELAUNCH_ACT_IDX)"
+    fail=1
+  fi
+
+  # wsl-watchdog-holder-cap-notify.sh exists, is executable, and is a
+  # zero-argument fixed-message script (same shape as its two siblings --
+  # deliberately NOT parameterized, to avoid crossing the wsl.exe argument
+  # boundary with free text).
+  CAP_NOTIFY_SCRIPT="$(dirname "$0")/wsl-watchdog-holder-cap-notify.sh"
+  if [ -x "$CAP_NOTIFY_SCRIPT" ]; then
+    echo "  ok   wsl-watchdog-holder-cap-notify.sh exists and is executable"
+    grep -q 'ENV_FILE="\$HOME/.claude/channels/telegram/.env"' "$CAP_NOTIFY_SCRIPT" \
+      && echo "  ok   holder-cap-notify.sh reads the token from the same trusted local .env as its siblings" \
+      || { echo "  FAIL holder-cap-notify.sh does not read the token from the expected .env path"; fail=1; }
+  else
+    echo "  FAIL wsl-watchdog-holder-cap-notify.sh not found or not executable at $CAP_NOTIFY_SCRIPT"
+    fail=1
+  fi
+
+  # --- card 3f6bb903: unplanned-restart detection + alert -------------------
+  check "3f6bb903: last-uptime state file declared" '$LastUptimeFile = "$StateDir\wsl-watchdog-last-uptime.txt"' "$PS1_CONTENT"
+  check "3f6bb903: unplanned-restart notify command declared" '$UnplannedRestartNotifyCmd' "$PS1_CONTENT"
+  check_line "3f6bb903: uptime-drop-without-our-restart condition pinned verbatim" \
+    'if ($uptimeSec -gt 0 -and $lastUptime -gt 0 -and $uptimeSec -lt $lastUptime) {' \
+    "$PS1_CODE"
+  check_line "3f6bb903: unplanned-restart alert actually invokes the notify script" \
+    '  & wsl.exe -d $Distro -u $WslUser -e bash -lc $UnplannedRestartNotifyCmd 2>$null' \
+    "$PS1_CONTENT"
+  check_line "3f6bb903: baseline is persisted every tick after the comparison" \
+    'if ($uptimeSec -gt 0) { Set-Content -Path $LastUptimeFile -Value "$uptimeSec" }' \
+    "$PS1_CONTENT"
+  # The watchdog's OWN restart must zero the baseline so it never alerts on
+  # its own expected uptime reset (the self-suppression this card relies on).
+  RESTART_ISSUED_BRANCH="$(printf '%s\n' "$PS1_CODE" | sed -n '/RESTARTING WSL distro/,/WSL restart issued/p')"
+  check_line "3f6bb903: watchdog-issued restart zeroes its own uptime baseline" \
+    '    Set-Content -Path $LastUptimeFile -Value "0"' "$RESTART_ISSUED_BRANCH"
 fi
 
 # --- configurability: default vs overridden grace window -------------------
@@ -459,6 +577,131 @@ if [ -f "$PS1_PATH" ]; then
   check_absent "OK-match fail-open: raw text never reintroduces the loose match either" '-match "OK"' "$PS1_CONTENT"
   check_line "X4: the wedged distro is actually terminated before relaunch" '    & wsl.exe --terminate $Distro 2>$null' "$PS1_CODE_X"
   check_line "X5: a healthy read resets the restart-count state" '  Set-Content -Path $RestartCountFile -Value "0"' "$PS1_CODE_X"
+fi
+
+# --- card 3f6bb903: wsl-watchdog-holder-ensure.sh itself (the script the
+#     CYBERED NO-GO fix moved the decision into).
+#
+# CYBERED NO-GO round 3 (comment 39005, F-1/F-2): the previous version of
+# this block spawned a REAL production-shaped "/bin/sleep infinity" into
+# the LIVE distro's /proc to test the one/two-holder cases, and relied on
+# the live baseline (whatever real holder already existed) for the
+# zero-holder case -- which on this host always has a real holder, so the
+# zero-holder/MISSING branch (the one that actually makes the watchdog act)
+# was NEVER exercised, and mutants H1/H6/H8 on that branch stayed green.
+# It also risked leaking the decoy on a SIGKILL mid-test (measured by
+# CYBERED). Both are fixed by driving the script entirely through
+# WSL_WATCHDOG_HOLDER_PROC_ROOT against a throwaway fixture directory tree
+# of synthetic "<n>/cmdline" files -- no real process is ever touched.
+HOLDER_SCRIPT="$(dirname "$0")/wsl-watchdog-holder-ensure.sh"
+HOLDER_FIXTURE_ROOT="$TMP/holder-proc-fixture"
+
+make_holder_cmdline() { # <file> <argv...>
+  local file="$1"; shift
+  printf '%s\0' "$@" > "$file"
+}
+
+reset_holder_fixture() {
+  rm -rf "$HOLDER_FIXTURE_ROOT"
+  mkdir -p "$HOLDER_FIXTURE_ROOT"
+}
+
+run_holder_fixture() { # sets HOLDER_OUT / HOLDER_RC
+  HOLDER_OUT="$(WSL_WATCHDOG_HOLDER_PROC_ROOT="$HOLDER_FIXTURE_ROOT" bash "$HOLDER_SCRIPT")"
+  HOLDER_RC=$?
+}
+
+assert_holder() { # <want_rc> <want_marker_anchor_regex> <description>
+  local want_rc="$1" want_marker="$2" desc="$3"
+  if [ "$HOLDER_RC" -eq "$want_rc" ] && printf '%s' "$HOLDER_OUT" | grep -q "$want_marker"; then
+    echo "  ok   holder-ensure (fixture): $desc (rc=$HOLDER_RC out='$HOLDER_OUT')"
+  else
+    echo "  FAIL holder-ensure (fixture): $desc -- want rc=$want_rc marker=/$want_marker/, got rc=$HOLDER_RC out='$HOLDER_OUT'"
+    fail=1
+  fi
+}
+
+if [ -x "$HOLDER_SCRIPT" ]; then
+  # Zero holders: the decisive branch. Kills H1 (exit 1 -> 0), H8 (missing
+  # branch returns 2), H6 (marker renamed HOLDER_GONE).
+  reset_holder_fixture
+  run_holder_fixture
+  assert_holder 1 '^HOLDER_MISSING' "zero holders -> MISSING, exit 1"
+
+  # Exactly one holder (exact argv ["sleep","infinity"]).
+  reset_holder_fixture
+  mkdir -p "$HOLDER_FIXTURE_ROOT/1"
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" sleep infinity
+  run_holder_fixture
+  assert_holder 0 '^HOLDER_OK' "one holder -> OK, exit 0"
+
+  # Two holders -> ambiguous.
+  reset_holder_fixture
+  mkdir -p "$HOLDER_FIXTURE_ROOT/1" "$HOLDER_FIXTURE_ROOT/2"
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" sleep infinity
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/2/cmdline" sleep infinity
+  run_holder_fixture
+  assert_holder 2 '^HOLDER_AMBIGUOUS' "two holders -> AMBIGUOUS, exit 2"
+
+  # Extra-arg shape ("sleep infinity 5", 3 argv elements) must NOT count --
+  # kills H2 (argv length check loosened from -eq 2 to -ge 2).
+  reset_holder_fixture
+  mkdir -p "$HOLDER_FIXTURE_ROOT/1"
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" sleep infinity 5
+  run_holder_fixture
+  assert_holder 1 '^HOLDER_MISSING' "3-arg 'sleep infinity 5' is not counted"
+
+  # Non-sleep argv[0] with argv[1]=infinity must NOT count -- kills H3
+  # (basename-sleep check dropped).
+  reset_holder_fixture
+  mkdir -p "$HOLDER_FIXTURE_ROOT/1"
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" notsleep infinity
+  run_holder_fixture
+  assert_holder 1 '^HOLDER_MISSING' "non-sleep argv[0] is not counted"
+
+  # sleep with a different second argument must NOT count -- kills H4
+  # (argv[1]=="infinity" check dropped).
+  reset_holder_fixture
+  mkdir -p "$HOLDER_FIXTURE_ROOT/1"
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" sleep 5
+  run_holder_fixture
+  assert_holder 1 '^HOLDER_MISSING' "sleep with a non-infinity second arg is not counted"
+
+  # Lookalike: a file literally named "sleep infinity" (its own bash/path
+  # argv, never argv=["sleep","infinity"]) must not be counted either -- run
+  # against the real /proc this time (read-only check, no process started
+  # by this test), confirming the fixture semantics match live reality.
+  LOOKALIKE_PATH="$TMP/sleep infinity"
+  printf '#!/bin/bash\nsleep 5\n' > "$LOOKALIKE_PATH"
+  chmod +x "$LOOKALIKE_PATH"
+  bash "$LOOKALIKE_PATH" &
+  LOOKALIKE_PID=$!
+  sleep 0.3
+  HOLDER_OUT_LIVE_BEFORE="$(bash "$HOLDER_SCRIPT")"
+  kill "$LOOKALIKE_PID" 2>/dev/null; wait "$LOOKALIKE_PID" 2>/dev/null
+  HOLDER_OUT_LIVE_AFTER="$(bash "$HOLDER_SCRIPT")"
+  [ "$HOLDER_OUT_LIVE_BEFORE" = "$HOLDER_OUT_LIVE_AFTER" ] \
+    && echo "  ok   holder-ensure F-1 fix: a file literally named 'sleep infinity' on the live distro does not change the verdict (unchanged: '$HOLDER_OUT_LIVE_AFTER')" \
+    || { echo "  FAIL holder-ensure F-1 regression: a lookalike-named process on the live distro changed the verdict (with='$HOLDER_OUT_LIVE_BEFORE' without='$HOLDER_OUT_LIVE_AFTER')"; fail=1; }
+
+  # Self-match: invoking via a non-bash shell (dash) as the parent, against
+  # the zero-holder fixture, must still read MISSING -- exact argv match
+  # (not a pgrep -f substring) is shell-independent by construction.
+  if command -v dash >/dev/null 2>&1; then
+    reset_holder_fixture
+    HOLDER_OUT_DASH="$(dash -c "WSL_WATCHDOG_HOLDER_PROC_ROOT='$HOLDER_FIXTURE_ROOT' bash '$HOLDER_SCRIPT'")"
+    case "$HOLDER_OUT_DASH" in
+      HOLDER_MISSING*) echo "  ok   holder-ensure F-1 fix: invoking via a dash parent over an empty fixture still reads MISSING (no self-match)" ;;
+      *) echo "  FAIL holder-ensure F-1 regression: dash-parent invocation over an empty fixture did not read MISSING (got '$HOLDER_OUT_DASH')"; fail=1 ;;
+    esac
+  else
+    echo "  ok   holder-ensure F-1 (self-match): dash not installed on this host, skipping that specific shell -- exact argv match (not a pgrep -f substring) makes this shell-independent by construction anyway"
+  fi
+
+  rm -rf "$HOLDER_FIXTURE_ROOT"
+else
+  echo "  FAIL wsl-watchdog-holder-ensure.sh not found or not executable at $HOLDER_SCRIPT"
+  fail=1
 fi
 
 if [ "$fail" -eq 0 ]; then
