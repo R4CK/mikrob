@@ -482,35 +482,98 @@ export function kgEmbedText(
 // generateEmbedding call per upsertNode) let a bulk re-import spawn far more concurrent Ollama
 // calls than it could finish before an external abort, leaving most rows NULL. Capped at a small
 // concurrency limit with a bounded queue -- requests beyond the bound are dropped (the row stays
-// NULL and backfillKgNodeEmbeddings picks it up later), never queued without limit.
+// NULL -- see upsertNode's embedding CASE -- and backfillKgNodeEmbeddings picks it up), never
+// queued without limit.
 export const EMBED_CONCURRENCY_LIMIT = 4
 export const EMBED_QUEUE_BOUND = 50
 
-let embedActive = 0
-const embedQueue: Array<() => void> = []
+// N-3 HARD CONDITION (card 7f3cbe92, CYBERSEC comment on 6d542dc9's GO): a drop used to be
+// completely silent (no log, no counter) and backfillKgNodeEmbeddings had no caller, so a bulk
+// import past the concurrency+queue bound (e.g. 900 new nodes in one tick -> 54 embedded, 846
+// dropped) left most rows NULL forever. Every drop and every in-flight failure (backend down,
+// generateEmbedding throws/returns falsy) is now counted and visible (getEmbedDropCount/
+// getEmbedFailedCount), and schedules a debounced backfill sweep -- this gives
+// backfillKgNodeEmbeddings a caller that needs no change to any importer: whichever path writes
+// through upsertNode (including a future node type/importer this file doesn't know about yet,
+// e.g. 01b10349's finding/decision ingestion) is covered automatically.
+let embedDroppedCount = 0
+let embedFailedCount = 0
+let backfillSweepTimer: ReturnType<typeof setTimeout> | null = null
+const BACKFILL_SWEEP_DELAY_MS = 2000
+const BACKFILL_SWEEP_LIMIT = 2000
 
-function runEmbedSlot(run: () => Promise<void>): void {
+export function getEmbedDropCount(): number {
+  return embedDroppedCount
+}
+
+export function getEmbedFailedCount(): number {
+  return embedFailedCount
+}
+
+/** Test-only: the counters, the active/queue slot state and the pending-sweep timer are all
+ *  module state, shared across every test in the same file/worker (the exact class of leak
+ *  F-1b's own tests already had to guard against -- a test using a never-resolving mock to force
+ *  a drop leaves embedActive permanently elevated otherwise, silently starving the NEXT test's
+ *  slots). A test exercising drops/failures must reset this before and after. */
+export function resetEmbedCountersForTest(): void {
+  embedDroppedCount = 0
+  embedFailedCount = 0
+  embedActive = 0
+  embedQueue.length = 0
+  if (backfillSweepTimer) {
+    clearTimeout(backfillSweepTimer)
+    backfillSweepTimer = null
+  }
+}
+
+function scheduleBackfillSweep(db: Database.Database): void {
+  if (backfillSweepTimer) return
+  backfillSweepTimer = setTimeout(() => {
+    backfillSweepTimer = null
+    void backfillKgNodeEmbeddings(db, BACKFILL_SWEEP_LIMIT).catch(() => {
+      // best-effort self-heal; a failed sweep leaves rows NULL for the next trigger or an
+      // operator-run backfill, same posture as any other embed failure in this module.
+    })
+  }, BACKFILL_SWEEP_DELAY_MS)
+}
+
+function runEmbedSlot(db: Database.Database, run: () => Promise<boolean>): void {
   const start = (): void => {
     embedActive++
-    void run().finally(() => {
-      embedActive--
-      const next = embedQueue.shift()
-      if (next) next()
-    })
+    run()
+      .then((ok) => {
+        if (!ok) {
+          embedFailedCount++
+          scheduleBackfillSweep(db)
+        }
+      })
+      .finally(() => {
+        embedActive--
+        const next = embedQueue.shift()
+        if (next) next()
+      })
   }
   if (embedActive < EMBED_CONCURRENCY_LIMIT) {
     start()
   } else if (embedQueue.length < EMBED_QUEUE_BOUND) {
     embedQueue.push(start)
+  } else {
+    embedDroppedCount++
+    console.warn(`kg embed: dropped, queue full (bound=${EMBED_QUEUE_BOUND}), total dropped=${embedDroppedCount}`)
+    scheduleBackfillSweep(db)
   }
-  // else: dropped -- same outcome as a down Ollama backend, the row stays NULL for backfill.
 }
+
+let embedActive = 0
+const embedQueue: Array<() => void> = []
 
 /** Fire-and-forget, same posture as src/db.ts's scheduleEmbedding for memories: a down/missing
  *  Ollama backend leaves the column NULL and backfillKgNodeEmbeddings picks the row up later --
- *  caught, not thrown, so a write never fails because the embedding backend is unavailable. */
+ *  caught, not thrown, so a write never fails because the embedding backend is unavailable.
+ *  Returns success/failure to runEmbedSlot so a failed attempt counts (N-3) the same way a
+ *  dropped one does. */
 function scheduleKgNodeEmbedding(db: Database.Database, id: string, text: string): void {
-  runEmbedSlot(async () => {
+  runEmbedSlot(db, async () => {
     try {
       // generateEmbedding itself can throw synchronously, not just reject -- e.g. a test double
       // (several kg capture-pipeline tests mock '../db.js' down to only getKanbanCard/
@@ -525,9 +588,11 @@ function scheduleKgNodeEmbedding(db: Database.Database, id: string, text: string
           EMBED_MODEL,
           id,
         )
+        return true
       }
+      return false
     } catch {
-      // see comment above
+      return false
     }
   })
 }
@@ -570,6 +635,13 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
   const snippet = capLength(piiRedactedSnippet ?? null, 12000)
   const newEmbedText = kgEmbedText(title, body, snippet, piiRedactedKeywords ?? null)
   let textChanged = true
+  let embeddingWasNull = true
+  // N-4 (CYBERSEC comment on 6d542dc9's GO, carried into card 7f3cbe92): undefined ("caller
+  // didn't touch it, preserve whatever is there") and explicit null ("caller wants it cleared")
+  // used to collapse into the same bound parameter (`input.embedding ?? null`), so an explicit
+  // clear request silently stopped clearing anything once F-1a's COALESCE landed. Distinguished
+  // here so the SQL below can tell them apart.
+  const embeddingProvided = input.embedding !== undefined ? 1 : 0
 
   const tx = db.transaction(() => {
     // F1 (eeb57483, WhiteHat GO condition on ee9ee17b): a re-import (e.g. importFromRelations
@@ -584,10 +656,21 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
     // F-1a (card 6d542dc9, CYBERSEC comment 24952): also fetch the fields that feed the embedding
     // text, so a re-import that changes nothing about the embedded text can skip recomputing it
     // (see textChanged below) -- avoids both a wasted Ollama call and the fan-out F-1b caps.
-    const existing = db.prepare('SELECT status, title, body, snippet, keywords FROM kg_nodes WHERE id = ?').get(
-      input.id,
-    ) as
-      | { status: string; title: string; body: string | null; snippet: string | null; keywords: string | null }
+    // N-2 (card 7f3cbe92): also fetch embedding itself, so an unchanged re-import over a row that
+    // is STILL NULL (a prior write's embed attempt was dropped/failed and nothing since has
+    // healed it) gets another attempt instead of waiting indefinitely for an unrelated text
+    // change or an operator-run backfill.
+    const existing = db
+      .prepare('SELECT status, title, body, snippet, keywords, embedding FROM kg_nodes WHERE id = ?')
+      .get(input.id) as
+      | {
+          status: string
+          title: string
+          body: string | null
+          snippet: string | null
+          keywords: string | null
+          embedding: Buffer | null
+        }
       | undefined
     const requestedStatus = input.status ?? 'active'
     const isProtected = existing?.status !== undefined && PROTECTED_STATUSES.has(existing.status)
@@ -601,7 +684,17 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
     textChanged =
       existing === undefined ||
       kgEmbedText(existing.title, existing.body, existing.snippet, existing.keywords) !== newEmbedText
+    embeddingWasNull = existing === undefined || existing.embedding === null
 
+    // N-1 (regression, card 7f3cbe92): F-1a's COALESCE kept the OLD embedding on a changed-text
+    // re-import whenever the caller omitted `embedding` (the normal case) -- so a failed/dropped
+    // re-embed left a STALE vector (matching the OLD text) in place instead of NULL, and
+    // backfillKgNodeEmbeddings (WHERE embedding IS NULL) never saw it to repair it. Search then
+    // silently scored the node against text it no longer has. Fixed with a three-way CASE: an
+    // explicitly caller-provided value (including an explicit null -- N-4) always wins; otherwise
+    // a text change clears to NULL synchronously (the row is genuinely un-embedded for its new
+    // text until the fire-and-forget recompute below succeeds, or the backfill sweep repairs it
+    // if it doesn't); otherwise the old value is kept untouched.
     db.prepare(
       `INSERT INTO kg_nodes
          (id, type, project, title, body, snippet, snippet_lang, keywords, status, source_ref,
@@ -612,8 +705,17 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
          title=excluded.title, body=excluded.body, snippet=excluded.snippet,
          snippet_lang=excluded.snippet_lang, keywords=excluded.keywords, status=excluded.status,
          source_ref=excluded.source_ref, gate_sha=excluded.gate_sha, extractor=excluded.extractor,
-         embedding=COALESCE(excluded.embedding, embedding),
-         embed_model=COALESCE(excluded.embed_model, embed_model), updated_at=excluded.updated_at`,
+         embedding=CASE
+           WHEN @embeddingProvided = 1 THEN @embedding
+           WHEN @textChanged = 1 THEN NULL
+           ELSE embedding
+         END,
+         embed_model=CASE
+           WHEN @embeddingProvided = 1 THEN @embed_model
+           WHEN @textChanged = 1 THEN NULL
+           ELSE embed_model
+         END,
+         updated_at=excluded.updated_at`,
     ).run({
       id: input.id,
       type: input.type,
@@ -629,6 +731,8 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
       extractor: input.extractor,
       embedding: input.embedding ?? null,
       embed_model: input.embed_model ?? null,
+      embeddingProvided,
+      textChanged: textChanged ? 1 : 0,
       created_at: now,
       updated_at: now,
     })
@@ -638,10 +742,12 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
   // and hybridKgSearch's semantic branch was dead graph-wide. Auto-embed every new/changed write
   // UNLESS the caller already supplied one (even explicitly null, e.g. a caller doing its own
   // backfill pass) -- same "don't duplicate what the caller already decided" reasoning as
-  // defaultCaptureEnabled's single read of the kill switch. F-1a: also skip when the embedded
-  // text itself did not change (a re-import), since the conflict SQL above now keeps the old
-  // embedding -- recomputing an identical embedding would just be a wasted Ollama call.
-  if (input.embedding === undefined && textChanged) {
+  // defaultCaptureEnabled's single read of the kill switch. F-1a: skip when the embedded text
+  // itself did not change (a re-import), since recomputing an identical embedding would just be
+  // a wasted Ollama call -- EXCEPT (N-2, card 7f3cbe92) when the row is still NULL regardless:
+  // an unchanged re-import over a node nothing has ever successfully embedded is a free chance to
+  // heal it, not a duplicate computation.
+  if (input.embedding === undefined && (textChanged || embeddingWasNull)) {
     scheduleKgNodeEmbedding(db, input.id, newEmbedText)
   }
 }

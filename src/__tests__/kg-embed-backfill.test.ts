@@ -14,6 +14,9 @@ import {
   backfillKgNodeEmbeddings,
   EMBED_CONCURRENCY_LIMIT,
   EMBED_QUEUE_BOUND,
+  getEmbedDropCount,
+  getEmbedFailedCount,
+  resetEmbedCountersForTest,
 } from '../kg/store.js'
 
 vi.mock('../db.js', () => ({
@@ -24,6 +27,7 @@ afterEach(async () => {
   const { generateEmbedding } = await import('../db.js')
   vi.mocked(generateEmbedding).mockImplementation(async (text: string) => (text ? [0.1, 0.2, 0.3] : null))
   vi.clearAllMocks()
+  resetEmbedCountersForTest()
 })
 
 describe('kgEmbedText', () => {
@@ -146,7 +150,7 @@ describe('upsertNode keeps a valid embedding across re-import (F-1a)', () => {
     db.close()
   })
 
-  it('recomputes the embedding (without a NULL gap) when the embed text changed', async () => {
+  it('recomputes the embedding when the embed text changed', async () => {
     const { generateEmbedding } = await import('../db.js')
     const db = new Database(':memory:')
     migrate(db)
@@ -161,11 +165,98 @@ describe('upsertNode keeps a valid embedding across re-import (F-1a)', () => {
       id: 'card:f1b', type: 'card', project: 'marveen', title: 'new title',
       source_ref: 'kanban_cards:f1b', extractor: 'manual',
     })
-    const immediatelyAfterConflict = db.prepare('SELECT embedding FROM kg_nodes WHERE id = ?').get('card:f1b') as { embedding: Buffer }
-    expect(immediatelyAfterConflict.embedding).not.toBeNull() // old value kept, not nulled, during the gap
     expect(generateEmbedding).toHaveBeenCalledWith('new title')
     await new Promise((r) => setTimeout(r, 0))
     const after = db.prepare('SELECT embedding FROM kg_nodes WHERE id = ?').get('card:f1b') as { embedding: Buffer }
+    expect(JSON.parse(after.embedding.toString())).toEqual([0.1, 0.2, 0.3])
+    db.close()
+  })
+
+  // N-1 (regression, card 7f3cbe92): F-1a's COALESCE kept the OLD, now-stale vector in place on a
+  // changed-text re-import when the recompute later fails/drops -- backfillKgNodeEmbeddings only
+  // selects WHERE embedding IS NULL, so a stale vector was never repaired and search silently kept
+  // scoring the node against text it no longer has. Fixed: a changed-text write clears to NULL
+  // SYNCHRONOUSLY, before the async recompute even starts, so a failure leaves the correct,
+  // backfill-visible NULL instead of a wrong-but-present vector.
+  it('N-1: clears to NULL immediately on a text change, not the stale old vector, so a failed recompute stays repairable', async () => {
+    const { generateEmbedding } = await import('../db.js')
+    const db = new Database(':memory:')
+    migrate(db)
+    upsertNode(db, {
+      id: 'card:n1', type: 'card', project: 'marveen', title: 'old title',
+      source_ref: 'kanban_cards:n1', extractor: 'manual',
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    const before = db.prepare('SELECT embedding FROM kg_nodes WHERE id = ?').get('card:n1') as { embedding: Buffer }
+    expect(before.embedding).not.toBeNull()
+
+    // Backend down for the re-embed attempt on the changed text.
+    vi.mocked(generateEmbedding).mockClear()
+    vi.mocked(generateEmbedding).mockRejectedValueOnce(new Error('ollama down'))
+
+    upsertNode(db, {
+      id: 'card:n1', type: 'card', project: 'marveen', title: 'new title',
+      source_ref: 'kanban_cards:n1', extractor: 'manual',
+    })
+    const immediatelyAfterConflict = db.prepare('SELECT embedding FROM kg_nodes WHERE id = ?').get('card:n1') as { embedding: Buffer | null }
+    expect(immediatelyAfterConflict.embedding).toBeNull()
+
+    await new Promise((r) => setTimeout(r, 0))
+    const afterFailedRecompute = db.prepare('SELECT embedding FROM kg_nodes WHERE id = ?').get('card:n1') as { embedding: Buffer | null }
+    expect(afterFailedRecompute.embedding).toBeNull() // still NULL, correctly repairable by backfill -- never the stale old vector
+    db.close()
+  })
+
+  // N-4 (info finding on 6d542dc9's GO, carried into card 7f3cbe92): COALESCE(excluded.embedding,
+  // embedding) made an explicit `embedding: null` from a caller indistinguishable from an omitted
+  // field, so a deliberate clear request silently stopped clearing anything. Restored by telling
+  // "caller provided a value" (including null) apart from "caller didn't touch it".
+  it('N-4: an explicit embedding:null from the caller clears an existing vector', async () => {
+    const db = new Database(':memory:')
+    migrate(db)
+    upsertNode(db, {
+      id: 'card:n4', type: 'card', project: 'marveen', title: 'title',
+      source_ref: 'kanban_cards:n4', extractor: 'manual',
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    const before = db.prepare('SELECT embedding FROM kg_nodes WHERE id = ?').get('card:n4') as { embedding: Buffer }
+    expect(before.embedding).not.toBeNull()
+
+    upsertNode(db, {
+      id: 'card:n4', type: 'card', project: 'marveen', title: 'title',
+      source_ref: 'kanban_cards:n4', extractor: 'manual', embedding: null,
+    })
+    const after = db.prepare('SELECT embedding, embed_model FROM kg_nodes WHERE id = ?').get('card:n4') as { embedding: Buffer | null; embed_model: string | null }
+    expect(after.embedding).toBeNull()
+    expect(after.embed_model).toBeNull()
+    db.close()
+  })
+
+  // N-2 (card 7f3cbe92): an unchanged re-import used to skip scheduling an embed attempt entirely
+  // (textChanged === false), so a row left NULL by an earlier dropped/failed attempt stayed NULL
+  // forever unless its text happened to change or an operator ran a manual backfill. Any write
+  // touching the node is now a free chance to heal it when it is still NULL.
+  it('N-2: an unchanged re-import over a still-NULL row gets another embed attempt', async () => {
+    const { generateEmbedding } = await import('../db.js')
+    const db = new Database(':memory:')
+    migrate(db)
+    vi.mocked(generateEmbedding).mockRejectedValueOnce(new Error('ollama down'))
+    upsertNode(db, {
+      id: 'card:n2', type: 'card', project: 'marveen', title: 'title',
+      source_ref: 'kanban_cards:n2', extractor: 'manual',
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    const afterFirstFailure = db.prepare('SELECT embedding FROM kg_nodes WHERE id = ?').get('card:n2') as { embedding: Buffer | null }
+    expect(afterFirstFailure.embedding).toBeNull()
+
+    vi.mocked(generateEmbedding).mockClear()
+    upsertNode(db, {
+      id: 'card:n2', type: 'card', project: 'marveen', title: 'title',
+      source_ref: 'kanban_cards:n2', extractor: 'manual',
+    })
+    expect(generateEmbedding).toHaveBeenCalledWith('title')
+    await new Promise((r) => setTimeout(r, 0))
+    const after = db.prepare('SELECT embedding FROM kg_nodes WHERE id = ?').get('card:n2') as { embedding: Buffer }
     expect(JSON.parse(after.embedding.toString())).toEqual([0.1, 0.2, 0.3])
     db.close()
   })
@@ -250,5 +341,76 @@ describe('upsertNode embedding fan-out is capped (F-1b)', () => {
     expect(count.c).toBe(total) // every node write succeeded regardless of embedding fan-out
     expect(generateEmbedding).toHaveBeenCalledTimes(EMBED_CONCURRENCY_LIMIT + EMBED_QUEUE_BOUND)
     db.close()
+  })
+})
+
+// N-3 HARD CONDITION (card 7f3cbe92, CYBERSEC comment on 6d542dc9's GO): a drop beyond the
+// concurrency+queue bound used to be completely silent (no log, no counter), and
+// backfillKgNodeEmbeddings had no caller at all -- so a bulk write past the bound (900 new nodes
+// in one tick -> 54 embedded, 846 dropped) left most rows permanently NULL. Fixed: every drop is
+// counted + logged, and a drop/failure schedules a debounced self-heal sweep that calls
+// backfillKgNodeEmbeddings -- no importer needs to know this exists.
+describe('N-3: drops/failures are counted, logged, and self-heal via a backfill sweep (card 7f3cbe92)', () => {
+  it('counts and logs a drop beyond the concurrency+queue bound', async () => {
+    const { generateEmbedding } = await import('../db.js')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.mocked(generateEmbedding).mockImplementation(() => new Promise(() => {})) // never resolves, nothing frees a slot
+    const db = new Database(':memory:')
+    migrate(db)
+    const total = EMBED_CONCURRENCY_LIMIT + EMBED_QUEUE_BOUND + 3
+    for (let i = 0; i < total; i++) {
+      upsertNode(db, {
+        id: `card:drop${i}`, type: 'card', project: 'marveen', title: `t${i}`,
+        source_ref: `kanban_cards:drop${i}`, extractor: 'manual',
+      })
+    }
+    expect(getEmbedDropCount()).toBe(3)
+    expect(warnSpy).toHaveBeenCalled()
+    warnSpy.mockRestore()
+    db.close()
+  })
+
+  it('a backend-down failure (not just a drop) is counted too and also triggers the sweep', async () => {
+    const { generateEmbedding } = await import('../db.js')
+    vi.mocked(generateEmbedding).mockRejectedValueOnce(new Error('ollama down'))
+    const db = new Database(':memory:')
+    migrate(db)
+    upsertNode(db, {
+      id: 'card:failcount', type: 'card', project: 'marveen', title: 'title',
+      source_ref: 'kanban_cards:failcount', extractor: 'manual',
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(getEmbedFailedCount()).toBe(1)
+    db.close()
+  })
+
+  it('900 new nodes in one tick: drops are counted exactly (54 embedded, 846 dropped) and the debounced sweep heals coverage to >=95%', async () => {
+    vi.useFakeTimers()
+    try {
+      const db = new Database(':memory:')
+      migrate(db)
+      const total = 900
+      for (let i = 0; i < total; i++) {
+        upsertNode(db, {
+          id: `card:bulk${i}`, type: 'card', project: 'marveen', title: `t${i}`,
+          source_ref: `kanban_cards:bulk${i}`, extractor: 'manual',
+        })
+      }
+      const expectedAccepted = EMBED_CONCURRENCY_LIMIT + EMBED_QUEUE_BOUND
+      expect(getEmbedDropCount()).toBe(total - expectedAccepted)
+
+      // Let the accepted 54 finish, then let the debounced sweep fire and drain the 846-row
+      // backlog -- backfillKgNodeEmbeddings' own 100ms inter-row delay is a fake timer here, so
+      // this costs no real wall-clock time.
+      await vi.advanceTimersByTimeAsync(2000 + total * 100 + 5000)
+
+      const coverage = db
+        .prepare('SELECT COUNT(*) total, SUM(embedding IS NOT NULL) embedded FROM kg_nodes')
+        .get() as { total: number; embedded: number }
+      expect(coverage.embedded / coverage.total).toBeGreaterThanOrEqual(0.95)
+      db.close()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

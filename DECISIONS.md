@@ -33796,3 +33796,46 @@ disclosure).
 **Nincs benne:** élő hook (`/home/neon/marveen/scripts/hooks/egress-gate.mjs`) változatlan, update.sh Peti jóváhagyása kell (D1).
 
 **Ki döntött:** a követelmények WhiteHat 25728-ból jönnek; fullstack (DevO) implementálta. Gate: a kártya szövege szerint RedHat vagy WhiteHat2 (nem WhiteHat, mert a WhiteHat-követelményeket maga a WhiteHat sorolta fel), MikroB/gate-pool dönt melyik.
+
+## 2026-11-26 -- KG embeddings: silent drops on bulk import + stale vectors on failed re-embed (kártya 7f3cbe92, follow-up of 6d542dc9)
+
+Correction to the entry above: "the row stays NULL for `backfillKgNodeEmbeddings` to pick up
+later" was true only for a brand-new node. For an EXISTING node whose text changed, F-1a's
+`COALESCE(excluded.embedding, embedding)` kept the OLD, now-stale vector in place whenever the
+recompute failed or was dropped -- never NULL, so `backfillKgNodeEmbeddings` (which only selects
+`WHERE embedding IS NULL`) never saw it, and search silently kept scoring the node against text it
+no longer has. CYBERSEC's N-3 hard condition on 6d542dc9's GO: 900 new nodes in one tick ->
+`EMBED_CONCURRENCY_LIMIT`(4) + `EMBED_QUEUE_BOUND`(50) = 54 embedded, 846 dropped completely
+silently (no log, no counter), and `backfillKgNodeEmbeddings` had no caller at all, so none of the
+846 was ever repaired.
+
+Fixed in `src/kg/store.ts`:
+- N-1: a changed-text write now clears `embedding`/`embed_model` to NULL SYNCHRONOUSLY (a 3-way
+  SQL CASE: caller-provided value wins, else text-changed clears to NULL, else keep the old
+  value) -- a failed/dropped recompute now correctly leaves the backfill-visible NULL the original
+  comment claimed, instead of a wrong-but-present vector.
+- N-4 (info, same GO): `input.embedding === undefined` (caller didn't touch it) and an explicit
+  `embedding: null` (caller wants it cleared) used to bind to the same SQL parameter and so become
+  indistinguishable; distinguished via an `embeddingProvided` flag so an explicit clear request
+  clears again.
+- N-2: an unchanged re-import over a node whose embedding is STILL NULL (an earlier attempt was
+  dropped/failed and nothing since repaired it) now gets another embed attempt, not just a
+  text-changed one.
+- N-3: every drop and every in-flight embed failure is now counted (`getEmbedDropCount`/
+  `getEmbedFailedCount`) and a drop is logged; either one schedules a debounced (2s) call to
+  `backfillKgNodeEmbeddings` -- giving it a caller that lives in the one shared write path
+  (`upsertNode`) every importer and future node type (including 01b10349's finding/decision
+  ingestion, not yet built) already goes through, with no change needed to any importer.
+
+Measured: 6 new tests in `kg-embed-backfill.test.ts` (N-1 NULL-not-stale, N-4 explicit clear, N-2
+heal-on-touch, N-3 drop count+log, N-3 failure count, and the 900-node acceptance case) plus 1
+existing test rewritten (it had pinned the N-1 bug by asserting the stale vector was "kept, not
+nulled, during the gap" -- that assertion is the regression itself). 900 simulated new nodes in one
+tick: 846 dropped (counted exactly), debounced sweep heals coverage to >=95% (fake-timer driven,
+no real wall-clock cost). Full kg suite 28 files/423 tests green, `npx tsc --noEmit -p .` clean.
+
+Ki döntött: cybersec (hard condition N-3, info N-4, regression N-1/N-2 found on 6d542dc9's delta
+gate); fullstack (applied the fix).
+Végrehajtó: fullstack.
+Hivatkozás: kártya 7f3cbe92 (child of 5ecf6133), 6d542dc9 (the fix this corrects/extends),
+01b10349 (the upcoming bulk ingestion this must land before).
