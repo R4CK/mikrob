@@ -34075,3 +34075,112 @@ Ki döntött: cybered/RedHat (N1 lelet, f3dd0c65 delta-gate); fullstack (impleme
 Végrehajtó: fullstack.
 Hivatkozás: kártya e94fea8e; forrás f3dd0c65 delta-gate komment 20564; `eslint.config.mjs`,
 `store/lint-baseline.json`.
+
+## 2026-11-26 -- Kártya cd872e72: classify_task_state() absent-<Enabled>=enabled + heredoc backtick fix (d97659cb live install blokkolója)
+
+**Kontextus:** d97659cb élő telepítése (14:53, backend3 üzenet 25088) az installer saját
+`classify_task_state()`-je miatt akadt el: a live `MikroB-WSL-Watchdog` feladat XML-je nem
+tartalmaz `<Enabled>` taget egyáltalán (a Task Scheduler séma-alapértéke true, és Windows
+kihagyja az elemet, ha sosem lett átváltva), a klasszifikátor pedig ezt "unknown"-ként
+olvasta és fail-closed módon kihagyta a `/Create`-et -- így az 1 perces tick sosem jutott el
+az élő feladatra. Ugyanez a leolvasás történt 3f6bb903-nál is (11:28).
+
+**Döntés 1 (classify_task_state):** hiányzó `<Enabled>` + egyébként jólformázott XML (van
+lezárt `<Settings>` blokk egy lezárt gyökér `<Task>` elemben) = "ready". `<Enabled>false</Enabled>`
+továbbra is "disabled" (58badae1 H1 változatlan: sosem re-enable). Csonkolt/hiányos XML
+(Settings vagy Task nincs lezárva) marad "unknown" -- ez a különbség a "a tag sosem lett
+kiírva" és a "a lekérdezés félbeszakadt" között. `<Enabled>` taggel, de nem true/false
+értékkel (pl. `maybe`) is "unknown" marad, sosem defaultol ready-re. Nincs manuális bypass
+flag (MikroB döntés, msg 25089, option 2 elutasítva).
+
+**Döntés 2 (heredoc backtick):** `install-wsl-watchdog.sh` ~289/299/306 sorában a PS1EOF
+heredoc (idézetlen delimiter, tehát bash backtick/`$()` helyettesítést végez a teste
+felett) három, backtick-kel idézett doksi-töredéket tartalmazott a wsl-watchdog-holder-ensure.sh
+fejkommentjéből átvett szöveg maradványaként (`` `need=<n>` ``, `` `-match` ``) -- ezek
+parancs-helyettesítésként futottak le render közben, sikertelenül, és a generált PS1
+kommentsorából szótlanul kiesett a szöveg (hibaüzenet stderr-re, de a `/Create`-et nem
+állította meg). Fix: a három backtick escapelve (`\``), ugyanúgy ahogy a heredoc már minden
+`$` jelet escapel a literál PS1-kimenethez.
+
+**MELLÉKLELET (teszt-hiba, nem production-kód):** a `install-wsl-watchdog.selftest.sh`-ban már
+létező "heredoc-safety: zero stderr" őr VAKON ZÖLDET adott erre a pontos hibára -- a
+`run_isolated()` segédfüggvény saját `2>&1`-je már a FÜGGVÉNYEN belül összeolvasztotta a
+telepítő valódi stderr-jét a stdout-jába, mielőtt a hívó oldali `2>"$DRYRUN_STDERR"` bármit
+látott volna; a hívó csak `run_isolated` saját (mindig üres) stderr-jét kapta. Mérve: a
+hibás kóddal 686 bájt valódi stderr keletkezett, a teszt mégis "ok"-ot írt. Új,
+`run_isolated_stderr_only()` függvény (nem olvasztja össze a két streamet) + három
+`check_line` pin a pontos kommentsorokra (érték-alapú ellenőrzés, nem csak a "nincs
+stderr" proxy) zárja ezt.
+
+**Ellenőrzés (fa/sha: card/cd872e72 worktree, új sha lentebb a kommiton):**
+`scripts/install-wsl-watchdog.selftest.sh` -- PASS, 132 ok, 0 FAIL (8 új eset: 3 comment-line
+pin + 4 classify_task_state eset + a most már valódi heredoc-safety stderr check). TDD:
+mind az 5 FAIL-t megnéztem (RED) a fix előtt. Mutáció-teszt (kézzel, `sha256sum`-mal
+visszaellenőrzött visszaállítás minden kör után): (1) a well-formedness-ellenőrzés
+elhagyása (bármilyen hiányzó-Enabled -> ready, jólformázottság nélkül) 5 tesztet buktat
+RED-re, köztük 3 MEGLÉVŐ H1'-classify esetet is; (2) a teljes új ready-ág eltávolítása
+pontosan 1 tesztet buktat (a saját új tesztemet, nem vakon zöld); (3) egy backtick
+escape-jének visszavonása buktatja a heredoc-safety stderr check-et ÉS a hozzá tartozó
+exact-line pint. `npx tsc --noEmit` nem releváns (tisztán bash-fájlok, nincs .ts
+változás). Scoped vitest a szemafor-szkripten át
+(`src/__tests__/wsl-watchdog-disable-flag-early-exit.test.ts`, ez a selftestet futtatja
+CI-ben) -- lásd a REVIEW-ban a friss eredményt.
+
+**Mi maradt ki:** d97659cb élő telepítés/kill-teszt továbbra is várja MikroB külön go-ját
+(msg 25089: "after cd872e72 lands I give a separate go to repeat the live step from the
+start").
+
+Ki döntött: MikroB (kártyanyitás + a megoldás iránya, üzenet 25089, option 1). backend3
+(implementáció, teszt, a vakon-zöld teszt-hiba felfedezése és javítása).
+Hivatkozás: kártya cd872e72 (szülő b736f51a); d97659cb (blokkolt kártya, üzenet 25088);
+3f6bb903 (korábbi, ugyanilyen leolvasás, 11:28); `scripts/install-wsl-watchdog.sh`,
+`scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 -- Kártya cd872e72 2. kör: classify_task_state() szóhatár-rés (L-1), négy szerkezeti feltétel egyenkénti pin-je (L-3), run_isolated_stderr_only() kontroll-pin (L-4) (CYBERSEC GO 39190, MikroB üzenet 25151)
+
+Az első kör ("absent" = a `<Enabled>` literál szubsztring hiánya) szűk volt: egy eltérő
+írásmódú Enabled-tag (szóköz a záró `>` előtt, önmagát-záró `<Enabled/>`, névtér-előtagolt,
+attribútumot hordozó) NEM tartalmazza a `<Enabled>` literál szubsztringet, tehát átcsúszott
+volna a "ready" ágra -- pontosan az az irány, amit az 58badae1 H1 tilt (egy letiltott task
+újra-engedélyezése). CYBERSEC (GO 39190, L-1 lelet) és MikroB (üzenet 25151, MUST-FIX)
+mérte/döntötte.
+
+**Döntés 1 (L-1 javítás):** az "absent" teszt mostantól a sima "Enabled" szó (kis-nagybetű
+független, szögletes zárójel NÉLKÜL) teljes hiányát nézi a kimenetben, nem a `<Enabled>`
+literált. KÖVETKEZTETÉS: ez a leggyengébb lehetséges feltétel, ami minden eddig ismert
+írásmódot elkap (szóközös, önmagát-záró, névtér-előtagolt, attribútumos), anélkül hogy
+felsorolná őket (guards-that-pin-behaviour 4. pont: inverzió, ne enumeráció).
+
+**Döntés 2 (L-3 pin-gap zárás):** 4 új fixture, mindegyik PONTOSAN egy darabot hagy ki a
+4-tagú ÉS-láncból (`<Settings>`, `</Settings>`, `<Task`, `</Task>`), a másik hármat
+érvényesen tartva -- az 1. köri csonkolt fixture-ök MINDKÉT zárót egyszerre hagyták ki, így
+egy láncszem kivétele a másik maszkolása miatt észrevétlen maradt (CYBERSEC mutáció K4-K7
+mind túlélte). Egy 5. fixture az `<Enabled>true</Enabled>` ág rc-kapuját pinneli
+(rc!=0 + true szöveg -> unknown, K11).
+
+**Döntés 3 (L-4 kontroll-pin):** a selftest-fájl `run_isolated_stderr_only()` segédje maga
+sosem volt tesztelve arra, hogy TÉNYLEG továbbadja a valós stderr-t -- csak arra, hogy egy
+tiszta render esetén 0 bájtot ad. Egy regresszió (visszaállás a vakon-zöld `2>&1`-es
+`run_isolated()` alakra) a nulla-stderr check-et is simán zöldre vinné, mert MINDKÉT fél
+(BIN és a saját stdout) nullára olvasna. Új kontroll: egy stub BIN, ami garantáltan ír
+stderr-re, és a teszt elvárja, hogy a capture NEM üres.
+
+MEGFIGYELÉS (TDD, mind a 3 döntésre): a 4 új L-1 fixture a javítás ELŐTT pirosra futott
+(a régi `<Enabled>` literál teszt nem fogta meg őket), az L-3/L-4 fixture-ök már a javítás
+előtt is zöldek voltak (meglévő kódot pinnelnek, nem új ágat). Javítás után mind a 142 teszt
+zöld (0 FAIL). Mutáció: az egyetlen megváltozott sor (`'Enabled'` vissza `'<Enabled>'`-re)
+pontosan a 4 új L-1 esetet buktatja, semmi mást -- nem kaszkád, a javítás terhelő és
+nem-vákuum. A mutált fájl és az eredeti sha256 ellenőrzéssel visszaállítva byte-azonosra.
+
+**Mi maradt ki:** CYBERSEC L-2 (a "jól formázott" teszt négy független substring-grep,
+nem valódi struktúra-elemzés) SZÁNDÉKOSAN nyitva -- MikroB üzenete ezt OPCIONÁLISNAK
+jelölte ("csak ha kicsi marad"), és egy valódi XML-parse-ra váltás ehhez a bash-only
+scripthez aránytalan komplexitást adna egy LOW kockázatú résért (a schtasks valós kimenete
+nem produkál ilyen torz szöveget). d97659cb élő telepítés/kill-teszt továbbra is várja
+MikroB külön go-ját.
+
+Ki döntött: MikroB (F-1/F-3/L-4 MUST-FIX kijelölése, üzenet 25151; L-2 opcionálisként
+hagyása). CYBERSEC (39190, a 4 lelet forrása). backend3 (implementáció, teszt).
+Hivatkozás: kártya cd872e72; CYBERSEC GO 39190; CYBERED GO 39176 (F-1/F-3 eredeti
+felvetője); QA PASS 39182; `scripts/install-wsl-watchdog.sh`,
+`scripts/install-wsl-watchdog.selftest.sh`.
