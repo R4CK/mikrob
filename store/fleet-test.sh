@@ -170,8 +170,6 @@ fleet_test_notify_finish() { # $1=caller_agent $2=status $3=run_log_path
   local verdict="PASS"; [ "$st" -eq 0 ] || verdict="FAIL"
   local summary
   summary="$(fleet_test_safe_summary "$dest_log")"
-  local hdr; hdr="$(mktemp)"; chmod 600 "$hdr"
-  printf 'Authorization: Bearer %s\n' "$(cat "$tok")" > "$hdr"
   # "from": caller, not "system" -- the dashboard rejects "system" as a sender over this
   # Bearer-token HTTP API with 403 "from is reserved for in-process system senders" (that value
   # is reserved for writers inside the dashboard process itself; curl is never one). A self
@@ -192,9 +190,13 @@ if len(content) > BODY_CAP:
     content = content[:BODY_CAP] + "... [truncated, see log]"
 print(json.dumps({"from": sys.argv[1], "to": sys.argv[1], "content": content}))
 ' "$caller" "$verdict" "$st" "$summary" "$dest_log" \
-    | curl -fsS -m 15 -o /dev/null -H "@$hdr" -H 'Content-Type: application/json' \
+    | curl -fsS -m 15 -o /dev/null \
+        -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$tok")") -H 'Content-Type: application/json' \
         -X POST "http://127.0.0.1:${WEB_PORT:-3420}/api/messages" --data-binary @- 2>/dev/null
-  rm -f "$hdr"
+  # Header via process substitution, not a mktemp file (card 0aba66b8): stdin is already the
+  # python3|curl pipe carrying the message body (--data-binary @-), so the stdin header pattern
+  # used elsewhere for this fix can't apply here -- but <(...) opens its own pipe fd (/dev/fd/N),
+  # never a disk path, so there is still nothing a killed script could leave behind on disk.
 }
 
 # PRIORITY LANE FOR LANDS (card b7d8ecc4). marveen-land.sh holds its own exclusive develop-push

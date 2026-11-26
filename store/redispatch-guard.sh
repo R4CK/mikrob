@@ -69,11 +69,10 @@ MODE="${1:-}"
 # ---- helpers ---------------------------------------------------------------------------
 now_ts() { date +%s; }
 
-_curl_get() { # $1 = path ; token via 0600 headerfile, never argv
-  local hf; hf="$(mktemp)"; chmod 600 "$hf"
-  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hf"
-  curl -s --max-time 12 -H @"$hf" "${DASH}$1" 2>/dev/null
-  rm -f "$hf" 2>/dev/null || true
+_curl_get() { # $1 = path ; token via stdin header, never argv or disk (card 0aba66b8: a header
+              # FILE still leaked on disk if the script was killed before its own rm -f ran)
+  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" \
+    | curl -s --max-time 12 -H @- "${DASH}$1" 2>/dev/null
 }
 
 # --- Incident logging (card 878cd292, parent f92671df) ------------------------------------------
@@ -96,10 +95,7 @@ _curl_get() { # $1 = path ; token via 0600 headerfile, never argv
 #      a localhost POST and well short of a heartbeat window.
 _record_incident() { # $1 = cardId, $2 = agent, $3 = verdict, $4 = stalled_ms
   [ "${REDISPATCH_GUARD_LOG:-1}" = "1" ] || return 0
-  local hf body
-  hf="$(mktemp)" || return 0
-  chmod 600 "$hf" 2>/dev/null || true
-  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hf"
+  local body
   # The verdict goes VERBATIM: the server classifies it (three of the reasons carry a parenthesised
   # payload, and the set grew from nine to ten in a single afternoon). Nothing here decides what a
   # verdict MEANS -- a second classifier in shell would be a second source of truth to drift.
@@ -122,9 +118,11 @@ print(json.dumps({
   "stalledMs": int(sys.argv[5]),
 }))
 ' "$1" "$2" "$3" "$(now_ts)" "${4:-0}")" || return 0
-  curl -s --max-time 3 -X POST -H @"$hf" -H 'Content-Type: application/json' \
+  # Token via stdin header, never argv or disk (card 0aba66b8: a header FILE still leaked on
+  # disk if the script was killed before its own rm -f ran).
+  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" \
+    | curl -s --max-time 3 -X POST -H @- -H 'Content-Type: application/json' \
     -d "$body" "${DASH}/api/stuck-incidents" >/dev/null 2>&1 || true
-  rm -f "$hf" 2>/dev/null || true
   return 0
 }
 
@@ -138,10 +136,7 @@ print(json.dumps({
 # before this is called), and a short --max-time so a hung write cannot cost a whole D-section pass.
 _record_sibling_handover() { # $1=cardId $2=oldAgent $3=newAgent $4=stalled_ms
   [ "${REDISPATCH_GUARD_LOG:-1}" = "1" ] || return 0
-  local hf body
-  hf="$(mktemp)" || return 0
-  chmod 600 "$hf" 2>/dev/null || true
-  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hf"
+  local body
   # json.dumps, not a hand-built printf template -- same Cybered finding as _record_incident above,
   # and the same fix (oldAgent/newAgent are just as attacker-reachable as _record_incident's AGENT:
   # both are kanban assignee values, settable by any authenticated agent via PUT).
@@ -155,9 +150,11 @@ print(json.dumps({
   "stalledMs": int(sys.argv[5]),
 }))
 ' "$1" "$2" "$3" "$(now_ts)" "${4:-0}")" || return 0
-  curl -s --max-time 3 -X POST -H @"$hf" -H 'Content-Type: application/json' \
+  # Token via stdin header, never argv or disk (card 0aba66b8: a header FILE still leaked on
+  # disk if the script was killed before its own rm -f ran).
+  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" \
+    | curl -s --max-time 3 -X POST -H @- -H 'Content-Type: application/json' \
     -d "$body" "${DASH}/api/stuck-incidents/sibling-handover" >/dev/null 2>&1 || true
-  rm -f "$hf" 2>/dev/null || true
   return 0
 }
 

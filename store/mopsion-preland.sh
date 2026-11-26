@@ -138,11 +138,11 @@ pending_all() {
     echo "FAILED|-|-|-|cannot read $TOKEN_FILE, board unreadable" >&2
     return 1
   fi
-  local hdr
-  hdr="$(mktemp)"
-  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$hdr"
+  # Token via stdin header, never disk (card 0aba66b8: a header FILE still leaked on disk if
+  # the script was killed before its own rm -f ran).
   local cards_json
-  cards_json="$(curl -sS -m 20 -H @"$hdr" "$API/api/kanban?status=waiting" 2>/dev/null)"
+  cards_json="$(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" \
+    | curl -sS -m 20 -H @- "$API/api/kanban?status=waiting" 2>/dev/null)"
   local ids
   ids="$(printf '%s' "$cards_json" | python3 -c '
 import json, sys
@@ -161,7 +161,8 @@ for c in d:
   local card
   for card in $ids; do
     local comments_json verdict
-    comments_json="$(curl -sS -m 20 -H @"$hdr" "$API/api/kanban/$card/comments" 2>/dev/null)"
+    comments_json="$(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" \
+      | curl -sS -m 20 -H @- "$API/api/kanban/$card/comments" 2>/dev/null)"
     verdict="$(printf '%s' "$comments_json" | python3 "$HERE/gate-closure-check.py" 2>/dev/null)"
     case "$verdict" in
       AGREE\|*)
@@ -172,7 +173,6 @@ for c in d:
       *) ;; # not AGREE (or no verdict, or DISAGREE/STALE/etc.) -- not this script's job to decide
     esac
   done
-  rm -f "$hdr"
 }
 
 case "${1:-}" in

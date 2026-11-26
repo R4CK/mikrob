@@ -125,12 +125,12 @@ if [ ! -f "$DASHBOARD_TOKEN_FILE" ]; then
        "'$kartya' against its own content, refusing a declared-safe call fail-closed" >&2
   exit 3
 fi
-hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
-printf 'Authorization: Bearer %s\n' "$(cat "$DASHBOARD_TOKEN_FILE")" > "$hdr_file"
+# Token via stdin header, never argv or disk (card 0aba66b8: a header FILE still leaked on
+# disk if the script was killed before its own rm -f ran).
 resp_file="$(mktemp)"
-http_code="$(curl -s -m 10 -H @"$hdr_file" -o "$resp_file" -w '%{http_code}' \
+http_code="$(printf 'Authorization: Bearer %s\n' "$(cat "$DASHBOARD_TOKEN_FILE")" \
+             | curl -s -m 10 -H @- -o "$resp_file" -w '%{http_code}' \
              "$DASHBOARD_URL/api/kanban/$kartya" 2>/dev/null || true)"
-rm -f "$hdr_file"
 card_json="$(cat "$resp_file" 2>/dev/null || true)"
 rm -f "$resp_file"
 # N3 (card 09117e0a, RedHat NO-GO komment 18498): a dashboard 404/401/500 valasza is ERVENYES
@@ -250,14 +250,14 @@ call_status="ok"
 if [ -f "$DASHBOARD_TOKEN_FILE" ]; then
   content="Gemini-hivas (agy): modell=$MODEL hivo=$hivo kartya=$kartya feladattipus=$feladattipus status=$call_status ido=${duration_s}s ora-keret=$((sent_count + 1))/$HOURLY_LIMIT"
   payload=$(python3 -I -c 'import json,sys; print(json.dumps({"agent_id": sys.argv[1], "content": sys.argv[2]}))' "$hivo" "$content")
-  # Token goes through a 0600 temp header file, never argv (a Bearer token in argv is readable
-  # from /proc/<pid>/cmdline by any local process -- same pattern as offload-dispatch.sh).
-  hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
-  printf 'Authorization: Bearer %s\n' "$(cat "$DASHBOARD_TOKEN_FILE")" > "$hdr_file"
-  curl -s -o /dev/null -X POST "$DASHBOARD_URL/api/daily-log" \
-    -H @"$hdr_file" -H 'Content-Type: application/json' \
+  # Token goes through a stdin header, never argv (a Bearer token in argv is readable
+  # from /proc/<pid>/cmdline by any local process -- same pattern as offload-dispatch.sh)
+  # and never disk either (card 0aba66b8: a header FILE still leaked on disk if the script
+  # was killed before its own rm -f ran).
+  printf 'Authorization: Bearer %s\n' "$(cat "$DASHBOARD_TOKEN_FILE")" \
+    | curl -s -o /dev/null -X POST "$DASHBOARD_URL/api/daily-log" \
+    -H @- -H 'Content-Type: application/json' \
     --data-binary "$payload" || true
-  rm -f "$hdr_file"
 fi
 
 echo "$out"

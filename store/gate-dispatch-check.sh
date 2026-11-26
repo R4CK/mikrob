@@ -112,13 +112,12 @@ STORE="$(cd "$(dirname "$0")" && pwd)"
 DASH="${DASH:-http://localhost:3420}"
 TOKEN_FILE="${STORE}/.dashboard-token"
 
-# SECURITY (gate-ops-scripts-token-in-argv): the bearer token goes to curl through a 0600
-# header file, never on the command line where `ps` would show it.
+# SECURITY (gate-ops-scripts-token-in-argv): the bearer token goes to curl through stdin,
+# never on the command line where `ps` would show it, and never on disk either (card 0aba66b8:
+# a 0600 header FILE still leaked on disk if the script was killed before its own rm -f ran).
 _curl_get() { # $1 = path
-  local hf; hf="$(mktemp)"; chmod 600 "$hf"
-  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hf"
-  curl -s --max-time 12 -H @"$hf" "${DASH}$1" 2>/dev/null
-  rm -f "$hf" 2>/dev/null || true
+  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" \
+    | curl -s --max-time 12 -H @- "${DASH}$1" 2>/dev/null
 }
 
 # Decide from a comments JSON array on stdin. Kept as its own function so the selftest can

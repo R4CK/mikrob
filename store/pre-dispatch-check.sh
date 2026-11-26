@@ -111,15 +111,14 @@ try_oauth_usage() {
   [ -z "$tok" ] && return 1
   # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): this is a DIFFERENT credential
   # from the dashboard token (the Anthropic OAuth usage token), but the same leak class -- any secret
-  # in curl argv is readable via /proc/<pid>/cmdline. Private 0600 header file, removed right after use
-  # (function-scoped: this runs once per invocation, well before the script's own exit).
-  local hdr_file body
-  hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
-  printf 'Authorization: Bearer %s\n' "$tok" > "$hdr_file"
-  body="$(curl -s --max-time 8 -H @"$hdr_file" \
+  # in curl argv is readable via /proc/<pid>/cmdline. Token via stdin header, never argv or disk
+  # (card 0aba66b8: a header FILE still leaked on disk if the script was killed before its own
+  # rm -f ran).
+  local body
+  body="$(printf 'Authorization: Bearer %s\n' "$tok" \
+    | curl -s --max-time 8 -H @- \
     -H "anthropic-beta: oauth-2025-04-20" \
     https://api.anthropic.com/api/oauth/usage 2>/dev/null || true)"
-  rm -f "$hdr_file"
   [ -z "$body" ] && return 1
   # Best-effort parse: look for a weekly "all models" utilization field. Schema
   # is undocumented, so we try a few likely keys and bail quietly on mismatch.

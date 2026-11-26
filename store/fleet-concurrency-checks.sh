@@ -34,11 +34,10 @@ TOKEN_FILE="${FLEET_CONCURRENCY_TOKEN_FILE:-$ROOT/store/.dashboard-token}"
 
 MODE="${1:-}"; shift || true
 
-_curl_get() { # $1 = path ; token via 0600 headerfile, never argv (same pattern as redispatch-guard.sh)
-  local hf; hf="$(mktemp)"; chmod 600 "$hf"
-  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hf"
-  curl -s --max-time 12 -H @"$hf" "${DASH}$1" 2>/dev/null
-  rm -f "$hf" 2>/dev/null || true
+_curl_get() { # $1 = path ; token via stdin header, never argv or disk (fleet-standard pattern,
+              # card 0aba66b8: a killed script can no longer leave a token tempfile behind)
+  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" \
+    | curl -s --max-time 12 -H @- "${DASH}$1" 2>/dev/null
 }
 
 _hash() { shasum -a 256 | awk '{print $1}'; }
