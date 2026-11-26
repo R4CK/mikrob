@@ -33912,3 +33912,36 @@ Ki döntött: MikroB (a fix-kör kötelező pontjai, msg 25049); backend3 (imple
 Hivatkozás: kártya d97659cb; QA PASS 39117, CYBERED GO 39119, CYBERSEC GO 39120 (H-1 feltétel,
 F-1/F-2/L-2..L-5 leletek); `scripts/wsl-watchdog-holder-ensure.sh`, `scripts/install-wsl-watchdog.sh`,
 `scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 -- CYBERED NO-GO 39256 closed: dangling/ancestor-loop symlinks + 3 escape routes (card af3cd669)
+
+CYBERED NO-GO 39256 (sha c524a9190996970727e29e3a766a60e4d815f84b) found the `vendor-skill.sh`
+symlink guard (SYMLINKVALIDATE924) incomplete in two ways: F-1a, plain `realpath` without `-e`
+only requires leading path components to exist, so a symlink whose final target component is
+missing still "resolves" -- destructive steps ran, `.git` could survive in dest, byte-for-byte
+like unfixed develop. F-1b, a directory symlink pointing at its own ancestor resolves to a real,
+existing, in-tree path, passing both the existence check and the old containment case (which
+explicitly allowed equality to `$src` itself); `cp -RL` recursed without bound. F-2, the
+validation loop only walked symlinks `find` reported strictly inside `$src`, never validating
+`$src` itself or `LICENSE_FILE` -- three escape routes: --subdir itself is a symlink out of the
+clone, a middle component of --subdir is a symlink out of the clone, LICENSE_FILE is a symlink
+to a local file. F-3 (LOW), two mutation-pin gaps: a sibling-prefix control and the self-link
+case (same clause as F-1b).
+
+Fix: existence check (`[[ -e "$resolved" ]]`) merged into the realpath-resolution branch;
+ancestor-loop guard rejecting any symlink whose own directory sits at-or-under its resolved
+target (closes F-1b and the F-3 self-link pin together); `clone_real` computed and `$src_real`
+required to resolve inside it (closes the subdir-itself and middle-component escapes); LICENSE_FILE
+resolved + existence + clone-containment checked after being found by name (closes the LICENSE
+escape). F-4 (in-clone upward links above --subdir) left as-is per CYBERED's own text: a policy
+call for MikroB, not a defect, and the current (intentional-tightening) behavior is accepted.
+
+8 new fixtures added to `src/__tests__/vendor-skill-symlink-safety.test.ts`, confirmed RED against
+unfixed develop, GREEN after the fix (15/15, no regression). Each of the 4 new guard mechanisms
+individually mutation-tested (disable -> commit -> fleet-test confirms the exact expected fixture(s)
+RED -> revert): clone/src containment, existence check, ancestor-loop guard, LICENSE_FILE
+validation -- all four confirmed load-bearing.
+
+Ki döntött: CYBERED (NO-GO 39256, the fix direction); backend (implementation, tests, mutation
+proof). Hivatkozás: kártya af3cd669; CYBERED NO-GO 39256; `store/vendor-skill.sh`;
+`src/__tests__/vendor-skill-symlink-safety.test.ts`; Gate-SHA fa8f30fbea450b12462e64ec9eeaae1cf9826fe4.
