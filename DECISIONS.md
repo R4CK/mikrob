@@ -33983,3 +33983,57 @@ fullstack (implementáció, mérés, teszt).
 Hivatkozás: kártya e99c3dc1; kapcsolódó b7d8ecc4, 81c6fbb5 (Q3), 2f0c7d24; komment 39178/39179/
 39188/39196; msg 25149/25160/25163; `store/fleet-test.sh`,
 `src/__tests__/fleet-test-land-priority-verified.test.ts`.
+
+## 2026-11-26 -- card e99c3dc1 fix-kör 2: két env-override bypass zárása (CYBERSEC NO-GO 39208)
+
+Az első kör Gate-SHA-ján (6bab004a) CYBERSEC NO-GO 39208 két MUST (F-1, F-2) és egy SHOULD
+(F-3) leletet talált, mindhárom MÉRVE, nem feltételezve (3/3 próba).
+
+F-1 (MUST): a `fleet_test_verify_land_priority()` első köre a develop-lock útvonalat a
+`MARVEEN_LAND_DEVELOP_LOCK_FILE` env-ből olvasta -- UGYANAZT a változót, amit maga a
+marveen-land.sh is olvas. Bármelyik fleet-test.sh hívó beállíthatta ezt SAJÁT tetszés szerinti
+lock-fájlra, saját maga flockolhatta, és a saját cmdline-jába írhatta a "marveen-land.sh"
+szöveget -- mindhárom ellenőrzést kielégítve egy olyan lock ellen, amin senki más nem versenyez.
+Javítás: a produkciós hívási pont a kanonikus, `$ROOT`-ból (hardcode-olt, env-ből SOHA nem jövő
+érték) származó útvonalat olvassa, az env-override-nak semmilyen hatása nincs többé a valódi
+ellenőrzésre. `fleet_test_verify_land_priority()` maga továbbra is paraméterként kapja az
+útvonalat (így egy teszt közvetlenül, saját eldobható úttal hívhatja), de a SAJÁT hívási pontja
+fixen a kanonikus konstansra van pinnelve.
+
+F-2 (MUST, előzőleg is létező, b7d8ecc4-ből örökölt hiba, ugyanebben a körben javítva): a
+`FLEET_TEST_AGING_S` is a hívó env-jéből jött. `FLEET_TEST_AGING_S=0`-val BÁRMELYIK normál
+(rank-1) ticket a SAJÁT első pollján rank-0-ra promotálta magát -- land-imitálás nélkül is
+megelőzve minden valódi land ticketet. Javítás: hardcode-olt konstans (180), nem olvasható env-ből.
+
+F-3 (SHOULD, lefedettség-bővítés, nem új funkció): pin a megosztott lock-path konstansra (V4),
+az inode-kötésre (V6, egy DIFFERENT fájl nem keverhető össze az igazival), és a depth-bound
+(V5) teszt újraírva VALÓDI, egymásba ágyazott `bash -c`/fájlalapú folyamatlánccal -- a korábbi
+egyetlen `(...)` subshell-es változatot bash saját tail-exec optimalizációja egy lépéssel
+rövidebbre húzhatta a valódinál, ami a bound-tesztet hamisan zölddé tehette volna anélkül, hogy
+tényleg a produkciós mélységet gyakorolta volna.
+
+MÉRÉSI/IMPLEMENTÁCIÓS MELLÉKHATÁS: a teszt-harness beágyazott `bash -c '...'` string-jeinek
+TÖBBSZÖRÖS egyszeres-idézőjel escape-elése (a kinyert bash-függvények SAJÁT idézőjeleivel,
+pl. `stat -c '%i'`) a gyakorlatban törékenynek bizonyult -- egy mutáció-teszt közben csendben
+"normal"-t adott vissza arra a positive esetre, ami helyesen "land"-et kellett volna. A harness
+ÁTÍRVA valós FÁJLOKBA írt, `bash <fájl>`-lal hívott szkriptekre -- semmilyen idézőjel-escape
+nem kell, a hiba teljesen megszűnt.
+
+Ellenőrzés: `fleet-test-land-priority-verified.test.ts` 14/14 (6 új teszt az előző kör 8-ából).
+Mutáció-teszt mindhárom MUST/F-3-mélység fixre (F-1 env-override visszaállítása, F-2
+env-override visszaállítása) kézzel futtatva, mindegyik PIROS lett a megfelelő teszten, majd az
+eredeti fájl visszaállítva és `diff`-fel igazolva byte-azonosnak. A meglévő fleet-test.sh
+guard-suite (ugyanaz az öt fájl mint az első körben) + az új teszt együtt: 62/62.
+`npx tsc --noEmit -p .` tiszta. `lint-ratchet.sh`: nem romlott semelyik szabály (459 lelet).
+Kézi smoke-teszt: `--effective-priority` sima hívásra és `FLEET_TEST_PRIORITY=land`
+self-report-re is `normal`-t ad (nincs valódi ős); a meglévő
+`fleet-test-priority-lane.selftest.sh` (b7d8ecc4 saját selftestje) változatlanul 13/13.
+
+Mi maradt ki: a SHOULD F-3 lefedettség-bővítés a V4/V5/V6 pontokra korlátozva -- a kártya 39177
+kommentben lezárt gate-selftests/tree_lock_exempt() terület továbbra sem éled fel (MikroB 39179
+döntése).
+
+Ki döntött: MikroB (NO-GO + a két MUST pontos javítási iránya, msg 39208); fullstack
+(implementáció, mérés, teszt).
+Hivatkozás: kártya e99c3dc1; CYBERSEC NO-GO 39208; msg 25177; `store/fleet-test.sh`,
+`src/__tests__/fleet-test-land-priority-verified.test.ts`.

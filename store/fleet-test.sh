@@ -216,7 +216,13 @@ print(json.dumps({"from": sys.argv[1], "to": sys.argv[1], "content": content}))
 # waiter's next poll. N4 fix: FLEET_TEST_AGING_S bounds how long a normal run can be starved by a
 # continuous stream of land arrivals (see fleet_test_is_head).
 TREE_TICKET_DIR="${LOCK_FILE}.tickets"
-FLEET_TEST_AGING_S="${FLEET_TEST_AGING_S:-180}"
+# NOT overridable by the caller's env (CYBERSEC NO-GO 39208, F-2): a bare env knob here would let
+# any waiter set FLEET_TEST_AGING_S=0 and have its OWN rank-1 ticket promoted to rank 0 on its
+# very first poll, jumping the queue ahead of every genuine land ticket without ever having to
+# impersonate marveen-land.sh at all. A constant, like LOCK_WAIT_SECONDS is NOT (that one bounds
+# how long *this run itself* waits, which is safe to let a caller shorten -- this one decides
+# ordering relative to OTHER waiters, which is not).
+FLEET_TEST_AGING_S=180
 # A function, not an inline case, so the selftest can extract and exercise the REAL mapping
 # instead of hand-setting PRIORITY_RANK and skipping it.
 fleet_test_resolve_priority_rank() {
@@ -236,7 +242,18 @@ FLEET_TEST_PRIORITY="${FLEET_TEST_PRIORITY:-normal}"
 # exec'ing this script (card 81c6fbb5 Q3) -- so the walk below has to go past the first ancestor.
 # Fails CLOSED on any incomplete check (missing /proc, unreadable file, no match within the
 # bounded depth): falls back to normal priority, never land.
-FLEET_TEST_LAND_LOCK_FILE="${MARVEEN_LAND_DEVELOP_LOCK_FILE:-${ROOT}/store/.marveen-land-develop.lock}"
+#
+# NOT overridable by the caller's env (CYBERSEC NO-GO 39208, F-1, 3/3 probes): the first version
+# of this line read MARVEEN_LAND_DEVELOP_LOCK_FILE, the SAME env var marveen-land.sh itself reads
+# for where IT locks -- but any fleet-test.sh caller can set that var too, point it at a lock file
+# of their own choosing, flock it themselves, and put "marveen-land.sh" in their own argv (`exec
+# -a`, `bash -c ... "$0"`, or just naming it in a later arg) to satisfy every check below against
+# a lock nobody else ever contends on. The canonical path is the ONE thing a caller cannot choose:
+# it is always this script's own $ROOT, which is hardcoded above, never derived from the
+# environment. fleet_test_verify_land_priority still takes the lock file as a plain argument, so
+# a test can call it directly with its own throwaway path -- only THIS call site, the one real
+# runs actually go through, is pinned to the canonical constant.
+FLEET_TEST_LAND_LOCK_FILE="${ROOT}/store/.marveen-land-develop.lock"
 FLEET_TEST_PRIORITY_ANCESTOR_DEPTH="${FLEET_TEST_PRIORITY_ANCESTOR_DEPTH:-10}"
 
 fleet_test_ppid() { # $1 = pid; echoes PPID or returns 1
