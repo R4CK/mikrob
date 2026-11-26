@@ -104,6 +104,23 @@ echo "\${FAKE_WSLPATH_OUT:-$TMP/winroot-view}"
 EOF
 chmod +x "$FAKEBIN/schtasks.sh" "$FAKEBIN/powershell.sh" "$FAKEBIN/wsl.sh" "$FAKEBIN/wslpath.sh"
 
+run_isolated_stderr_only() { # like run_isolated, but does NOT merge stderr into stdout.
+  # cd872e72: run_isolated's own `bash "$BIN" "$@" 2>&1` merges $BIN's real
+  # stderr into ITS stdout before any caller-side `2>file` redirect can see
+  # it -- a caller doing `run_isolated >/dev/null 2>"$DRYRUN_STDERR"` only
+  # ever captures run_isolated's OWN (always-empty) stderr, so a "stderr
+  # must be empty" check built that way passes VACUOUSLY regardless of what
+  # $BIN actually wrote. Measured: the heredoc backtick bug this guard was
+  # meant to catch (card d97659cb round, comment 39144) produced 686 bytes of
+  # real stderr, and the old check still reported "ok".
+  INSTALL_WSL_WATCHDOG_DISABLE_FLAG="${INSTALL_WSL_WATCHDOG_DISABLE_FLAG:-$TMP/.wsl-watchdog-disabled-absent-by-default}" \
+  INSTALL_WSL_WATCHDOG_SCHTASKS_BIN="$FAKEBIN/schtasks.sh" \
+  INSTALL_WSL_WATCHDOG_POWERSHELL_BIN="$FAKEBIN/powershell.sh" \
+  INSTALL_WSL_WATCHDOG_WSLEXE_BIN="$FAKEBIN/wsl.sh" \
+  INSTALL_WSL_WATCHDOG_WSLPATH_BIN="$FAKEBIN/wslpath.sh" \
+  bash "$BIN" "$@"
+}
+
 run_isolated() { # runs $BIN with the fake-bin overrides ALWAYS set, regardless of DRY_RUN
   # Hermetic-selftest fix (card 035d02fc): without an explicit override,
   # install-wsl-watchdog.sh's own default DISABLE_FLAG resolves to
@@ -308,11 +325,13 @@ else
   # UNQUOTED <<PS1EOF heredoc get command-substituted at render time, since a
   # heredoc body is not shell-comment-aware regardless of a leading '#').
   # A clean render must produce ZERO stderr; this would have caught it.
+  # cd872e72: uses run_isolated_stderr_only, not run_isolated -- see its
+  # comment for why run_isolated's own internal 2>&1 made this vacuous.
   DRYRUN_STDERR="$TMP/render-stderr.txt"
   mkdir -p "$TMP/run-stderr-check"
   : > "$CALL_LOG"
   INSTALL_WSL_WATCHDOG_DRY_RUN=1 INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR="$TMP/run-stderr-check" \
-    run_isolated >/dev/null 2>"$DRYRUN_STDERR"
+    run_isolated_stderr_only >/dev/null 2>"$DRYRUN_STDERR"
   if [ -s "$DRYRUN_STDERR" ]; then
     echo "  FAIL heredoc-safety: dry-run produced stderr output (a backtick or \$(...) inside the PS1EOF heredoc body gets command-substituted at render time, since heredoc bodies ignore a leading '#'): $(cat "$DRYRUN_STDERR")"
     fail=1
@@ -331,6 +350,17 @@ else
   check_line "F-2 fix: holder relaunch cap variable declared (re-expressed for the 1-min cadence + per-process charging, was 6)" '$MaxHolderRelaunchesPerWindow = 30' "$PS1_CONTENT"
   check_line "F-2 fix: holder relaunch window variable declared" '$HolderRelaunchWindowSec = 3600' "$PS1_CONTENT"
   check "F-2 fix: cap-notify command declared" '$HolderCapNotifyCmd' "$PS1_CONTENT"
+  # cd872e72: the backtick-quoted doc fragments in these three comment lines
+  # must survive rendering byte-for-byte -- the vacuous "zero stderr" check
+  # above is an indirect proxy (a backtick wrapping a silent, zero-output
+  # command would corrupt the text without ever producing stderr); pin the
+  # actual resolved VALUE directly, per guards-that-pin-behaviour.
+  check_line "cd872e72: backtick-quoted need=<n> survives in the exit-code doc comment" \
+    '# TARGET_HOLDERS present, 1 = fewer (relaunch the `need=<n>` from the' "$PS1_CONTENT"
+  check_line "cd872e72: backtick-quoted need=<n> survives in the holderNeeded doc comment" \
+    '# own `need=<n>` field (the single source of truth already enforced by' "$PS1_CONTENT"
+  check_line "cd872e72: backtick-quoted -match survives in the array-join doc comment" \
+    '# a PowerShell ARRAY -- `-match` against an array returns the matching' "$PS1_CONTENT"
   # CYBERED GO 39119 F-1 / CYBERSEC GO 39120 L-5: the need= parse now joins
   # $holderOut to a plain string FIRST (PowerShell -match on an array does
   # not populate $matches), so the pin follows the real two-line shape
@@ -488,6 +518,46 @@ classify() { INSTALL_WSL_WATCHDOG_CLASSIFY_SELFTEST=1 bash "$BIN" "$1" <<< "$2";
 [ "$(classify 0 '')" = "unknown" ] \
   && echo "  ok   H1'-classify: rc=0 but empty output (e.g. 'query empty -> ready' mutant target) -> unknown, not ready" \
   || { echo "  FAIL H1'-classify: rc=0 empty output did not classify as unknown"; fail=1; }
+
+# --- cd872e72 (blocks d97659cb live install, backend3 msg 25088): the live
+#     MikroB-WSL-Watchdog task's real XML has NO <Enabled> tag at all --
+#     Task Scheduler's schema default for Settings/Enabled is true, and
+#     Windows omits the element when it was never explicitly toggled. The
+#     classifier must treat an ABSENT <Enabled> as "ready" when the rest of
+#     the document is well-formed (closed <Settings> and root <Task>), but
+#     keep failing closed on anything that is not demonstrably well-formed. -
+WELLFORMED_NO_ENABLED='<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo></RegistrationInfo>
+  <Principals></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+  </Settings>
+  <Triggers></Triggers>
+  <Actions Context="Author"></Actions>
+</Task>'
+[ "$(classify 0 "$WELLFORMED_NO_ENABLED")" = "ready" ] \
+  && echo "  ok   cd872e72-classify: well-formed XML with NO <Enabled> tag at all -> ready (schema default true, measured live on MikroB-WSL-Watchdog)" \
+  || { echo "  FAIL cd872e72-classify: well-formed XML with absent <Enabled> did not classify as ready"; fail=1; }
+
+TRUNCATED_NO_ENABLED='<?xml version="1.0"?><Task><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>'
+[ "$(classify 0 "$TRUNCATED_NO_ENABLED")" = "unknown" ] \
+  && echo "  ok   cd872e72-classify: truncated XML (Settings/Task never closed), no <Enabled> tag -> unknown, never ready" \
+  || { echo "  FAIL cd872e72-classify: truncated XML with absent <Enabled> incorrectly classified (expected unknown)"; fail=1; }
+
+MINIMAL_TRUNCATED='<?xml version="1.0"?><Task><Settings>'
+[ "$(classify 0 "$MINIMAL_TRUNCATED")" = "unknown" ] \
+  && echo "  ok   cd872e72-classify: minimally truncated XML (Settings opened, nothing closed) -> unknown" \
+  || { echo "  FAIL cd872e72-classify: minimally truncated XML incorrectly classified (expected unknown)"; fail=1; }
+
+GARBLED_ENABLED='<?xml version="1.0"?><Task><Settings><Enabled>maybe</Enabled></Settings></Task>'
+[ "$(classify 0 "$GARBLED_ENABLED")" = "unknown" ] \
+  && echo "  ok   cd872e72-classify: <Enabled> tag present with a non-true/false value -> unknown, never defaults to ready" \
+  || { echo "  FAIL cd872e72-classify: garbled <Enabled> value did not classify as unknown"; fail=1; }
+
+[ "$(classify 1 "$WELLFORMED_NO_ENABLED")" = "unknown" ] \
+  && echo "  ok   cd872e72-classify: rc!=0 even with well-formed absent-Enabled XML -> unknown, never ready (matches the existing Enabled=true rc-gate)" \
+  || { echo "  FAIL cd872e72-classify: rc!=0 well-formed absent-Enabled XML did not classify as unknown"; fail=1; }
 
 # --- B2 (MikroB 17774 + cybered 17782): a persistent, version-controlled
 #     disable flag must win over ANY query result, including a mocked

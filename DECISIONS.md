@@ -33912,3 +33912,63 @@ Ki döntött: MikroB (a fix-kör kötelező pontjai, msg 25049); backend3 (imple
 Hivatkozás: kártya d97659cb; QA PASS 39117, CYBERED GO 39119, CYBERSEC GO 39120 (H-1 feltétel,
 F-1/F-2/L-2..L-5 leletek); `scripts/wsl-watchdog-holder-ensure.sh`, `scripts/install-wsl-watchdog.sh`,
 `scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 -- Kártya cd872e72: classify_task_state() absent-<Enabled>=enabled + heredoc backtick fix (d97659cb live install blokkolója)
+
+**Kontextus:** d97659cb élő telepítése (14:53, backend3 üzenet 25088) az installer saját
+`classify_task_state()`-je miatt akadt el: a live `MikroB-WSL-Watchdog` feladat XML-je nem
+tartalmaz `<Enabled>` taget egyáltalán (a Task Scheduler séma-alapértéke true, és Windows
+kihagyja az elemet, ha sosem lett átváltva), a klasszifikátor pedig ezt "unknown"-ként
+olvasta és fail-closed módon kihagyta a `/Create`-et -- így az 1 perces tick sosem jutott el
+az élő feladatra. Ugyanez a leolvasás történt 3f6bb903-nál is (11:28).
+
+**Döntés 1 (classify_task_state):** hiányzó `<Enabled>` + egyébként jólformázott XML (van
+lezárt `<Settings>` blokk egy lezárt gyökér `<Task>` elemben) = "ready". `<Enabled>false</Enabled>`
+továbbra is "disabled" (58badae1 H1 változatlan: sosem re-enable). Csonkolt/hiányos XML
+(Settings vagy Task nincs lezárva) marad "unknown" -- ez a különbség a "a tag sosem lett
+kiírva" és a "a lekérdezés félbeszakadt" között. `<Enabled>` taggel, de nem true/false
+értékkel (pl. `maybe`) is "unknown" marad, sosem defaultol ready-re. Nincs manuális bypass
+flag (MikroB döntés, msg 25089, option 2 elutasítva).
+
+**Döntés 2 (heredoc backtick):** `install-wsl-watchdog.sh` ~289/299/306 sorában a PS1EOF
+heredoc (idézetlen delimiter, tehát bash backtick/`$()` helyettesítést végez a teste
+felett) három, backtick-kel idézett doksi-töredéket tartalmazott a wsl-watchdog-holder-ensure.sh
+fejkommentjéből átvett szöveg maradványaként (`` `need=<n>` ``, `` `-match` ``) -- ezek
+parancs-helyettesítésként futottak le render közben, sikertelenül, és a generált PS1
+kommentsorából szótlanul kiesett a szöveg (hibaüzenet stderr-re, de a `/Create`-et nem
+állította meg). Fix: a három backtick escapelve (`\``), ugyanúgy ahogy a heredoc már minden
+`$` jelet escapel a literál PS1-kimenethez.
+
+**MELLÉKLELET (teszt-hiba, nem production-kód):** a `install-wsl-watchdog.selftest.sh`-ban már
+létező "heredoc-safety: zero stderr" őr VAKON ZÖLDET adott erre a pontos hibára -- a
+`run_isolated()` segédfüggvény saját `2>&1`-je már a FÜGGVÉNYEN belül összeolvasztotta a
+telepítő valódi stderr-jét a stdout-jába, mielőtt a hívó oldali `2>"$DRYRUN_STDERR"` bármit
+látott volna; a hívó csak `run_isolated` saját (mindig üres) stderr-jét kapta. Mérve: a
+hibás kóddal 686 bájt valódi stderr keletkezett, a teszt mégis "ok"-ot írt. Új,
+`run_isolated_stderr_only()` függvény (nem olvasztja össze a két streamet) + három
+`check_line` pin a pontos kommentsorokra (érték-alapú ellenőrzés, nem csak a "nincs
+stderr" proxy) zárja ezt.
+
+**Ellenőrzés (fa/sha: card/cd872e72 worktree, új sha lentebb a kommiton):**
+`scripts/install-wsl-watchdog.selftest.sh` -- PASS, 132 ok, 0 FAIL (8 új eset: 3 comment-line
+pin + 4 classify_task_state eset + a most már valódi heredoc-safety stderr check). TDD:
+mind az 5 FAIL-t megnéztem (RED) a fix előtt. Mutáció-teszt (kézzel, `sha256sum`-mal
+visszaellenőrzött visszaállítás minden kör után): (1) a well-formedness-ellenőrzés
+elhagyása (bármilyen hiányzó-Enabled -> ready, jólformázottság nélkül) 5 tesztet buktat
+RED-re, köztük 3 MEGLÉVŐ H1'-classify esetet is; (2) a teljes új ready-ág eltávolítása
+pontosan 1 tesztet buktat (a saját új tesztemet, nem vakon zöld); (3) egy backtick
+escape-jének visszavonása buktatja a heredoc-safety stderr check-et ÉS a hozzá tartozó
+exact-line pint. `npx tsc --noEmit` nem releváns (tisztán bash-fájlok, nincs .ts
+változás). Scoped vitest a szemafor-szkripten át
+(`src/__tests__/wsl-watchdog-disable-flag-early-exit.test.ts`, ez a selftestet futtatja
+CI-ben) -- lásd a REVIEW-ban a friss eredményt.
+
+**Mi maradt ki:** d97659cb élő telepítés/kill-teszt továbbra is várja MikroB külön go-ját
+(msg 25089: "after cd872e72 lands I give a separate go to repeat the live step from the
+start").
+
+Ki döntött: MikroB (kártyanyitás + a megoldás iránya, üzenet 25089, option 1). backend3
+(implementáció, teszt, a vakon-zöld teszt-hiba felfedezése és javítása).
+Hivatkozás: kártya cd872e72 (szülő b736f51a); d97659cb (blokkolt kártya, üzenet 25088);
+3f6bb903 (korábbi, ugyanilyen leolvasás, 11:28); `scripts/install-wsl-watchdog.sh`,
+`scripts/install-wsl-watchdog.selftest.sh`.

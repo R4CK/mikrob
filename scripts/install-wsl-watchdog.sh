@@ -41,6 +41,25 @@ classify_task_state() { # $1 = query exit code, stdin = query output (XML or emp
     echo "ready"
     return
   fi
+  # Card cd872e72 (blocks d97659cb live install, backend3 msg 25088): Task
+  # Scheduler's schema default for Settings/Enabled is true, and Windows
+  # OMITS the element entirely when it was never explicitly toggled --
+  # measured live on the real MikroB-WSL-Watchdog task, whose /Query /XML
+  # has no <Enabled> tag at all. Treat an ABSENT <Enabled> as "ready", but
+  # ONLY when the rest of the document is demonstrably well-formed (a
+  # closed <Settings> block inside a closed root <Task> element) -- this is
+  # what tells "the tag just wasn't written" apart from "the query
+  # truncated or errored mid-stream", which must stay "unknown" exactly as
+  # before.
+  if [ "$rc" -eq 0 ] \
+     && ! printf '%s' "$out" | grep -qi '<Enabled>' \
+     && printf '%s' "$out" | grep -qi '<Settings>' \
+     && printf '%s' "$out" | grep -qi '</Settings>' \
+     && printf '%s' "$out" | grep -qi '<Task' \
+     && printf '%s' "$out" | grep -qi '</Task>'; then
+    echo "ready"
+    return
+  fi
   echo "unknown"
 }
 
@@ -286,7 +305,7 @@ function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf
 # script invoked the SAME way the rollback/notify scripts already are
 # (bash -lc on a plain path, nothing left for wsl.exe to mis-quote), and it
 # reports a precise exit code rather than an ambiguous LASTEXITCODE: 0 =
-# TARGET_HOLDERS present, 1 = fewer (relaunch the `need=<n>` from the
+# TARGET_HOLDERS present, 1 = fewer (relaunch the \`need=<n>\` from the
 # HOLDER_MISSING line), 2 = more than target / ambiguous/error (do NOT
 # relaunch, to avoid piling up duplicates on top of an already-odd state --
 # the F-2 fix). Checking the HOLDER_MISSING marker in addition to exit=1
@@ -296,14 +315,14 @@ function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf
 \$holderCheckExit = \$LASTEXITCODE
 # Card d97659cb: the target is now 2 holders, so a missing-holder tick can
 # need to launch 1 OR 2, never guessed -- parsed straight from the script's
-# own `need=<n>` field (the single source of truth already enforced by
+# own \`need=<n>\` field (the single source of truth already enforced by
 # wsl-watchdog-holder-ensure.sh's TARGET_HOLDERS). An unparseable need=
 # (should be impossible given the contract) is treated as 0 -- fail-closed,
 # never launch on a reading we cannot trust.
 #
 # CYBERED GO 39119 F-1 / CYBERSEC GO 39120 L-5: wsl.exe -e bash -lc can print
 # MORE THAN ONE stdout line (a login-profile banner), which makes \$holderOut
-# a PowerShell ARRAY -- `-match` against an array returns the matching
+# a PowerShell ARRAY -- \`-match\` against an array returns the matching
 # elements but does NOT populate \$matches, so the regex group below would
 # silently read nothing and \$holderNeeded would stay 0 even though the
 # single real line DOES contain need=<n>. Join to one string first so the
