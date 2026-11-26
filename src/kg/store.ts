@@ -478,7 +478,7 @@ const embedQueue: Array<() => void> = []
 function runEmbedSlot(run: () => Promise<void>): void {
   const start = (): void => {
     embedActive++
-    run().finally(() => {
+    void run().finally(() => {
       embedActive--
       const next = embedQueue.shift()
       if (next) next()
