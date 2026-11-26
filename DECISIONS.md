@@ -33973,9 +33973,7 @@ Hivatkozás: kártya cd872e72 (szülő b736f51a); d97659cb (blokkolt kártya, ü
 3f6bb903 (korábbi, ugyanilyen leolvasás, 11:28); `scripts/install-wsl-watchdog.sh`,
 `scripts/install-wsl-watchdog.selftest.sh`.
 
-## 2026-11-26 -- Kártya cd872e72 2. kör: classify_task_state() szóhatár-rés (L-1) +
-## négy szerkezeti feltétel egyenkénti pin-je (L-3) + run_isolated_stderr_only()
-## kontroll-pin (L-4) (CYBERSEC GO 39190, MikroB üzenet 25151)
+## 2026-11-26 -- Kártya cd872e72 2. kör: classify_task_state() szóhatár-rés (L-1), négy szerkezeti feltétel egyenkénti pin-je (L-3), run_isolated_stderr_only() kontroll-pin (L-4) (CYBERSEC GO 39190, MikroB üzenet 25151)
 
 Az első kör ("absent" = a `<Enabled>` literál szubsztring hiánya) szűk volt: egy eltérő
 írásmódú Enabled-tag (szóköz a záró `>` előtt, önmagát-záró `<Enabled/>`, névtér-előtagolt,
