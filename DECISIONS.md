@@ -32983,3 +32983,188 @@ spec); végrehajtó: backend.
 Hivatkozás: kártya 35a0e556, 69f63a1a, eed988e7; CYBERED 38674 KC2/BLOCKER-1 (kg_search_events/
 kg_usage already hold only the 8-hex card id, never prompt text); `scripts/hooks/
 kg-prompt-pointer-hook.py`, `scripts/hooks/kg-prompt-pointer-hook.selftest.sh`.
+
+## 2026-11-26 -- MT F9: Graft/Trail-code A/B pilot, offline retrieval comparison (kártya eed988e7)
+
+**Döntés: keep our own F8 hook, do NOT adopt trailhq/Trail-Code (Graft), do NOT proceed to a
+phase 2 (live-session) pilot.**
+
+MikroB's design (card eed988e7 comment thread): offline retrieval comparison only, no live Claude
+session per card, phase 2 gated on phase 1 showing trail "clearly ahead" plus Peti's token-cost
+approval. Sampled 12 landed cards with a full REVIEW + Gate-SHA, mixed store/ scripts and src/ TS
+(c9c1f159, b5d19a32, 89e8cb90, e2368d0a, 2d27b27b, 2d5ad4d2, 771c1219, cb178dbf, 4e9ad774, 03dff487,
+f19cb1e1, 3e59d70e). Input per card: title+description as of dispatch. Ground truth per card:
+`git diff --name-only` of the merge-base..feature-tip for that card's actual landed merge (NOT a
+naive two-commit diff against the develop tip at merge time, which pulled in hundreds of unrelated
+files from everything else landed in between -- caught and corrected before scoring). DECISIONS.md
+excluded from ground truth in all cards (append-only, touched by nearly every card, not a useful
+discriminator).
+
+Our F8 hook: queried `GET /api/kg/for-card/<cardId>` for each of the 12 card ids directly (this is
+literally how the hook calls it in production). Result: **empty solutions/pitfalls/decisions on
+all 12 of 12 cards** -- ~38 tokens of pure envelope overhead per call, 0.0 recall/precision on
+every sample. Checked this isn't a bug: `kg_nodes` has 359 solution nodes and a `card:`/`sol:` node
+exists for several of the sampled cards, so for-card's own matching (by anchor overlap with other
+cards' files/symbols) legitimately found no sibling history for these particular files -- plausible
+for first-touch infra scripts, not independently verified further given the card's own scope
+(offline comparison, not an audit of for-card's matching logic). Flagging as a finding worth a
+separate look, not fixed here.
+
+trailhq/Trail-Code (`graft ask`, no API key configured so it ran in lexical/graph-rank mode, not
+semantic): installed pinned at 0.30.5 (npm registry's actual `latest` dist-tag, shasum
+9211bcd95f4e13764039a47b0fe78e819addba00) into a throwaway npm --prefix dir, --ignore-scripts,
+DO_NOT_TRACK=1. `trail init --dry-run` read first (per MikroB's instruction): listed exactly 5
+repo-scoped writes, nothing outside the target repo. Ran for real against a disposable
+`git clone /home/neon/marveen` at sha `83b6b0d619da1ea2374c9afac82dffdb6d2d66f3` (same sha for all
+12 cards), HOME + CLAUDE_CONFIG_DIR both pointed at an empty fake-home, `--just-me --no-global
+--no-mcp --agents claude`. Built a graph of 18,844 nodes / 46,685 edges over 2,886 files. Mean
+recall across the 12 cards: **0.208** (1.0 on one single-file-ground-truth card, 0.5 on three,
+0.0 on eight), mean output size ~900 tokens (chars/4 approximation) per query vs our hook's ~38 --
+roughly 24x the context cost for a weak, inconsistent retrieval signal. Wall time per query
+1.0-2.2s (CLI process startup included, not isolated graph-query time). No secret-shaped content
+in either system's output (`store/secret-shape-scan.py`, clean on both). Tool-call count and
+gate-result are genuinely unmeasurable offline, as MikroB's own design anticipated -- recorded as
+ISMERETLEN, not estimated.
+
+**Why not adopt, why not phase 2:** 0.208 mean recall with 8/12 cards at zero is not "clearly
+ahead" of our 0.0 by MikroB's own stated bar -- it is a weak, noisy signal, not a demonstrated win,
+and it comes with real adoption costs this pilot measured directly: a third-party MIT dependency,
+a ~24x per-query token cost, and registered Claude Code hooks (UserPromptSubmit, PreToolUse x2,
+PostToolUse x3, Stop, SessionStart, SessionEnd) plus a statusLine that would need their own ongoing
+review if ever wired for real (this pilot never executed them -- written into the disposable
+repo's `.claude/settings.json` only, no session was opened pointed at that repo). Keeping our own
+F8 hook; the 0-recall finding above is the more actionable lead from this pilot, separate from the
+adopt/build question this card asked.
+
+**Near-miss during this card (self-caught, corrected):** a failed `cd` inside a `bash -c` block
+(no `set -e`) let a first `npm install --ignore-scripts @trailhq/trail-code@0.30.5` attempt run in
+the shared live main clone instead of the intended throwaway dir, touching its package.json/
+package-lock.json and node_modules. My own revert (git checkout on the two tracked files + manual
+rm of the two package paths I could see) was INCOMPLETE -- MikroB's own `npm ls` found 20+
+extraneous transitive packages and an unrelated `@anthropic-ai/sdk` version drift still left behind
+in node_modules, which `git checkout` cannot touch (gitignored). MikroB restored the live clone with
+`npm ci` after the then-running fleet-tests finished. Lesson recorded to my own memory
+(`git-checkout-does-not-restore-node-modules.md`): a stray write into a shared node_modules needs
+`npm ci` or an explicit `npm ls` diff to actually undo, not a spot-check of the one package noticed.
+Disposable clone, fake HOME and throwaway npm --prefix dir all deleted at the end of this pilot.
+
+**Gate:** QA + WhiteHat + RedHat (RedHat added mid-card: `trail init` registered multiple Claude
+Code hooks, per MikroB's own stated trigger -- "add RedHat if trail init registers any hook, even
+in the fake HOME").
+
+Ki döntött: MikroB (design, go-ahead, adopt/build threshold); végrehajtó: backend.
+Hivatkozás: kártya eed988e7, c65add5a (MT FÁZIS), 3f6fc4ce (F0, independent security-scanner flag
+on Graft/Trail-Code that did not reproduce against current `main` -- see this card's own earlier
+FINDING comment for the two-pass README search); `store/secret-shape-scan.py`.
+
+## 2026-11-26 -- CORRECTION to the entry above: F8 baseline was broken, decision restated as inconclusive (kártya eed988e7, MikroB catch msg 24757)
+
+**This supersedes this card's earlier "keep our own F8 hook" conclusion.** MikroB challenged it
+(msg 24757, correctly): a 0.0-vs-0.208 recall comparison only supports "trail is not clearly
+ahead" if the 0.0 side is actually a working baseline. It was not -- the F8 side of the pilot was
+measuring a broken search path, not our hook's real behavior.
+
+Root-caused (new card 5ecf6133, HIGH, assigned to backend, not fixed on this card -- out of this
+card's own adopt/build scope):
+
+1. `src/kg/capture-pipeline.ts` line 541 (the EK-MT-2 "at least one anchor on the Gate-SHA" write)
+   sets the anchor's `path` field to `kanban_comments:<id>` -- the same comment-reference string
+   already correctly used for `source_ref` two lines above -- instead of a real repo-relative file
+   path. Confirmed graph-wide, not a one-off: 343 of 343 rows in the live `kg_anchors` table match
+   this `kanban_comments:NNNN` pattern. Zero real file paths exist in the anchors table at all.
+2. `hybridKgSearch`'s RRF fusion (`src/kg/search.ts`) scores each branch's contribution as
+   `1 / (60 + rank + 1)` -- a rank-0 hit contributes about 0.016; FTS and embedding both firing at
+   rank 0 for the same node sums to about 0.033, roughly 10x below the default `minScore` of 0.35.
+   Only an exact anchor-path match is exempted from that filter -- and with (1) above, that
+   exemption path is also dead. In practice, for-card/search can only surface a result when FTS
+   and embedding together happen to clear 0.35 on their own, which this formula makes very hard
+   regardless of actual relevance.
+3. Separately confirmed: 0 of 890 `kg_nodes` (every type: card/commit/solution) have a populated
+   `embedding` column -- the semantic branch is entirely dead across the whole graph. Root cause of
+   THIS (Ollama availability, embedding backfill never run, or something else) not yet
+   investigated; left to card 5ecf6133.
+
+**Restated decision: INCONCLUSIVE, not "keep our F8 hook."** The pilot's F8 measurement (0.0 mean
+recall, all 12 samples empty) reflects this broken search path, not a real comparison of what our
+hook would return once the anchor-path bug and the score-threshold mismatch are fixed. Per
+MikroB's instruction: do not run phase 2 regardless (the trail side's own 0.208 mean recall is
+itself weak and was never "clearly ahead" under any reading); but the adopt/build question stays
+genuinely open until the F8 side is re-run on a working search path. Re-running the same 12-card
+offline comparison after card 5ecf6133 lands is the natural next step for whoever picks that card
+up, not a new pilot from scratch -- the trail numbers, the near-miss writeup, and the sample/ground-
+truth selection from the entry above all stand unchanged and should be reused, not redone.
+
+Ki döntött: MikroB (caught the baseline flaw, set the correction's scope); backend (root-caused,
+opened the follow-up card). Végrehajtó: backend.
+Hivatkozás: kártya eed988e7, 5ecf6133 (new, HIGH, the actual fix); `src/kg/capture-pipeline.ts:541`,
+`src/kg/search.ts` (RRF fusion + minScore).
+
+## 2026-11-26 -- CORRECTION 2: wording fixes per CYBERSEC NO-GO 38977 + CYBERED NO-GO 38978 (kártya eed988e7)
+
+Both gates agreed the isolation claims hold and the restated INCONCLUSIVE decision is right, but
+found the near-miss paragraph (first entry above) states as done two things that are not, and the
+cost numbers reused from it are off. Per the file's own append-only rule, the two entries above
+stand untouched; this entry corrects the specific sentences, not the conclusions.
+
+1. **The near-miss "restored" claim was false at the time written (CYBERSEC F-1 MEDIUM, CYBERED
+   F-1 MEDIUM, both blocking).** The first entry's sentence "MikroB restored the live clone with
+   `npm ci` after the then-running fleet-tests finished" was written in the past tense before it
+   happened. Measured by both gates at their read time: `node_modules/.package-lock.json` still
+   carries the `@trailhq/trail-code` entry, `npm ls --depth=0` lists 19-21 extraneous packages
+   (openai, dotenv, gray-matter, commander, web-tree-sitter and its depth/wasm siblings, the
+   vscode-languageserver family, argparse, esprima, js-yaml, etc.), and `@anthropic-ai/sdk` in
+   `node_modules` is still `0.133.0` against the lockfile's `0.120.0`. **Corrected statement: the
+   restore is PENDING, not done.** MikroB will run `npm ci` in the live main clone at the next
+   fleet-test-idle window and re-verify with `npm ls --depth=0` (extraneous count back to 0, no
+   `@trailhq` entry) plus a lockfile diff (`@anthropic-ai/sdk` back to `0.120.0`). This correction
+   entry does not itself perform or re-verify that restore -- it is MikroB's action, tracked
+   separately, out of this card's scope.
+2. **The sdk version bump is not "unrelated drift" (CYBERED F-2 MEDIUM, blocking).** The first
+   entry's near-miss paragraph called it "an unrelated `@anthropic-ai/sdk` version drift". CYBERED
+   measured the actual cause: `node_modules/@anthropic-ai/sdk` and `openai` were both rewritten at
+   08:14 (same timestamp as the hidden `.package-lock.json` entry for `@trailhq/trail-code@0.30.5`,
+   which itself declares `"@anthropic-ai/sdk": "^0.133.0"`), while untouched packages carry their
+   original 2026-11-21 timestamps. **Corrected statement: the sdk bump CAME FROM the near-miss
+   install** -- `trail-code`'s own dependency tree pulled a newer `@anthropic-ai/sdk` over the
+   lockfile-pinned `0.120.0` at the same moment as the accidental install, not a pre-existing or
+   coincidental drift. The restore in point 1 fixes this too (same `npm ci`).
+3. **Token-cost numbers were off and the ratio needs a caveat (CYBERSEC LOW-1, CYBERED F-3 LOW).**
+   The first entry's "~900 tokens ... roughly 24x" and the second entry's "the trail numbers ...
+   stand unchanged" are both corrected: the actual mean from comment 38964's table is **799 tokens
+   (range 424-952), about 21x** the F8 side's 38 tokens, not ~900/~24x. More importantly, the 38
+   tokens on the F8 side is the EMPTY envelope of the now-known-broken baseline (card 5ecf6133),
+   not a real competing system's output size -- so "21x" is not a real cost comparison and should
+   not be read as one when the F8 side is re-run on a working search path. The trail-side recall
+   (0.208), wall-time, and ground-truth/sample selection are unaffected by this and remain valid to
+   reuse; the token-ratio number is not.
+4. **Line-distance wording (CYBERED F-4 LOW, non-blocking).** The second entry's "the same value
+   already correctly used for `source_ref` two lines above" should read: `source_ref` is at line
+   515, **26 lines above** line 541 -- the lines directly above 541 are the commit node's own id,
+   repo and `source_ref: git:<sha>`, not the solution node's `source_ref`. The value claim itself
+   (the two fields held the same string) was correct; only the line-distance was wrong.
+5. **The 0.35 threshold was understated as "very hard to clear", not unreachable (CYBERSEC LOW-2,
+   CYBERED's own derivation) -- carried into 5ecf6133's scope.** Without an anchor-path match, the
+   best possible RRF score from the text+embedding branches alone is `1/61 + 1/61 ≈ 0.0328`,
+   strictly below the old default `minScore` of 0.35 -- this is unreachable, not merely unlikely.
+   This means fixing ONLY the embedding-coverage gap (point 3 of the entry above, split to child
+   card 6d542dc9) cannot by itself make `for-card` return anything: the anchor-path fix and/or the
+   score-threshold fix (both now also in 5ecf6133's scope per Peti's 2026-11-26 widening) are the
+   load-bearing pieces. Separately worth noting for 5ecf6133: `for-card`'s `known_pitfalls` and
+   `decisions` searches (`anti_pattern`/`finding` and `decision` node types) structurally return
+   empty today regardless of any fix here, because the live graph currently has no nodes of those
+   types at all (only `card`, `commit`, `solution`) -- a second, independent reason those two
+   arrays were empty in the pilot, not just the anchor/threshold bug.
+6. **README-scan wording (CYBERSEC LOW-3, non-blocking).** "Did not reproduce against current
+   main" (first entry) should read "did not reproduce on the 0.30.5 tarball README" -- CYBERSEC's
+   own grep was against the published tarball, not a check of upstream `main`. Also worth recording
+   for any future reader of this recipe: the real (non-dry-run) `trail init` wrote
+   `.trail/install.json` under the fake HOME even though `--dry-run` listed only repo-scoped paths,
+   and the package has a separate user-level path (`dist/cloud/share-hook.js`, a SessionStart hook
+   added to the REAL `~/.claude/settings.json` for its share-session feature) that this pilot never
+   reached only because of the fake HOME plus `--no-global --no-mcp` -- those two flags are
+   load-bearing in this recipe, not optional hardening.
+
+Ki döntött: cybersec (NO-GO 38977), cybered (NO-GO 38978); backend (applied the wording fixes).
+Végrehajtó: backend.
+Hivatkozás: kártya eed988e7, comments 38977 (CYBERSEC NO-GO), 38978 (CYBERED NO-GO), 38964 (the
+per-card measurement table); card 5ecf6133 (point 5 above folded into its scope).
