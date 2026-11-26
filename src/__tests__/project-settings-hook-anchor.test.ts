@@ -72,6 +72,7 @@ const EXPECTED: Record<string, string[]> = {
   // KAPUEGYUT918: a failed Bash call can still have written a memory file.
   PostToolUseFailure: ['tool-log-capture.py', 'memory-frontmatter-bash-gate.py @ Bash'],
   PreToolUse: [
+    'fleet-freeze-gate.sh @ *', // KILLSWITCH1022: every tool call denied while the fleet is frozen
     'outgoing-copy-gate.py @ Bash',
     'outgoing-copy-gate.py @ .*send_email.*',
     'outgoing-copy-gate.py @ .*manage_email.*',
@@ -205,6 +206,10 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'egress-gate.mjs', matcher: 'WebFetch' },
   { script: 'secret-write-guard.py', matcher: 'Write|Edit|MultiEdit' },
   { script: 'big-file-guard.py', matcher: 'Write' },
+  // Koteg 26 (upstream #2172, KILLSWITCH1022): the fleet-freeze hook refuses every tool call
+  // while the fleet is frozen (store/fleet-freeze.json present) -- wired on every tool, not just
+  // Bash/Write/Edit, so a frozen agent cannot work around it through an unlisted matcher.
+  { script: 'fleet-freeze-gate.sh', matcher: '*' },
   { script: 'git-protect-guard.py', matcher: 'Bash' },
   { script: 'npm-protect-guard.py', matcher: 'Bash' },
   { script: 'symlinked-node-modules-guard.py', matcher: 'Bash' },

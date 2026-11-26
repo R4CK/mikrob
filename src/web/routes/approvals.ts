@@ -14,7 +14,23 @@ import { readBody, json } from '../http-helpers.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendOwnerMessage } from '../../notify.js'
 import { sendTelegramMessage } from '../telegram.js'
+import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
+
+// Kanban 80d0e3c6: APPROVING is the owner's decision, so the two routes that make a row approved
+// (the born-approved POST and PATCH status=approved) take an owner credential. Measured before:
+// a caller with the shared token (every agent holds it) got an approved row on both routes, and
+// the real email-approval-gate then let its letter through; through STANDING_CATEGORY the same
+// row made every later letter to an address approval-free. The self-declared agent_id and
+// resolved_by checks below stay, but they were never what stopped this.
+// Who counts as the owner is the predicate that guards issuing credentials (mayIssueCredentials,
+// #2163): the owner's session, also when the browser sends the stored token alongside it; the
+// bare token only before the first dashboard login exists.
+const OWNER_ONLY = {
+  ...OWNER_SESSION_REQUIRED,
+  error: 'Approving needs the dashboard login (an owner session); the shared dashboard token can file, reject or time out a request, not approve one. ' +
+    'The token alone approves only before the first login exists.',
+}
 
 const AUTONOMY_CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
 
@@ -438,6 +454,11 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // PATCH writes); a string id is kept in the owner note and the log line.
     let chatApprovedMessageId: number | string | null = null
     if (owner_approved_message_id !== undefined && owner_approved_message_id !== null) {
+      if (!mayIssueCredentials(ctx.auth, req)) {
+        logger.warn({ agent_id, category, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'born-approved approval refused: no owner session')
+        json(res, OWNER_ONLY, 403)
+        return true
+      }
       if (agent_id.trim() !== MAIN_AGENT_ID) {
         json(res, { error: 'owner_approved_message_id is only accepted from the main agent; a requesting agent cannot pre-approve its own request' }, 400)
         return true
@@ -626,6 +647,14 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const msgId = typeof telegram_message_id === 'number' ? telegram_message_id : null
+
+    // Approving takes the owner (see OWNER_ONLY); rejecting or timing out does not, since
+    // an agent that cancels a request gains nothing by it.
+    if (status === 'approved' && !mayIssueCredentials(ctx.auth, req)) {
+      logger.warn({ id: idMatch[1], resolved_by, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'approval approve refused: no owner session')
+      json(res, OWNER_ONLY, 403)
+      return true
+    }
 
     // P8 fix (2a80c6cb delta, CYBERED NO-GO 27872 / CYBERSEC NO-GO 27873): the self-approval guard
     // below is self-declared (resolved_by is whatever string the caller sends) and every fleet

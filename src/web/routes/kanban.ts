@@ -206,7 +206,7 @@ function statusWouldChange(id: string, next: unknown): boolean {
 }
 const NEW_DEV_STOP_MESSAGE =
   'Heti "új fejlesztés leáll" küszöb átlépve: egy planned kártya nem mehet in_progress-be VAGY egyenesen waiting-be sem (új fejlesztés indítása) a heti resetig. In-flight és gate-munka továbbra is mehet (waiting -> in_progress); tudatos felülíráshoz MikroB force: true-val nyithatja meg.'
-import { resolveKanbanDispatch, isSelfAdvanceMove } from '../../kanban-dispatch.js'
+import { resolveKanbanDispatch, isSelfAdvanceMove, parseDispatchSkipAgents } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { getCardTokenUsage } from '../token-usage.js'
 import { logger } from '../../logger.js'
@@ -560,12 +560,19 @@ async function fireKanbanDispatch(id: string, actor?: string | null): Promise<vo
       agentNames: listAgentNames(),
       isRunning: isAgentRunning,
       actor,
+      // Read at dispatch time (not at module load), so a Settings change applies to the next move.
+      skipAgents: parseDispatchSkipAgents(getEffectiveSettingValue('KANBAN_DISPATCH_SKIP_AGENTS')),
     })
     const target = decision.target
     if (!target) {
-      // 'not-dispatchable' (no/unknown assignee, human owner) and 'self-move'
-      // are DELIBERATE no-dispatch cases -- staying quiet is correct, and
-      // alerting on them would bury the one case that matters.
+      // 'not-dispatchable' (no/unknown assignee, human owner), 'self-move' and
+      // 'skip-listed' (KANBAN_DISPATCH_SKIP_AGENTS) are DELIBERATE no-dispatch
+      // cases -- staying quiet is correct, and alerting on them would bury the
+      // one case that matters. The card is NOT stamped dispatched_at in these
+      // cases, so a later handover + move still wakes the new assignee once.
+      if (decision.reason === 'skip-listed') {
+        logger.info({ id, assignee: card.assignee }, 'Kanban dispatch skipped (KANBAN_DISPATCH_SKIP_AGENTS)')
+      }
       if (decision.reason === 'session-down') reportUndeliveredDispatch(id, decision.unreachable ?? String(card.assignee))
       return
     }

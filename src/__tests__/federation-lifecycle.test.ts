@@ -77,7 +77,13 @@ function fakeCtx(method: string, path: string, body?: string): { ctx: RouteConte
       ;(req as unknown as EventEmitter).emit('end')
     })
   }
-  return { ctx: { req, res, path, method, url: new URL(`http://localhost${path}`), fedPeer: null }, res: state }
+  // This file tests federation CRUD correctness, not the auth boundary (that is
+  // credential-issuance-federation-operator.test.ts's job) -- use the owner session so every
+  // mutating route's mayIssueCredentials gate (DEVKEYFOLLOW1022) passes. The fork does not adopt
+  // upstream's own mayIssueCredentials bootstrap exception (no dashboard user yet still counts as
+  // the owner, card 49960046 retired that), so the bare token this file used to pass would now
+  // 403 on every mutation.
+  return { ctx: { req, res, path, method, url: new URL(`http://localhost${path}`), fedPeer: null, auth: { kind: 'session', user: 'owner' } }, res: state }
 }
 
 async function call(method: string, path: string, body?: unknown): Promise<{ statusCode: number; json: Record<string, unknown> }> {

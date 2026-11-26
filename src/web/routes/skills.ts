@@ -17,6 +17,7 @@ import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
 import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
+import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 
 function parseFrontmatterField(content: string, field: string): string {
   const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/)
@@ -286,6 +287,17 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
   const pendingActionMatch = path.match(/^\/api\/skills\/pending\/([^/]+)\/(approve|reject)$/)
   if (pendingActionMatch && method === 'POST') {
+    // The decision on a quarantined skill is the owner's, never the shared token every agent holds
+    // (an agent could otherwise put its own quarantined skill live, fleet-wide). The same predicate
+    // as issuing credentials (mayIssueCredentials, #2163): the owner's session, also when the
+    // browser sends the stored token alongside it; the bare token only before the first dashboard
+    // login exists. Reject is held to the same bar, so an agent cannot discard what is waiting for
+    // the owner's review either.
+    if (!mayIssueCredentials(ctx.auth, req)) {
+      logger.warn({ id: pendingActionMatch[1], action: pendingActionMatch[2], auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'Pending skill decision refused: no owner session')
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     const id = decodeURIComponent(pendingActionMatch[1])
     if (pendingActionMatch[2] === 'reject') {
       let ok = false

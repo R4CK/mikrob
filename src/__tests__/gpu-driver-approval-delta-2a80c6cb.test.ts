@@ -40,7 +40,7 @@ function oneshotCtx(id: string, body: unknown): { ctx: RouteContext; out: { stat
   return { ctx: { req, res, path, method: 'POST', url } as RouteContext, out }
 }
 
-function postCtx(body: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
+function postCtx(body: unknown, auth?: RouteContext['auth']): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -54,7 +54,7 @@ function postCtx(body: unknown): { ctx: RouteContext; out: { status: number; bod
       if (event === 'end') cb()
     },
   }
-  return { ctx: { req, res, path, method: 'POST', url } as RouteContext, out }
+  return { ctx: { req, res, path, method: 'POST', url, auth } as RouteContext, out }
 }
 
 function patchCtx(id: string, body: unknown, auth?: RouteContext['auth']): { ctx: RouteContext; out: { status: number; body: any } } {
@@ -198,7 +198,10 @@ describe('P8 (CYBERED NO-GO 27872): approving gpu-driver-silent-install is hard 
 
   it('does not block approving a DIFFERENT category', async () => {
     createApproval({ id: 'p8-4', agent_id: 'backend2', category: 'email_send', action_description: 'send mail' })
-    const { ctx, out } = patchCtx('p8-4', { status: 'approved', resolved_by: 'owner' })
+    // Card 93ed929a (predates this delta round): PATCH status=approved is owner-session-only
+    // for EVERY category, not only gpu-driver-silent-install -- the fork adopted this generic
+    // gate from upstream during the Koteg 26 sync, after this test file was last written.
+    const { ctx, out } = patchCtx('p8-4', { status: 'approved', resolved_by: 'owner' }, { kind: 'session', user: 'owner' })
     await tryHandleApprovals(ctx)
     expect(out.status).toBe(200)
     expect(getApproval('p8-4')!.status).toBe('approved')
@@ -219,13 +222,19 @@ describe('P8 (CYBERED NO-GO 27872): approving gpu-driver-silent-install is hard 
   // path alone, with no PATCH and no real check that the owner actually said anything.
   // Measured by Cybersec on 403ee09bc: this reaches 201 {status:'approved'}, and the
   // consume-oneshot that follows returns 200 -- the install fires with zero human in the loop.
+  // Card 93ed929a (predates this delta round): owner_approved_message_id already requires an
+  // owner session for EVERY category (the fork adopted this generic gate from upstream during
+  // the Koteg 26 sync, after this test file was last written) -- pass it so these three tests
+  // reach the gpu-driver-specific check they are actually pinning, not the generic owner gate.
+  const OWNER_SESSION: RouteContext['auth'] = { kind: 'session', user: 'owner' }
+
   it('H1: POST with agent_id=MAIN_AGENT_ID + owner_approved_message_id is refused for gpu-driver-silent-install, not born approved', async () => {
     const { ctx, out } = postCtx({
       agent_id: MAIN_AGENT_ID,
       category: GPU,
       action_description: 'install newer driver',
       owner_approved_message_id: 4242,
-    })
+    }, OWNER_SESSION)
     await tryHandleApprovals(ctx)
     expect(out.status).toBe(403)
     expect(out.body.error).toMatch(/gpu-driver-silent-install/)
@@ -239,7 +248,7 @@ describe('P8 (CYBERED NO-GO 27872): approving gpu-driver-silent-install is hard 
       category: GPU,
       action_description: 'install newer driver',
       owner_approved_message_id: 4242,
-    })
+    }, OWNER_SESSION)
     await tryHandleApprovals(ctx)
     expect(out.status).toBe(403)
     // nothing exists to consume -- confirm no approved row of this category exists anywhere
@@ -253,7 +262,7 @@ describe('P8 (CYBERED NO-GO 27872): approving gpu-driver-silent-install is hard 
       category: 'email_send',
       action_description: 'send mail',
       owner_approved_message_id: 4243,
-    })
+    }, OWNER_SESSION)
     await tryHandleApprovals(ctx)
     expect(out.status).toBe(201)
     expect(out.body.status).toBe('approved')

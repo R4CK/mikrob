@@ -188,8 +188,6 @@ const ROUTE_FILES = readdirSync(ROUTES).filter((f) => f.endsWith('.ts')).sort()
 
 /** Route files that legitimately call a sync child TODAY, measured. Gate-reviewed as local and bounded. */
 const KNOWN_SYNC_ROUTES = [
-  'agent-terminal.ts',
-  'background-tasks.ts',
   'integrated-repos.ts',
   'onboarding.ts',
   'updates.ts',
