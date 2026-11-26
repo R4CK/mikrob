@@ -33912,3 +33912,29 @@ Ki döntött: MikroB (a fix-kör kötelező pontjai, msg 25049); backend3 (imple
 Hivatkozás: kártya d97659cb; QA PASS 39117, CYBERED GO 39119, CYBERSEC GO 39120 (H-1 feltétel,
 F-1/F-2/L-2..L-5 leletek); `scripts/wsl-watchdog-holder-ensure.sh`, `scripts/install-wsl-watchdog.sh`,
 `scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 -- token header tempfiles never touch disk any more (kártya 0aba66b8)
+
+WhiteHat2 Cybersec GO on 7dde8ebc M1: kilenc helyen (`fleet-concurrency-checks.sh`,
+`gate-dispatch-check.sh`, `redispatch-guard.sh` x3, `gemini-agy-call.sh` x2, `mopsion-preland.sh`
+x2, `pre-dispatch-check.sh`, `fleet-test.sh`) a dashboard Bearer token egy 0600-as mktemp fájlba
+íródott, amit csak a happy-path törölt -- egy megölt futás (SIGTERM/SIGINT) a valódi tokent a
+diszken hagyta. Mérve (`grep -rln 'mktemp' store/*.sh | xargs grep -l 'Authorization'`, majd
+osztályozva, hogy a talált változó valóban a tokent tartja-e, és van-e rá már EXIT trap): a
+`gate-pretriage-card.sh` és `weekly-usage-panel-read.sh` már helyes `cleanup()` EXIT trappel
+rendelkezett (a nyers grep féligaz találatai), a maradék 7 fájl valódi sebezhetőség volt.
+
+Javítás: 6 fájlnál a flotta-szabvány stdin-header minta
+(`printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -H @-`), ahol a curl saját stdinje szabad
+volt -- nincs tempfile, nincs mit egy kill otthagyjon. A `fleet-test.sh` `fleet_test_notify_finish`
+az egyetlen kivétel (a stdinje már a POST body-t viszi, `--data-binary @-`): ott
+`-H @<(printf ...)` (process substitution, egy anonim pipe fd, sosem diszk-útvonal).
+
+Új önteszt: `store/token-header-no-tempfile.selftest.sh` -- egy fekete lyuk cél (192.0.2.1,
+TEST-NET-1) hagy időt a SIGTERM-re futás közben. Kontroll eset (a régi mktemp-minta) igazolja,
+hogy a token TÉNYLEG kiszivárog megöléskor (a teszt-mechanizmus valóban fogja a hibát); a valódi,
+javított `redispatch-guard.sh` `_curl_get` igazolja, hogy nem szivárog.
+
+Ki döntött: fullstack (önálló, self-advance a fleet-nudger után, WhiteHat2 eredeti GO-ja alapján).
+Hivatkozás: kártya 0aba66b8; WhiteHat2 Cybersec GO msg 15339 (2026-10-29); Gate-SHA
+c1ff5413c8f8e69b7ea2fddce96d90b608b53e3a; `store/token-header-no-tempfile.selftest.sh`.
