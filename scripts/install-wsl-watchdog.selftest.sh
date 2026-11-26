@@ -259,6 +259,44 @@ else
   # --- unaffected behavior: MaxFails/MaxRestarts bound still intact --------
   check_line "MaxFails bound intact (exact line)" '$MaxFails    = 3   # consecutive fails (~15 min @ 5-min cadence) before a restart' "$PS1_CONTENT"
   check_line "MaxRestarts bound intact (exact line)" '$MaxRestarts = 3' "$PS1_CONTENT"
+
+  # --- card 3f6bb903: holder-ensure runs on EVERY tick, before either early
+  #     exit (healthy, or fresh-boot-grace skip) ---------------------------
+  check_line "3f6bb903: holder-ensure check calls pgrep for the holder process" \
+    '$holderOut = & wsl.exe -d $Distro -u $WslUser -- pgrep -f "sleep infinity" 2>$null' \
+    "$PS1_CONTENT"
+  check_line "3f6bb903: missing/failed holder check launches a new holder" \
+    'if ($LASTEXITCODE -ne 0 -or -not $holderOut) {' \
+    "$PS1_CODE"
+  # The holder-ensure block (lines pinned above) must appear BEFORE the
+  # healthy early-exit in the rendered code -- otherwise a healthy tick would
+  # never reach it, reintroducing exactly the bug this card fixes.
+  HOLDER_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n 'pgrep -f "sleep infinity"' | head -1 | cut -d: -f1)"
+  HEALTHY_EXIT_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n 'if ($healthy) {' | head -1 | cut -d: -f1)"
+  if [ -n "$HOLDER_IDX" ] && [ -n "$HEALTHY_EXIT_IDX" ] && [ "$HOLDER_IDX" -lt "$HEALTHY_EXIT_IDX" ]; then
+    echo "  ok   3f6bb903: holder-ensure runs BEFORE the healthy early-exit (line $HOLDER_IDX < $HEALTHY_EXIT_IDX)"
+  else
+    echo "  FAIL 3f6bb903: holder-ensure must run before the healthy early-exit (got holder=$HOLDER_IDX healthy-exit=$HEALTHY_EXIT_IDX)"
+    fail=1
+  fi
+
+  # --- card 3f6bb903: unplanned-restart detection + alert -------------------
+  check "3f6bb903: last-uptime state file declared" '$LastUptimeFile = "$StateDir\wsl-watchdog-last-uptime.txt"' "$PS1_CONTENT"
+  check "3f6bb903: unplanned-restart notify command declared" '$UnplannedRestartNotifyCmd' "$PS1_CONTENT"
+  check_line "3f6bb903: uptime-drop-without-our-restart condition pinned verbatim" \
+    'if ($uptimeSec -gt 0 -and $lastUptime -gt 0 -and $uptimeSec -lt $lastUptime) {' \
+    "$PS1_CODE"
+  check_line "3f6bb903: unplanned-restart alert actually invokes the notify script" \
+    '  & wsl.exe -d $Distro -u $WslUser -e bash -lc $UnplannedRestartNotifyCmd 2>$null' \
+    "$PS1_CONTENT"
+  check_line "3f6bb903: baseline is persisted every tick after the comparison" \
+    'if ($uptimeSec -gt 0) { Set-Content -Path $LastUptimeFile -Value "$uptimeSec" }' \
+    "$PS1_CONTENT"
+  # The watchdog's OWN restart must zero the baseline so it never alerts on
+  # its own expected uptime reset (the self-suppression this card relies on).
+  RESTART_ISSUED_BRANCH="$(printf '%s\n' "$PS1_CODE" | sed -n '/RESTARTING WSL distro/,/WSL restart issued/p')"
+  check_line "3f6bb903: watchdog-issued restart zeroes its own uptime baseline" \
+    '    Set-Content -Path $LastUptimeFile -Value "0"' "$RESTART_ISSUED_BRANCH"
 fi
 
 # --- configurability: default vs overridden grace window -------------------

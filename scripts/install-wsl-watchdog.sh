@@ -194,6 +194,7 @@ cat > "$WATCHDOG_WSL" <<PS1EOF
 \$WslUser     = "$WSL_USER"
 \$Probe       = "$INSTALL_DIR/scripts/wsl-liveness-probe.sh"
 \$RollbackCmd = "$INSTALL_DIR/scripts/wsl-watchdog-rollback-notify.sh"
+\$UnplannedRestartNotifyCmd = "$INSTALL_DIR/scripts/wsl-watchdog-unplanned-restart-notify.sh"
 \$MaxFails    = 3   # consecutive fails (~15 min @ 5-min cadence) before a restart
 # Peti 2026-08-05: "if you can't start on the first try, try 2 more times, then
 # restore yourself to the last working backup -- I shouldn't have to start WSL
@@ -218,6 +219,7 @@ cat > "$WATCHDOG_WSL" <<PS1EOF
 \$StateFile   = "\$StateDir\\wsl-watchdog-fails.txt"
 \$RestartCountFile = "\$StateDir\\wsl-watchdog-restart-count.txt"
 \$FreshSkipCountFile = "\$StateDir\\wsl-watchdog-freshskip-count.txt"
+\$LastUptimeFile = "\$StateDir\\wsl-watchdog-last-uptime.txt"
 \$LogFile     = "\$StateDir\\wsl-watchdog.log"
 New-Item -ItemType Directory -Force -Path \$StateDir | Out-Null
 function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf8 \$LogFile }
@@ -236,6 +238,58 @@ function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf
 # alone to compensate for a loose string match.
 \$healthy = (\$probeExit -eq 0) -and (\$out -cmatch '^OK')
 
+# Card 3f6bb903: ensure exactly one keepalive holder exists on EVERY tick, not
+# only right after a watchdog-issued restart. The restart branch further below
+# already launches one, but if that holder process dies later for an unrelated
+# reason (measured: 2026-11-25 21:56, cause unknown), nothing re-launched it
+# until the NEXT restart -- and both the \$healthy early-exit above and the
+# fresh-boot-grace skip below return before ever reaching that branch, so the
+# distro silently lost its only anti-idle-termination client and powered off
+# ~14 min later with no watchdog action at all. pgrep's own exit code is the
+# idempotency check: a holder already running means nothing new is launched.
+\$holderOut = & wsl.exe -d \$Distro -u \$WslUser -- pgrep -f "sleep infinity" 2>\$null
+if (\$LASTEXITCODE -ne 0 -or -not \$holderOut) {
+  Log "no keepalive holder found on this tick -- launching one"
+  Start-Process -WindowStyle Hidden -FilePath "wsl.exe" -ArgumentList @("-d", \$Distro, "--exec", "/bin/sleep", "infinity")
+}
+
+# Read the DISTRO's PID 1 age INSIDE wsl (a separate call -- the liveness
+# probe's own exit code/output must stay UNHEALTHY-or-OK only, this is a
+# second, independent signal), unconditionally on every tick now (card
+# 3f6bb903: the fresh-boot-grace check below used to be the only reader, which
+# meant a healthy read, or a tick that exits early right above, never looked
+# at uptime at all -- so a silent idle-restart that happened to come back
+# healthy by the next tick would never be detected or alerted on).
+# WhiteHat2 NO-GO M1 (card 58badae1, comment 17766): /proc/uptime is the WSL2
+# VM's lifetime, not the distro's -- measured live, /proc/uptime read 10887s
+# (3h) while the distro's own PID 1 was only 1703s old, because
+# vmIdleTimeout=-1 keeps the VM up across this watchdog's own
+# terminate+relaunch. 'ps -o etimes= -p 1' is the distro instance's own clock.
+# A failed read (wedged VM) falls through as uptimeSec=0, both "not fresh" for
+# the grace window below and "unknown" for the unplanned-restart check (never
+# alerts on a read it could not take).
+\$uptimeOut = & wsl.exe -d \$Distro -u \$WslUser -- ps -o etimes= -p 1 2>\$null
+\$uptimeSec = 0
+# cybered N10 (comment 17782): an unanchored match takes the first digit
+# sequence ANYWHERE in the output, including inside an unrelated warning
+# string on a 0-exit run -- anchor to "the whole trimmed line is a number".
+if (\$LASTEXITCODE -eq 0 -and \$uptimeOut -match '^\s*([0-9]+)\s*$') { \$uptimeSec = [double]\$matches[1] }
+
+# Card 3f6bb903 (unplanned-restart alert): a drop in PID 1 age between two
+# ticks means the distro restarted since the last tick. The restart branch
+# further below zeroes \$LastUptimeFile itself right after issuing a restart,
+# so a drop caused BY this watchdog never reaches here as a surprise -- only a
+# restart this watchdog did not cause (holder death, manual Windows action,
+# crash) produces a drop against the stored baseline, and that is exactly
+# what gets alerted.
+\$lastUptime = 0
+if (Test-Path \$LastUptimeFile) { \$lastUptime = [double](Get-Content \$LastUptimeFile -ErrorAction SilentlyContinue) }
+if (\$uptimeSec -gt 0 -and \$lastUptime -gt 0 -and \$uptimeSec -lt \$lastUptime) {
+  Log "distro uptime reset (\${lastUptime}s -> \${uptimeSec}s) without this watchdog issuing a restart -- alerting"
+  & wsl.exe -d \$Distro -u \$WslUser -e bash -lc \$UnplannedRestartNotifyCmd 2>\$null
+}
+if (\$uptimeSec -gt 0) { Set-Content -Path \$LastUptimeFile -Value "\$uptimeSec" }
+
 if (\$healthy) {
   Set-Content -Path \$StateFile -Value "0"
   Set-Content -Path \$RestartCountFile -Value "0"
@@ -243,23 +297,6 @@ if (\$healthy) {
   exit 0
 }
 
-# Fresh-boot grace: read the DISTRO's PID 1 age INSIDE wsl (a separate call --
-# the liveness probe's own exit code/output must stay UNHEALTHY-or-OK only,
-# this is a second, independent signal). WhiteHat2 NO-GO M1 (card 58badae1,
-# comment 17766): /proc/uptime is the WSL2 VM's lifetime, not the distro's --
-# measured live, /proc/uptime read 10887s (3h) while the distro's own PID 1
-# was only 1703s old, because vmIdleTimeout=-1 keeps the VM up across this
-# watchdog's own terminate+relaunch. Using VM uptime meant the grace window
-# never covered the one case it exists for: a distro this watchdog itself
-# just restarted. 'ps -o etimes= -p 1' is the distro instance's own clock. A
-# failed read (wedged VM) falls through as "not fresh" so a genuine total
-# wedge is never masked by the grace window.
-\$uptimeOut = & wsl.exe -d \$Distro -u \$WslUser -- ps -o etimes= -p 1 2>\$null
-\$uptimeSec = 0
-# cybered N10 (comment 17782): an unanchored match takes the first digit
-# sequence ANYWHERE in the output, including inside an unrelated warning
-# string on a 0-exit run -- anchor to "the whole trimmed line is a number".
-if (\$LASTEXITCODE -eq 0 -and \$uptimeOut -match '^\s*([0-9]+)\s*$') { \$uptimeSec = [double]\$matches[1] }
 if (\$uptimeSec -gt 0 -and \$uptimeSec -lt \$FreshBootGraceSec) {
   \$freshSkips = 0
   if (Test-Path \$FreshSkipCountFile) { \$freshSkips = [int](Get-Content \$FreshSkipCountFile -ErrorAction SilentlyContinue) }
@@ -307,6 +344,10 @@ if (\$fails -ge \$MaxFails) {
     Start-Process -WindowStyle Hidden -FilePath "wsl.exe" -ArgumentList @("-d", \$Distro, "--exec", "/bin/sleep", "infinity")
     Set-Content -Path \$RestartCountFile -Value "\$restarts"
     Set-Content -Path \$StateFile -Value "0"
+    # Card 3f6bb903: this restart is EXPECTED to reset the distro's PID 1 age --
+    # zero the stored baseline ourselves so the next tick's unplanned-restart
+    # check does not mistake our own action for a surprise.
+    Set-Content -Path \$LastUptimeFile -Value "0"
     Log "WSL restart issued (holding process launched via Start-Process)"
   } else {
     Log "GIVING UP after \$MaxRestarts restart attempts -- triggering in-WSL auto-rollback"
