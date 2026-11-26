@@ -374,6 +374,64 @@ describe('F3 fixture gaps (card af3cd669, CYBERED NO-GO 39256 F-3): pin the slas
   })
 })
 
+describe('F-1/F-2 residuals (card af3cd669, CYBERED NO-GO 39294): a symlinked --subdir hides an escaping inner link from a non--H walk, and a mutual sibling cycle aborts only after the destructive wipe', () => {
+  it('refuses to vendor when --subdir is a symlink to an IN-CLONE directory that itself contains an escaping inner link', () => {
+    const outside = mkdtemp('vendor-skill-symsafe-outside-')
+    const sentinelPath = join(outside, 'canary.txt')
+    writeFileSync(sentinelPath, 'LOCAL CANARY -- must never be vendored\n')
+
+    const upstream = initUpstream()
+    mkdirSync(join(upstream, 'real'))
+    writeFileSync(join(upstream, 'real', 'SKILL.md'), 'free content\n')
+    symlinkSync(outside, join(upstream, 'real', 'evil'), 'dir')
+    symlinkSync('../real', join(upstream, 'skills', 's'), 'dir')
+    git(upstream, 'add', '-A')
+    git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'subdir symlink to in-clone dir with escaping inner link')
+
+    const skillsDir = mkdtemp('vendor-skill-symsafe-skills-')
+    const res = runVendor(
+      ['--repo', upstream, '--name', 'evilname3', '--subdir', 'skills/s'],
+      { CLAUDE_SKILLS_DIR: skillsDir },
+    )
+    expect(res.status).not.toBe(0)
+    expect(existsSync(join(skillsDir, 'evilname3'))).toBe(false)
+    expect(readFileSync(sentinelPath, 'utf-8')).toBe('LOCAL CANARY -- must never be vendored\n')
+  })
+
+  it('a mutual cycle between two sibling directories aborts before any destructive step, keeping the OLD payload', () => {
+    const upstream = initUpstream()
+    mkdirSync(join(upstream, 'skills', 'foo', 'a'))
+    mkdirSync(join(upstream, 'skills', 'foo', 'b'))
+    symlinkSync('../b', join(upstream, 'skills', 'foo', 'a', 'x'), 'dir')
+    symlinkSync('../a', join(upstream, 'skills', 'foo', 'b', 'y'), 'dir')
+    git(upstream, 'add', '-A')
+    git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'mutual sibling cycle')
+
+    const skillsDir = mkdtemp('vendor-skill-symsafe-skills-')
+    const dest = join(skillsDir, 'foo')
+    // Pre-populate dest with an OLD, dest-only marker (same technique as the F2 dangling-symlink
+    // fixtures above): cp -RL can never recreate it, so it survives iff the destructive wipe
+    // below never ran.
+    mkdirSync(dest, { recursive: true })
+    writeFileSync(join(dest, 'dest-only-marker.txt'), 'must survive an aborted re-vendor\n')
+
+    const res = runVendor(
+      ['--repo', upstream, '--name', 'foo', '--subdir', 'skills/foo'],
+      { CLAUDE_SKILLS_DIR: skillsDir },
+    )
+    expect(res.status).not.toBe(0)
+    expect(existsSync(join(dest, 'dest-only-marker.txt'))).toBe(true)
+  })
+
+  it('a clean root-vendor with no symlinks at all still succeeds (pins the clone-equality alternative in the containment check)', () => {
+    const upstream = initUpstream()
+    const skillsDir = mkdtemp('vendor-skill-symsafe-skills-')
+    const res = runVendor(['--repo', upstream, '--name', 'cleanroot'], { CLAUDE_SKILLS_DIR: skillsDir })
+    expect(res.status, res.stderr).toBe(0)
+    expect(existsSync(join(skillsDir, 'cleanroot', 'skills', 'foo', 'SKILL.md'))).toBe(true)
+  })
+})
+
 describe('F3 (card af3cd669): the symlink-defense-in-depth guards are reachable, not dead code', () => {
   it('a sanctioned exclusion through a LEFTOVER symlink at dest/VENDORED.md is refused, not followed (REALPATH924 guard)', () => {
     // VENDORED.md/UPSTREAM-LICENSE are the ONLY names the top-level cleanup skips (line 102);
