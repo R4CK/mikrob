@@ -129,10 +129,12 @@ describe('F1 (card af3cd669): an upstream symlink pointing outside its own subtr
     const upstream = initUpstream()
     mkdirSync(join(upstream, 'skills', 'foo', 'nested'))
     writeFileSync(join(upstream, 'skills', 'foo', 'nested', 'real.txt'), 'inside content\n')
-    symlinkSync(
-      join(upstream, 'skills', 'foo', 'nested', 'real.txt'),
-      join(upstream, 'skills', 'foo', 'inside-link'),
-    )
+    // RELATIVE target, unlike F1's escape test above: a symlink committed with an ABSOLUTE target
+    // under the fixture repo's own pre-clone path keeps pointing at that original path after
+    // `git clone` copies the tree elsewhere -- literally escaping $src from the clone's point of
+    // view, which is a test bug, not a real "stays inside" case. A relative target resolves
+    // relative to the symlink's own location, so it correctly follows the tree into the clone.
+    symlinkSync(join('nested', 'real.txt'), join(upstream, 'skills', 'foo', 'inside-link'))
     git(upstream, 'add', '-A')
     git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'add in-tree symlink')
 
