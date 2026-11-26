@@ -33912,3 +33912,129 @@ Ki döntött: MikroB (a fix-kör kötelező pontjai, msg 25049); backend3 (imple
 Hivatkozás: kártya d97659cb; QA PASS 39117, CYBERED GO 39119, CYBERSEC GO 39120 (H-1 feltétel,
 F-1/F-2/L-2..L-5 leletek); `scripts/wsl-watchdog-holder-ensure.sh`, `scripts/install-wsl-watchdog.sh`,
 `scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 -- Kártya a1c38d36: wsl-cleanup.selftest.sh ne a valódi /tmp-ot (4726 bejegyzés) sweepelje -- false red minden land fleet-test-ben
+
+Kontextus: CYBERED GO 39219 (1535f7f9) és CYBERSEC (msg 25202) mérése: `store/wsl-cleanup.selftest.sh`
+~10 teljes-script (`bash wsl-cleanup.sh --dry-run`) hívást futtat a szekció-1 (eldobható
+land/test worktree) logika tesztelésére, és ezek közül 7 (öt azonos alakú, egy a `run_c1_case`
+függvényen belül 3x hívva, egy a `MINAGE_KNOB` eseten) NEM állítja be a `WSL_CLEANUP_TMP_DIR`
+env-et, így a szkript saját alapértelmezése (`WSL_CLEANUP_TMP_DIR="${WSL_CLEANUP_TMP_DIR:-/tmp}"`)
+miatt mindegyik a VALÓS /tmp-ot sweepeli (dry-run, csak olvasás -- `find`/`stat`, biztonsági
+kockázat nincs, csak SEBESSÉG). Mérve: 4726 valós /tmp bejegyzés, ~27.7s/dry-run, önállóan
+283.6s PASS 47/47 load 4-6 mellett, a `src/__tests__/store-selftests-all-run.test.ts` 180s
+subprocess-cap (`execFileSync(..., {timeout: 180_000})`) felett -- minden land fleet-test-ben
+false red, nem csak az érintett kártyákon.
+
+Döntés: a 7 szekció-1 hívás mindegyike egy üres, eldobható sandbox könyvtárat kap
+(`WT_TMP_SANDBOX="$TMP/wt-tests-tmp-sandbox"`, a selftest saját `$TMP`-jén belül, a trap-ban már
+törölve) a `WSL_CLEANUP_TMP_DIR` env-en át, ÚGY hogy a sweep_tmp() kódágat (szekció 3) továbbra is
+lefuttatja a worktree-sweep tesztek alatt is -- csak egy üres könyvtáron, nem a 4726 bejegyzésű
+valós /tmp-on. `store/wsl-cleanup.sh` PRODUKCIÓS kódja NEM módosult (a `WSL_CLEANUP_TMP_DIR`
+override már létezett, csak a selftest nem használta mind a 7 hívásnál); élő viselkedés
+változatlan.
+
+Új pin (SANDBOX-LEAK guard): az első szekció-1 hívást (`OUT=...`) egy `find`-shim veszi körül,
+ami naplózza a keresési gyökér első argumentumát, majd asszertálja, hogy a '/tmp' literál SOHA
+nem jelenik meg a naplóban (a valós /tmp-ot sosem kéri find-tól), ÉS hogy a shim tényleg kapott
+legalább egy hívást (nem-vákuum kontroll -- egy sosem futó find mellett is zölden passzolna).
+
+MEGFIGYELÉS: a fix ELŐTT kézzel reprodukálva (ugyanaz a hívás, `WSL_CLEANUP_TMP_DIR` nélkül,
+`find`-shim-mel): a naplózott gyökér pontosan `/tmp`, a SANDBOX-LEAK guard RED. A fix UTÁN a teljes
+selftest 49/49 PASS (47 eredeti + 2 új SANDBOX-LEAK assertion), mért futásidő 30.58s és 30.95s
+két egymást követő futásnál, load average 5.18/5.98/5.21 mellett -- a 60s elfogadási küszöb alatt,
+és messze a 180s vitest-cap alatt. Mutáció-teszt: a `WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX"`
+override visszavonása az egyik (shim-mel körülvett) hívásnál a SANDBOX-LEAK guardot RED-re
+fordítja, és a teljes futás 60s felett timeoutol (reprodukálja az eredeti hibát) -- a fix
+load-bearing, nem kozmetikus. A mutáns és az eredeti fájl `sha256sum`-mal ellenőrizve
+byte-azonosan visszaállítva (d132270dddb98568ff706ce480866020f2ee4aea9717fb38404956669acf8528).
+
+Mi maradt ki: a `store/wsl-cleanup.sh` produkciós kódja és viselkedése NEM változott -- a kártya
+explicit kérte ezt. A `WSL_CLEANUP_TMP_DIR` mechanizmus maga (a sanity-guard, traverzál-escape
+védelem, stb.) a c9c1f159/657f12a3/e2425f05 kártyákon már lefedett, ezen a körön nem érintve.
+
+Ki döntött: MikroB (dispatch, msg 25203, a CYBERED 39219 / CYBERSEC msg 25202 mérése alapján
+HIGH-ra emelve); backend3 (implementáció, teszt).
+Hivatkozás: kártya a1c38d36; CYBERED GO 39219 (card 1535f7f9); `store/wsl-cleanup.selftest.sh`,
+`store/wsl-cleanup.sh` (csak olvasva, nem módosítva), `src/__tests__/store-selftests-all-run.test.ts`.
+
+## 2026-11-26 18:00 -- Kártya a1c38d36 kiegészítés: a sandbox-könyvtárat a VALÓS /tmp alá kellett tenni, nem a $TMP alá
+
+Az előző (ugyanaznapi) a1c38d36 bejegyzés fix-e a `fleet-test.sh` szemafor alatt, a VALÓDI
+megosztott fán futva, konzisztensen (2/2) ugyanazzal a tünettel bukott: `wsl-cleanup passes`
+piros, `SANDBOX-LEAK guard: find shim captured nothing -- the guard is vacuous`. A gyökér-ok NEM
+a `fleet-test.sh` megosztott fáján lévő egyidejű terhelés volt (ez a korábban feltételezett,
+hibás hipotézis) -- izolált worktree-ben, `TMPDIR`-t egy VALÓDI /tmp-en kívüli útvonalra állítva
+(pl. `/home/neon/marveen-tmp/...`, pontosan ahogy a `fleet-test.sh` harness is teszi), a hiba
+determinisztikusan reprodukálódott standalone módban is.
+
+KÖVETKEZTETÉS: a `WT_TMP_SANDBOX="$TMP/wt-tests-tmp-sandbox"` (a selftest saját `$TMP`-jén,
+`mktemp -d`-n belül) nem garantálja, hogy a sandbox a VALÓS `/tmp` alatt legyen -- a `mktemp -d`
+a `$TMPDIR` env-et követi, és a `fleet-test.sh` harness ezt egy /tmp-en kívüli, futásonkénti
+könyvtárra állítja. `store/wsl-cleanup.sh` saját `sweep_tmp()` fail-closed SANITY guardja (kártya
+c9c1f159) pontosan ezt hivatott megállítani: csak olyan `WSL_CLEANUP_TMP_DIR`-t fogad el, ami
+`realpath`-dal `/tmp` vagy `/tmp/*`-ra oldódik fel -- minden mást "REFUSING /tmp sweep"-pel
+visszadob, `find`-ot soha nem hívja meg. A SANDBOX-LEAK guard pontosan ezt a helyzetet kapta el
+helyesen vákuumosnak (a guard maga NEM hibás -- a sandbox útja volt).
+
+Javítás: `WT_TMP_SANDBOX="$(mktemp -d /tmp/wt-cleanup-sandbox.XXXXXX)"` -- a sandbox mostantól
+EXPLICIT a valós `/tmp` alatt jön létre, `$TMPDIR`-től függetlenül. A cleanup trap kapott egy
+explicit `rm -rf "$WT_TMP_SANDBOX"`-ot is (már nem a `$TMP` alatt él, a korábbi "a meglévő trap
+már törli" indoklás emiatt nem áll többé -- ez csak ezen az új bejegyzésen változik, az előző
+bejegyzés szövegét nem módosítom, append-only).
+
+Mérve: a javított selftest 49/49 PASS egy szimulált, valódi /tmp-en kívüli `$TMPDIR` alatt is
+(`/home/neon/marveen-tmp/debug-sim`), 0 maradék sandbox-könyvtár két egymást követő futás után.
+Mutáció-teszt (visszaállítva, sha256 ellenőrizve): a `$TMP` alá nesztelt régi forma ugyanezen
+`$TMPDIR` alatt visszahozza a pontos tünetet (48/49, SANDBOX-LEAK guard vákuum) -- a javítás
+load-bearing. Harmadik `fleet-test.sh --ref 95aa6cf58` futás a VALÓDI megosztott fán: 178/178
+PASS (Test Files 1 passed).
+
+A gyökér-ok megtalálásához egy IDEIGLENES debug-commit (141b42b04, `store-selftests-all-run.test.ts`
+catch ágába `console.error(err.stdout/err.stderr)` téve) futott egy önálló `fleet-test.sh --ref`
+körön, majd egy következő commitban visszavonva -- a végső ág ezt a debug-kódot nem tartalmazza.
+
+Ki döntött: backend3 (gyökér-ok vizsgálat, javítás, mérés).
+Hivatkozás: kártya a1c38d36; commit 0abb49693 (eredeti fix), 141b42b04 (ideiglenes debug, visszavonva),
+95aa6cf58 (valódi gyökér-ok fix); `store/wsl-cleanup.selftest.sh`, `store/wsl-cleanup.sh:216-244`
+(sweep_tmp SANITY guard, csak olvasva).
+
+## 2026-11-26 19:15 -- Kártya a1c38d36, CYBERSEC NO-GO 39270 (68fe4d9c): a bare-/tmp pin-case tényleg sweep_tmp()-et futtatta a valós /tmp-en
+
+KONTEXTUS: CYBERSEC delta-gate 39270 a 68fe4d9c-s sha-n NO-GO-t adott. F-1 (MEDIUM, nem regresszió):
+a "SANITY guard pin, bare /tmp" eset (card e2425f05 öröksége) `source "$RUN"`-nal betölti
+`wsl-cleanup.sh`-t, majd DIREKT hívja `sweep_tmp()`-et -- ez megkerüli a `bash "$RUN" --dry-run`
+útvonalat, tehát a script saját `DRY_RUN=0` alapértéke volt érvényben: minden selftest/fleet-test
+futás a VALÓS /tmp aged bejegyzéseit törölte, Peti jóváhagyása nélkül (22. szabály). F-2 (LOW): a
+SANDBOX-LEAK guard (a1c38d36 saját korábbi köre) csak az ELSŐ (7 közül) WT_TMP_SANDBOX-invokációt
+fedte -- mutáció (M2: AGE-guard sor, M3: min-age-knob sor) a 6 másikon unpinned maradt, csendben
++30s-ot adott hozzá. F-3 (LOW): semmi nem pinnelte, hogy a cleanup trap TÉNYLEG törli-e
+WT_TMP_SANDBOX-ot (mutáció M4: `rm -rf "$TMP"` only túlélte, 49/0, egy sandbox-dir szivárgott).
+
+JAVÍTÁS:
+- F-1: a bare-/tmp esetben `DRY_RUN=1` a `source "$RUN"` UTÁN (a script maga felülírja 0-ra a
+  tetején, source előtti beállítás hatástalan lenne), PLUSZ egy `find() { :; }` shim, hogy a valós
+  /tmp bejárása (CYBERED F-3 hazárd, dry-runtól függetlenül) se történjen meg.
+- F-2: a 6 hiányzó invokáció (AGE guard, NAME-PATTERN guard, STAT-fallback guard, counter-split,
+  run_c1_case -- 3x hívva --, min-age-knob) mindegyike kapott egy `find` leak-shimet; a duplikált
+  assert-pár egy közös `assert_sandbox_leak_guard()` függvénybe lett kiemelve (az ELSŐ, már meglévő
+  helyszín is ezt hívja most, kód-azonosság, nem csak minta-másolás).
+- F-3: új "SANDBOX-RM guard" a fájl végén: a `cleanup` függvényt direktben meghívja (ugyanazt, amit
+  az EXIT trap is meghívna), és ellenőrzi, hogy WT_TMP_SANDBOX utána tényleg eltűnt.
+
+MÉRVE: standalone 67/67 PASS, ~1.7-1.9s. Mutáció-teszt (python3+hashlib sha256 ellenőrzött
+visszaállítás, SOHA `git checkout --` -- lásd lejjebb a buktatót): M2 (AGE-guard override törölve)
+66/1 FAIL, a SANDBOX-LEAK guard kapta el (talált '/tmp' search root). M4 (trap csak `$TMP`-t törli)
+66/1 FAIL, a SANDBOX-RM guard kapta el. Mindkét javítás load-bearing.
+
+BUKTATÓ (saját hiba ebben a körben, azonnal helyreállítva): az első M2-mutáció visszaállításakor
+`git checkout -- store/wsl-cleanup.selftest.sh`-t futtattam, ami NEM csak a mutánst, hanem a TELJES
+uncommitolt fix-munkát visszaállította a HEAD-re (68fe4d9c9) -- mivel a mutáns a saját, még nem
+commitolt javításom TETEJÉN élt, nem egy tiszta fán. Minden javítást (F-1/F-2/F-3) újra el kellett
+végezni. Ezután a mutáció-teszt visszaállítása kizárólag `cp` + sha256-ellenőrzés útján történt, a
+munkakönyvtáron KÍVÜLI biztonsági másolatból, nem git-művelettel.
+
+Ki döntött: backend3 (gyökér-ok vizsgálat, javítás, mérés, önjavítás a checkout-hibából).
+Hivatkozás: kártya a1c38d36; CYBERSEC NO-GO 39270 + QA PASS 39267 (sha 68fe4d9c); a javítás commitja
+ezen bejegyzés után következik; `store/wsl-cleanup.selftest.sh`; `store/wsl-cleanup.sh` (csak
+olvasva, nem módosult).

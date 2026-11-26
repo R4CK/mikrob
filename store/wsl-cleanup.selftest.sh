@@ -27,9 +27,49 @@ pass=0; fail=0
 ok()  { printf '  [ok ] %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  [FAIL] %s\n     %s\n' "$1" "${2:-}"; fail=$((fail+1)); }
 
+# SANDBOX-LEAK guard assertion (CYBERSEC NO-GO 39270 F-2): shared by every section-1
+# WT_TMP_SANDBOX invocation. Each call site exports its own `find` shim (below) that appends its
+# search-root argument to a log file, runs its `bash "$RUN"` invocation, then calls this with that
+# log file to assert the real "/tmp" literal was never among the search roots AND that the shim
+# captured at least one call (non-vacuity -- a reader that silently captured nothing would
+# otherwise look exactly like a clean tree).
+assert_sandbox_leak_guard() {
+  local log="$1"
+  if grep -qxF '/tmp' "$log"; then
+    bad "SANDBOX-LEAK guard: find was invoked against the real /tmp (search root '/tmp')" "$(cat "$log")"
+  else
+    ok "SANDBOX-LEAK guard: find is never invoked against the real /tmp"
+  fi
+  if grep -q . "$log"; then
+    ok "SANDBOX-LEAK guard: find shim actually captured calls (non-vacuous)"
+  else
+    bad "SANDBOX-LEAK guard: find shim captured nothing -- the guard is vacuous" ""
+  fi
+}
+
 TMP="$(mktemp -d)"
 MARVEEN_MAIN_TEST="$TMP/main"
 CLEANCORE_MAIN_TEST="$TMP/no-git-here"
+# Section-1 (throwaway-worktree) full-script invocations below don't care about /tmp at all, but
+# wsl-cleanup.sh's own default (WSL_CLEANUP_TMP_DIR="${WSL_CLEANUP_TMP_DIR:-/tmp}") makes every one
+# of them also run section 3's /tmp sweep against the REAL /tmp unless overridden -- measured
+# (CYBERED msg 25202/39219): ~4,726 real /tmp entries, ~27.7s per dry-run, 283.6s standalone PASS
+# at load 4-6, over the 180s vitest cap. Point every section-1 invocation at this empty, disposable
+# sandbox so section 3 still runs (no change to code paths exercised) but scans nothing.
+#
+# MUST resolve under the REAL /tmp, not just under $TMP: sweep_tmp()'s own fail-closed sanity
+# guard (card c9c1f159) refuses to sweep anything whose realpath isn't /tmp or /tmp/* -- and under
+# fleet-test.sh, $TMPDIR points at a run-scoped dir OUTSIDE /tmp, so a plain `mktemp -d` (hence
+# anything nested under that $TMP) resolves outside /tmp too. Measured: with the sandbox nested
+# under $TMP, fleet-test.sh's own harness made sweep_tmp refuse every call ("REFUSING /tmp sweep"),
+# find() was never invoked, and the SANDBOX-LEAK guard below correctly caught this as vacuous --
+# it passed standalone only because that shell's $TMPDIR is unset and mktemp -d falls back to
+# /tmp. Forcing the sandbox explicitly under /tmp (independent of $TMPDIR) satisfies the guard in
+# both environments.
+WT_TMP_SANDBOX="$(mktemp -d /tmp/wt-cleanup-sandbox.XXXXXX)"
+# MikroB (msg 25245, Peti-approved 14795): the sandbox must be removed when the selftest ends,
+# including on failure -- it is NOT nested under $TMP (see above), so the existing
+# `trap cleanup EXIT` below needs its own explicit rm -rf for it (added there).
 mkdir -p "$MARVEEN_MAIN_TEST" "$CLEANCORE_MAIN_TEST"
 
 git init -q "$MARVEEN_MAIN_TEST"
@@ -46,7 +86,7 @@ cleanup() {
   for d in "$LIVE_DIR" "$DEAD_DIR"; do
     [ -n "$d" ] && [ -d "$d" ] && git -C "$MARVEEN_MAIN_TEST" worktree remove --force "$d" 2>/dev/null
   done
-  rm -rf "$TMP"
+  rm -rf "$TMP" "$WT_TMP_SANDBOX"
 }
 trap cleanup EXIT
 
@@ -73,8 +113,27 @@ git -C "$MARVEEN_MAIN_TEST" worktree add -q --detach "$DEAD_DIR" HEAD
 PAST=$(( $(date +%s) - 130 * 60 ))
 touch -d "@$PAST" "$LIVE_DIR" "$DEAD_DIR"
 
+# SANDBOX-LEAK guard (card a1c38d36): this (and every other section-1) full-script invocation
+# must route section 3's /tmp sweep at WT_TMP_SANDBOX, never fall back to scanning the real /tmp
+# (measured, CYBERED msg 25202/39219: ~4,726 real entries, ~27.7s per dry-run). Shim `find` to log
+# its first argument (the search root) and assert the real "/tmp" literal is never among them --
+# and, so this can't pass vacuously by `find` simply not being called, that the shim DID capture
+# something.
+FIND_LEAK_LOG="$(mktemp)"
+find() {
+  printf '%s\n' "$1" >>"$FIND_LEAK_LOG"
+  command find "$@"
+}
+export -f find
+export FIND_LEAK_LOG
+
 OUT="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-       WSL_CLEANUP_MIN_AGE_MIN=120 bash "$RUN" --dry-run 2>&1)"
+       WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" \
+       bash "$RUN" --dry-run 2>&1)"
+
+unset -f find
+assert_sandbox_leak_guard "$FIND_LEAK_LOG"
+rm -f "$FIND_LEAK_LOG"
 
 # --- Case 1: clean, >2h old worktree whose owning PID is ALIVE must NOT be removed ----------
 if echo "$OUT" | grep -qF "SKIP (owning pid $LIVE_PID still alive): $LIVE_DIR"; then
@@ -114,8 +173,15 @@ wait "$AGE_PID" 2>/dev/null
 AGE_DIR="/home/neon/marveen-land-selftestage-${AGE_PID}"
 rm -rf "$AGE_DIR"
 git -C "$MARVEEN_MAIN_TEST" worktree add -q --detach "$AGE_DIR" HEAD
+FIND_LEAK_LOG="$(mktemp)"
+find() { printf '%s\n' "$1" >>"$FIND_LEAK_LOG"; command find "$@"; }
+export -f find
+export FIND_LEAK_LOG
 out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-       WSL_CLEANUP_MIN_AGE_MIN=120 bash "$RUN" --dry-run 2>&1)"
+       WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" bash "$RUN" --dry-run 2>&1)"
+unset -f find
+assert_sandbox_leak_guard "$FIND_LEAK_LOG"
+rm -f "$FIND_LEAK_LOG"
 if echo "$out" | grep -qF "worktree remove --force $AGE_DIR"; then
   bad "AGE guard (section 1): a brand-new worktree was (dry-run) removed -- age guard not enforced" "$out"
 else
@@ -133,8 +199,15 @@ rm -rf "$NP_DIR"
 git -C "$MARVEEN_MAIN_TEST" worktree add -q --detach "$NP_DIR" HEAD
 PAST=$(( $(date +%s) - 130 * 60 ))
 touch -d "@$PAST" "$NP_DIR"
+FIND_LEAK_LOG="$(mktemp)"
+find() { printf '%s\n' "$1" >>"$FIND_LEAK_LOG"; command find "$@"; }
+export -f find
+export FIND_LEAK_LOG
 out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-       WSL_CLEANUP_MIN_AGE_MIN=120 bash "$RUN" --dry-run 2>&1)"
+       WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" bash "$RUN" --dry-run 2>&1)"
+unset -f find
+assert_sandbox_leak_guard "$FIND_LEAK_LOG"
+rm -f "$FIND_LEAK_LOG"
 if echo "$out" | grep -qF "$NP_DIR"; then
   bad "NAME-PATTERN guard (section 1): a non-matching-name worktree was mentioned/removed -- name-pattern guard not enforced" "$out"
 else
@@ -161,9 +234,15 @@ stat() {
 }
 export -f stat
 export STATFAIL_DIR
+FIND_LEAK_LOG="$(mktemp)"
+find() { printf '%s\n' "$1" >>"$FIND_LEAK_LOG"; command find "$@"; }
+export -f find
+export FIND_LEAK_LOG
 out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-       WSL_CLEANUP_MIN_AGE_MIN=120 bash "$RUN" --dry-run 2>&1)"
-unset -f stat
+       WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" bash "$RUN" --dry-run 2>&1)"
+unset -f stat find
+assert_sandbox_leak_guard "$FIND_LEAK_LOG"
+rm -f "$FIND_LEAK_LOG"
 if echo "$out" | grep -qF "worktree remove --force $STATFAIL_DIR"; then
   bad "STAT-fallback guard (section 1): a worktree whose stat call fails was (dry-run) removed -- fallback-to-now not enforced" "$out"
 else
@@ -193,9 +272,15 @@ git() {
 }
 export -f git
 export RCCOUNT_DIR
+FIND_LEAK_LOG="$(mktemp)"
+find() { printf '%s\n' "$1" >>"$FIND_LEAK_LOG"; command find "$@"; }
+export -f find
+export FIND_LEAK_LOG
 out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-       WSL_CLEANUP_MIN_AGE_MIN=120 bash "$RUN" --dry-run 2>&1)"
-unset -f git
+       WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" bash "$RUN" --dry-run 2>&1)"
+unset -f git find
+assert_sandbox_leak_guard "$FIND_LEAK_LOG"
+rm -f "$FIND_LEAK_LOG"
 if echo "$out" | grep -qF "skipped (git rc): 1"; then
   ok "counter-split pin: the summary line's 'skipped (git rc)' count reflects the git-rc failure"
 else
@@ -239,10 +324,18 @@ run_c1_case() {
 
   GIT_FAIL_CMD=status GIT_FAIL_RC="$rc"
   local out
+  FIND_LEAK_LOG="$(mktemp)"
+  find() { printf '%s\n' "$1" >>"$FIND_LEAK_LOG"; command find "$@"; }
+  export -f find
+  export FIND_LEAK_LOG
   out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-         WSL_CLEANUP_MIN_AGE_MIN=120 GIT_FAIL_CMD="$GIT_FAIL_CMD" GIT_FAIL_RC="$GIT_FAIL_RC" \
+         WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" \
+         GIT_FAIL_CMD="$GIT_FAIL_CMD" GIT_FAIL_RC="$GIT_FAIL_RC" \
          bash "$RUN" --dry-run 2>&1)"
   GIT_FAIL_CMD=""; GIT_FAIL_RC=0
+  unset -f find
+  assert_sandbox_leak_guard "$FIND_LEAK_LOG"
+  rm -f "$FIND_LEAK_LOG"
 
   if echo "$out" | grep -qF "SKIP (git rc=$rc): $dir"; then
     ok "C1$label: SKIPs when git status dies silently with rc=$rc"
@@ -681,12 +774,22 @@ rm -rf "$LOOSE_OUT" 2>/dev/null
 # SANITY guard pin, bare /tmp (card e2425f05, Cybered GO 33287 on 657f12a3): the exact literal
 # "/tmp" (no trailing slash, no subpath) must be ACCEPTED -- it is the real-world default and the
 # case pattern's own "/tmp" branch, but it had no dedicated case asserting it is not refused.
+# CYBERSEC NO-GO 39270 F-1 (MEDIUM): sourcing wsl-cleanup.sh and calling sweep_tmp() directly
+# bypasses `bash "$RUN" --dry-run` entirely, so this used to run the REAL sweep (DRY_RUN=0, the
+# script's own default) against the live /tmp -- every selftest/fleet-test run deleted aged real
+# /tmp entries without Peti's approval (rule 22). This case only needs to prove the guard's
+# accept/refuse branch, not actually sweep anything: DRY_RUN=1 must be set AFTER sourcing
+# (wsl-cleanup.sh resets it to 0 unconditionally at its own top, so setting it before sourcing
+# would have no effect), and the `find` shim below makes sweep_tmp() skip the real-/tmp walk
+# entirely (CYBERED F-3: walking the real /tmp is itself a hazard, independent of dry-run).
 BARE_OUT="$(mktemp)"
 (
   WSL_CLEANUP_TMP_DIR="/tmp"
   export WSL_CLEANUP_TMP_DIR
   # shellcheck source=./wsl-cleanup.sh
   source "$RUN"
+  DRY_RUN=1
+  find() { :; }
   sweep_tmp
 ) >"$BARE_OUT" 2>&1
 if grep -qF "REFUSING /tmp sweep" "$BARE_OUT"; then
@@ -803,8 +906,16 @@ KNOB_WT="/home/neon/marveen-land-selftestknob-${KNOB_DEAD_PID}"
 rm -rf "$KNOB_WT"
 git -C "$MARVEEN_MAIN_KNOB" worktree add -q --detach "$KNOB_WT" HEAD
 touch -d '-3000 minutes' "$KNOB_WT"
+FIND_LEAK_LOG="$(mktemp)"
+find() { printf '%s\n' "$1" >>"$FIND_LEAK_LOG"; command find "$@"; }
+export -f find
+export FIND_LEAK_LOG
 MINAGE_KNOB_OUT="$(MARVEEN_MAIN="$MARVEEN_MAIN_KNOB" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-                   WSL_CLEANUP_MIN_AGE_MIN=lots bash "$RUN" --dry-run 2>&1)"
+                   WSL_CLEANUP_MIN_AGE_MIN=lots WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" \
+                   bash "$RUN" --dry-run 2>&1)"
+unset -f find
+assert_sandbox_leak_guard "$FIND_LEAK_LOG"
+rm -f "$FIND_LEAK_LOG"
 if printf '%s\n' "$MINAGE_KNOB_OUT" | grep -qF "worktree remove --force $KNOB_WT"; then
   ok "WSL_CLEANUP_MIN_AGE_MIN='lots': falls back to the default (120), old throwaway worktree still a dry-run candidate"
 else
@@ -817,6 +928,23 @@ else
 fi
 git -C "$MARVEEN_MAIN_KNOB" worktree remove --force "$KNOB_WT" 2>/dev/null
 rm -rf "$MARVEEN_MAIN_KNOB" "$KNOB_WT" 2>/dev/null
+
+# SANDBOX-RM guard (CYBERSEC NO-GO 39270 F-3, Peti 14795): pin that the EXIT trap's `cleanup`
+# actually removes WT_TMP_SANDBOX, not just $TMP -- unpinned until now (mutant M4: `rm -rf "$TMP"`
+# only, forgetting WT_TMP_SANDBOX, survived 49/0 and leaked one wt-cleanup-sandbox dir per run).
+# Calling `cleanup` directly (the same function the EXIT trap below will call again, harmlessly,
+# on this script's own exit) exercises the real removal logic without waiting for a real exit.
+if [ -d "$WT_TMP_SANDBOX" ]; then
+  ok "SANDBOX-RM guard: WT_TMP_SANDBOX exists before cleanup runs (precondition)"
+else
+  bad "SANDBOX-RM guard: WT_TMP_SANDBOX precondition failed -- missing before cleanup even ran" ""
+fi
+cleanup
+if [ -d "$WT_TMP_SANDBOX" ]; then
+  bad "SANDBOX-RM guard: WT_TMP_SANDBOX still exists after cleanup ran" ""
+else
+  ok "SANDBOX-RM guard: cleanup actually removed WT_TMP_SANDBOX"
+fi
 
 echo
 echo "wsl-cleanup.selftest: $pass passed, $fail failed"
