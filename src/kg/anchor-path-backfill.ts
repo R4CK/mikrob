@@ -137,6 +137,12 @@ export function applyAnchorPathBackfill(
 
   const createdIds: number[] = []
   let updatedCount = 0
+  // .immediate() (card 5ecf6133, MikroB msg 24849): better-sqlite3's default transaction() is
+  // DEFERRED -- it only acquires the write lock on the first actual write, so a second writer that
+  // already holds a read lock can block a deferred BEGIN with no timeout applying (busy_timeout
+  // only governs waiting for a BUSY lock, and a deferred transaction's lock upgrade mid-transaction
+  // does not go through that same wait path). BEGIN IMMEDIATE takes the write lock up front, so
+  // busy_timeout actually bounds the wait for a concurrent live writer.
   kgDb.transaction((): void => {
     for (const item of plan.toBackfill) {
       for (const path of item.resolvedPaths) {
@@ -153,7 +159,7 @@ export function applyAnchorPathBackfill(
       }
       kgDb.prepare('DELETE FROM kg_anchors WHERE id = ?').run(item.placeholder.id)
     }
-  })()
+  }).immediate()
 
   return {
     backfilled: plan.toBackfill.length,
@@ -221,5 +227,5 @@ export function restoreAnchorPathBackfill(kgDb: Database.Database, backup: Ancho
           row.checked_at,
         )
     }
-  })()
+  }).immediate() // same busy_timeout reasoning as applyAnchorPathBackfill above
 }
