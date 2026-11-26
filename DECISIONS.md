@@ -33166,3 +33166,49 @@ held-out-metric decision); backend (fixes, held-out re-measurement). Végrehajt�
 Hivatkozás: kártya 5ecf6133; `src/kg/store.ts`, `src/kg/anchor-staleness.ts`,
 `src/kanban-relations-git.ts`, `src/kg/anchor-path-backfill.ts`,
 `src/kg/anchor-path-backfill-cli.ts`, `src/kg/search.ts`, `src/kg/for-card.ts`.
+
+## 2026-11-26 -- 5ecf6133 (round 3): full-population held-out number, BEGIN IMMEDIATE, F1 contract
+left untouched (body/snippet rendering split into its own card, dbd2e272)
+
+MikroB addendum (msg 24849, after CYBERSEC/CYBERED's second round) added three asks on top of the
+correction entry directly above:
+
+1. **"Use cybered's 140-card set as the held-out benchmark"** -- the 30-card sample in the entry
+   above is superseded by this one. Re-ran the SAME held-out method (card's own node + anything
+   captured at/after it excluded, via a rolled-back SQLite savepoint per card) over the FULL
+   population: every distinct card with a real-path anchor after the backfill, 157 cards (not a
+   sample -- "need=0" in the measurement script, i.e. all of them, a superset of cybered's own
+   ~140). **Held-out: mean recall 0.0676, mean precision 0.0541.** Self-retrieval on the same 157:
+   mean recall 0.3032, mean precision 0.2516. The held-out number is close to both the 30-card
+   figure (0.0500) and CYBERED's own independent 140-card estimate (0.060) -- three different runs,
+   three different samples, same order of magnitude and the same conclusion: **>= 0.3 held-out is
+   NOT reached by this card's scope.** Reported as measured, not tuned.
+2. **"BEGIN IMMEDIATE (busy_timeout does not apply to a deferred transaction)"** -- better-sqlite3's
+   default `transaction()` is DEFERRED: it only takes the write lock on the first write inside it,
+   so a concurrent writer already holding a read lock can block the lock UPGRADE with no
+   busy_timeout-bounded wait (that pragma governs waiting for a BUSY lock on an already-pending
+   BEGIN, not this later upgrade). Fixed in `anchor-path-backfill.ts`: both the apply and the
+   restore transaction now use `.immediate()`, so `busy_timeout` actually bounds a concurrent live
+   writer's wait on both paths, as CYBERSEC's own lock-contention test assumed it already did.
+3. **Rendering (title/body/anchor/verdict, no echo) vs the F1 contract:** drafted the body/snippet
+   addition to `for-card.ts` entries as asked, and it immediately broke the existing test "only
+   structured fields leave the package -- never body/snippet free text (F1 contract)" --
+   `for-card.ts`'s own header comment records that QA+CYBERSEC signed off on body/snippet NEVER
+   leaving the package (comments 20763/20814, the original MT-07 gate). CYBERED's own NO-GO 39018
+   flagged this exact move as needing its own dedicated WhiteHat+RedHat pass ("the first point
+   where a poisoned REVIEW can carry text into prompts"). Escalated to MikroB rather than silently
+   overriding a prior gate-approved contract; MikroB's decision (msg 24913): keep the F1 contract
+   on THIS card -- title + anchor + the fixed-label why only (already shipped, round 2 above) --
+   and split body/snippet rendering into its own card, **dbd2e272** (URGENT, backend, own
+   WhiteHat+RedHat pass, behind `KG_INJECT_TEXT` default off), sequenced right after 5ecf6133 lands,
+   together with **01b10349** (the still-missing finding/decision node types -- without them a
+   pitfall node is only ever a title, so rendering its text has nothing useful to show yet either).
+
+**Not re-opened this round:** the entry.text draft was reverted in full (git diff on for-card.ts is
+empty again after this round; the F1 test is untouched and still green).
+
+Ki döntött: MikroB (msg 24849 addendum, msg 24913 F1-contract decision); backend (held-out
+re-measurement, BEGIN IMMEDIATE fix, escalation on the F1 conflict rather than overriding it).
+Végrehajtó: backend.
+Hivatkozás: kártya 5ecf6133, dbd2e272 (body/snippet rendering, split out), 01b10349 (pitfall/
+decision node types); `src/kg/anchor-path-backfill.ts`.
