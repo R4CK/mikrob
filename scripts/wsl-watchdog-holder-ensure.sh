@@ -41,10 +41,24 @@
 #   1 = zero holders present, PowerShell should launch one
 #   2 = ambiguous (2+ matches) or an internal error -- NEVER relaunch here,
 #       to avoid piling up duplicate holders on top of an already-odd state
+#
+# CYBERED NO-GO round 3 (comment 39005, F-1/F-2): the decisive "zero
+# holders" branch above was never exercised by any test, because the live
+# distro always has a real holder (the sandbox's own baseline, pid 719) and
+# the selftest's behavioural checks spawned a production-shaped
+# "/bin/sleep infinity" into the LIVE /proc to test the other branches,
+# which both risked leaking it (CYBERED measured a SIGKILL-leaked decoy)
+# and could not safely test the zero-holder case without first killing the
+# real holder. PROC_ROOT makes the scan directory overridable so a test can
+# point this at a fixture directory tree with 0/1/2/N synthetic
+# "<pid>/cmdline" files instead of the live distro's /proc -- no real
+# process is ever touched by the test.
 set -u
 
+PROC_ROOT="${WSL_WATCHDOG_HOLDER_PROC_ROOT:-/proc}"
+
 COUNT=0
-for cmdline_file in /proc/[0-9]*/cmdline; do
+for cmdline_file in "$PROC_ROOT"/[0-9]*/cmdline; do
   [ -r "$cmdline_file" ] || continue
   argv=()
   while IFS= read -r -d '' arg; do

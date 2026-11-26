@@ -320,6 +320,19 @@ else
     '    & wsl.exe -d $Distro -u $WslUser -e bash -lc $HolderCapNotifyCmd 2>$null' "$PS1_CONTENT"
   check_line "F-2 fix: a confirmed-present holder resets the relaunch cap" \
     '  Set-Content -Path $HolderRelaunchCountFile -Value "0"' "$PS1_CODE"
+
+  # --- CYBERED NO-GO round 3 (comment 39005, F-1 PowerShell side: P4/P6/P7/P9
+  #     survived as unpinned text) -- the window-expiry compare, the count
+  #     increment, and both persisted Set-Content writes had no pin at all,
+  #     so a mutant on any of them kept this selftest green.
+  check_line "F-1 round3: relaunch window expiry compare (-eq 0 OR elapsed -gt window)" \
+    '  if ($holderRelaunchWindowStart -eq 0 -or ($nowEpoch - $holderRelaunchWindowStart) -gt $HolderRelaunchWindowSec) {' "$PS1_CODE"
+  check_line "F-1 round3: new window start is persisted" \
+    '    Set-Content -Path $HolderRelaunchWindowStartFile -Value "$holderRelaunchWindowStart"' "$PS1_CODE"
+  check_line "F-1 round3: relaunch count is actually incremented" \
+    '    $holderRelaunchCount++' "$PS1_CODE"
+  check_line "F-1 round3: incremented relaunch count is persisted" \
+    '    Set-Content -Path $HolderRelaunchCountFile -Value "$holderRelaunchCount"' "$PS1_CODE"
   # The give-up alert must be reached only AFTER the counter would exceed the
   # cap, not before -- i.e. the cap check line precedes the relaunch
   # Start-Process line within the same branch.
@@ -567,67 +580,125 @@ if [ -f "$PS1_PATH" ]; then
 fi
 
 # --- card 3f6bb903: wsl-watchdog-holder-ensure.sh itself (the script the
-#     CYBERED NO-GO fix moved the decision into), real execution on Linux --
+#     CYBERED NO-GO fix moved the decision into).
+#
+# CYBERED NO-GO round 3 (comment 39005, F-1/F-2): the previous version of
+# this block spawned a REAL production-shaped "/bin/sleep infinity" into
+# the LIVE distro's /proc to test the one/two-holder cases, and relied on
+# the live baseline (whatever real holder already existed) for the
+# zero-holder case -- which on this host always has a real holder, so the
+# zero-holder/MISSING branch (the one that actually makes the watchdog act)
+# was NEVER exercised, and mutants H1/H6/H8 on that branch stayed green.
+# It also risked leaking the decoy on a SIGKILL mid-test (measured by
+# CYBERED). Both are fixed by driving the script entirely through
+# WSL_WATCHDOG_HOLDER_PROC_ROOT against a throwaway fixture directory tree
+# of synthetic "<n>/cmdline" files -- no real process is ever touched.
 HOLDER_SCRIPT="$(dirname "$0")/wsl-watchdog-holder-ensure.sh"
-if [ -x "$HOLDER_SCRIPT" ]; then
-  HOLDER_OUT_BASELINE="$(bash "$HOLDER_SCRIPT")"; HOLDER_RC_BASELINE=$?
-  case "$HOLDER_OUT_BASELINE" in
-    HOLDER_OK*) BASELINE_HOLDERS=1 ;;
-    HOLDER_MISSING*) BASELINE_HOLDERS=0 ;;
-    *) BASELINE_HOLDERS=-1 ;;
-  esac
+HOLDER_FIXTURE_ROOT="$TMP/holder-proc-fixture"
 
-  if [ "$BASELINE_HOLDERS" -ge 0 ]; then
-    echo "  ok   holder-ensure: baseline read is a clean OK or MISSING verdict ('$HOLDER_OUT_BASELINE', rc=$HOLDER_RC_BASELINE)"
+make_holder_cmdline() { # <file> <argv...>
+  local file="$1"; shift
+  printf '%s\0' "$@" > "$file"
+}
+
+reset_holder_fixture() {
+  rm -rf "$HOLDER_FIXTURE_ROOT"
+  mkdir -p "$HOLDER_FIXTURE_ROOT"
+}
+
+run_holder_fixture() { # sets HOLDER_OUT / HOLDER_RC
+  HOLDER_OUT="$(WSL_WATCHDOG_HOLDER_PROC_ROOT="$HOLDER_FIXTURE_ROOT" bash "$HOLDER_SCRIPT")"
+  HOLDER_RC=$?
+}
+
+assert_holder() { # <want_rc> <want_marker_anchor_regex> <description>
+  local want_rc="$1" want_marker="$2" desc="$3"
+  if [ "$HOLDER_RC" -eq "$want_rc" ] && printf '%s' "$HOLDER_OUT" | grep -q "$want_marker"; then
+    echo "  ok   holder-ensure (fixture): $desc (rc=$HOLDER_RC out='$HOLDER_OUT')"
   else
-    echo "  FAIL holder-ensure: baseline read was ambiguous/erroneous ('$HOLDER_OUT_BASELINE', rc=$HOLDER_RC_BASELINE) -- cannot run the relative checks below"
+    echo "  FAIL holder-ensure (fixture): $desc -- want rc=$want_rc marker=/$want_marker/, got rc=$HOLDER_RC out='$HOLDER_OUT'"
     fail=1
   fi
+}
 
-  # Add exactly one real holder: count must go up by exactly one and read OK
-  # or AMBIGUOUS depending on the baseline, never MISSING.
-  /bin/sleep infinity &
-  HOLDER_TEST_PID=$!
-  sleep 0.3
-  HOLDER_OUT_PLUS1="$(bash "$HOLDER_SCRIPT")"; HOLDER_RC_PLUS1=$?
-  kill "$HOLDER_TEST_PID" 2>/dev/null; wait "$HOLDER_TEST_PID" 2>/dev/null
-  if [ "$BASELINE_HOLDERS" -eq 0 ]; then
-    check "holder-ensure: adding the ONLY real holder reads HOLDER_OK" "HOLDER_OK count=1" "$HOLDER_OUT_PLUS1"
-    [ "$HOLDER_RC_PLUS1" -eq 0 ] && echo "  ok   holder-ensure: exit code 0 for exactly-one-holder" \
-      || { echo "  FAIL holder-ensure: expected exit 0, got $HOLDER_RC_PLUS1"; fail=1; }
-  else
-    check "holder-ensure: adding a SECOND real holder reads HOLDER_AMBIGUOUS" "HOLDER_AMBIGUOUS" "$HOLDER_OUT_PLUS1"
-    [ "$HOLDER_RC_PLUS1" -eq 2 ] && echo "  ok   holder-ensure: exit code 2 for ambiguous (2+) holders" \
-      || { echo "  FAIL holder-ensure: expected exit 2, got $HOLDER_RC_PLUS1"; fail=1; }
-  fi
+if [ -x "$HOLDER_SCRIPT" ]; then
+  # Zero holders: the decisive branch. Kills H1 (exit 1 -> 0), H8 (missing
+  # branch returns 2), H6 (marker renamed HOLDER_GONE).
+  reset_holder_fixture
+  run_holder_fixture
+  assert_holder 1 '^HOLDER_MISSING' "zero holders -> MISSING, exit 1"
 
-  # Lookalike: a file literally named "sleep infinity" must NOT be counted --
-  # this is the exact CYBERED F-1 "lookalike" shape (process whose cmdline
-  # CONTAINS the search text without being argv=["sleep","infinity"]).
+  # Exactly one holder (exact argv ["sleep","infinity"]).
+  reset_holder_fixture
+  mkdir -p "$HOLDER_FIXTURE_ROOT/1"
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" sleep infinity
+  run_holder_fixture
+  assert_holder 0 '^HOLDER_OK' "one holder -> OK, exit 0"
+
+  # Two holders -> ambiguous.
+  reset_holder_fixture
+  mkdir -p "$HOLDER_FIXTURE_ROOT/1" "$HOLDER_FIXTURE_ROOT/2"
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" sleep infinity
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/2/cmdline" sleep infinity
+  run_holder_fixture
+  assert_holder 2 '^HOLDER_AMBIGUOUS' "two holders -> AMBIGUOUS, exit 2"
+
+  # Extra-arg shape ("sleep infinity 5", 3 argv elements) must NOT count --
+  # kills H2 (argv length check loosened from -eq 2 to -ge 2).
+  reset_holder_fixture
+  mkdir -p "$HOLDER_FIXTURE_ROOT/1"
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" sleep infinity 5
+  run_holder_fixture
+  assert_holder 1 '^HOLDER_MISSING' "3-arg 'sleep infinity 5' is not counted"
+
+  # Non-sleep argv[0] with argv[1]=infinity must NOT count -- kills H3
+  # (basename-sleep check dropped).
+  reset_holder_fixture
+  mkdir -p "$HOLDER_FIXTURE_ROOT/1"
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" notsleep infinity
+  run_holder_fixture
+  assert_holder 1 '^HOLDER_MISSING' "non-sleep argv[0] is not counted"
+
+  # sleep with a different second argument must NOT count -- kills H4
+  # (argv[1]=="infinity" check dropped).
+  reset_holder_fixture
+  mkdir -p "$HOLDER_FIXTURE_ROOT/1"
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" sleep 5
+  run_holder_fixture
+  assert_holder 1 '^HOLDER_MISSING' "sleep with a non-infinity second arg is not counted"
+
+  # Lookalike: a file literally named "sleep infinity" (its own bash/path
+  # argv, never argv=["sleep","infinity"]) must not be counted either -- run
+  # against the real /proc this time (read-only check, no process started
+  # by this test), confirming the fixture semantics match live reality.
   LOOKALIKE_PATH="$TMP/sleep infinity"
   printf '#!/bin/bash\nsleep 5\n' > "$LOOKALIKE_PATH"
   chmod +x "$LOOKALIKE_PATH"
   bash "$LOOKALIKE_PATH" &
   LOOKALIKE_PID=$!
   sleep 0.3
-  HOLDER_OUT_LOOKALIKE="$(bash "$HOLDER_SCRIPT")"
+  HOLDER_OUT_LIVE_BEFORE="$(bash "$HOLDER_SCRIPT")"
   kill "$LOOKALIKE_PID" 2>/dev/null; wait "$LOOKALIKE_PID" 2>/dev/null
-  [ "$HOLDER_OUT_LOOKALIKE" = "$HOLDER_OUT_BASELINE" ] \
-    && echo "  ok   holder-ensure F-1 fix: a file literally named 'sleep infinity' is NOT counted as a holder (unchanged from baseline: '$HOLDER_OUT_LOOKALIKE')" \
-    || { echo "  FAIL holder-ensure F-1 regression: a lookalike-named process changed the verdict (baseline='$HOLDER_OUT_BASELINE' now='$HOLDER_OUT_LOOKALIKE')"; fail=1; }
+  HOLDER_OUT_LIVE_AFTER="$(bash "$HOLDER_SCRIPT")"
+  [ "$HOLDER_OUT_LIVE_BEFORE" = "$HOLDER_OUT_LIVE_AFTER" ] \
+    && echo "  ok   holder-ensure F-1 fix: a file literally named 'sleep infinity' on the live distro does not change the verdict (unchanged: '$HOLDER_OUT_LIVE_AFTER')" \
+    || { echo "  FAIL holder-ensure F-1 regression: a lookalike-named process on the live distro changed the verdict (with='$HOLDER_OUT_LIVE_BEFORE' without='$HOLDER_OUT_LIVE_AFTER')"; fail=1; }
 
-  # Self-match: invoking via a non-bash shell (dash) as the parent must not
-  # change the verdict either -- this is the CYBERED F-1 "self-match" shape.
-  # (Production always forces bash explicitly via `-e bash -lc`, but the
-  # detection logic itself must not depend on that for correctness.)
+  # Self-match: invoking via a non-bash shell (dash) as the parent, against
+  # the zero-holder fixture, must still read MISSING -- exact argv match
+  # (not a pgrep -f substring) is shell-independent by construction.
   if command -v dash >/dev/null 2>&1; then
-    HOLDER_OUT_DASH="$(dash -c "bash '$HOLDER_SCRIPT'")"
-    [ "$HOLDER_OUT_DASH" = "$HOLDER_OUT_BASELINE" ] \
-      && echo "  ok   holder-ensure F-1 fix: invoking via a dash parent does not change the verdict" \
-      || { echo "  FAIL holder-ensure F-1 regression: dash-parent invocation changed the verdict (baseline='$HOLDER_OUT_BASELINE' now='$HOLDER_OUT_DASH')"; fail=1; }
+    reset_holder_fixture
+    HOLDER_OUT_DASH="$(dash -c "WSL_WATCHDOG_HOLDER_PROC_ROOT='$HOLDER_FIXTURE_ROOT' bash '$HOLDER_SCRIPT'")"
+    case "$HOLDER_OUT_DASH" in
+      HOLDER_MISSING*) echo "  ok   holder-ensure F-1 fix: invoking via a dash parent over an empty fixture still reads MISSING (no self-match)" ;;
+      *) echo "  FAIL holder-ensure F-1 regression: dash-parent invocation over an empty fixture did not read MISSING (got '$HOLDER_OUT_DASH')"; fail=1 ;;
+    esac
   else
     echo "  ok   holder-ensure F-1 (self-match): dash not installed on this host, skipping that specific shell -- exact argv match (not a pgrep -f substring) makes this shell-independent by construction anyway"
   fi
+
+  rm -rf "$HOLDER_FIXTURE_ROOT"
 else
   echo "  FAIL wsl-watchdog-holder-ensure.sh not found or not executable at $HOLDER_SCRIPT"
   fail=1
