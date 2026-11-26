@@ -33734,3 +33734,48 @@ Végrehajtó: backend.
 Hivatkozás: kártya 5ecf6133, 01b10349, dbd2e272, d7acff99 (usefulness cards that need to land
 first for a higher held-out recall); `src/web/routes/settings.ts`, `src/kg/search.ts`,
 `src/config-registry.ts` (`KG_MIN_SCORE`).
+
+**2026-11-26 -- Kártya d97659cb: WSL watchdog két független keepalive holder + 1 perces tick (3f6bb903 live-teszt folytatása)**
+
+**Döntés:** a `wsl-watchdog-holder-ensure.sh` cél-darabszáma 1 -> 2 (`TARGET_HOLDERS=2`), a
+kimeneti sor `need=<n>`-et is ad (hány holdert kell indítani: 0, 1 vagy 2), 0/1/2 holdernél
+rendre MISSING(need=2)/MISSING(need=1)/OK, 3+-nál AMBIGUOUS (fail-closed, nem indít semmit). A
+PowerShell oldali `install-wsl-watchdog.sh` ezt a `need=`-et olvassa és pontosan annyi holdert
+indít (for-ciklus, nem fix egy darab Start-Process). A relaunch-cap (`$MaxHolderRelaunchesPerWindow`)
+HOLDER-DARABSZÁM szerint számol, nem tick szerint (egy tick most akár 2-t is kérhet), és
+részleges kielégítés TILOS: ha a szükséges darabszám a cap-ot átlépné, nulla holdert indít,
+nem a maradék egyet. A schtasks ütemezés 5 percről 1 percre ment (`/SC MINUTE /MO 1`), amit
+egy dobópróba-feladattal (létrehozás majd törlés, a valódi `MikroB-WSL-Watchdog` feladat
+érintése nélkül) ELŐZETESEN ellenőriztem, hogy ezt a Windows build elfogadja (nem feltételeztem).
+A `MaxFails` (3->15) és `MaxFreshSkips` (10->50) újra-kifejezve az 1 perces cadence-nél, hogy a
+~15 perces restart-küszöb és az ~50 perces boot-loop-küszöb valós időben ugyanaz maradjon.
+
+**Miért:** a 3f6bb903 élő kill-teszt (backend3 komment 39084, 2026-11-26 11:30) mérte, hogy az
+EGYETLEN holder megölése után a WSL saját idle-leállítása az 5 perces tick-ablak alatt
+leállíthatja a teljes disztrót, mielőtt a watchdog újraindítana egyet -- ez történt is élesben,
+független bizonyítékkal (a watchdog saját próba-sora "fresh boot uptime=4s", ÉS ennek az
+ügynöknek a saját `claude --continue` folyamata + tmux/systemd őse mind ~250-260s korú volt).
+Peti jóváhagyta az irányt (Telegram 14776, 2026-11-26 13:05): két független holder + 1 perces tick.
+
+**freellm draft (komment 39111, card 501c489f) felülvizsgálat:** Draft-Review: ELUTASÍTVA -- a
+draft Python/pytest modult (`wsl_watchdog.py`, `WSLWatchdog` osztály) feltételezett, ami nem
+létezik; a valódi implementáció bash (`wsl-watchdog-holder-ensure.sh`) + egy generált PowerShell
+szkript, saját fixture-alapú selftest-tel (`install-wsl-watchdog.selftest.sh`). A draft
+architektúrája nem illeszkedik a kódbázishoz, semmi nem volt belőle felhasználható.
+
+**Ellenőrzés:** `scripts/install-wsl-watchdog.selftest.sh` -- PASS, 0 FAIL (meglévő ~90+ pin
+kiterjesztve/frissítve az új need=/cap-logikára, TDD RED->GREEN minden új fixture-eseten:
+0 holder -> MISSING need=2, 1 holder -> MISSING need=1, 2 holder -> OK, 3+ holder -> AMBIGUOUS).
+Mutáció-teszt (kézzel, minden alkalommal RED majd visszaállítva): `TARGET_HOLDERS` 2->1 (RED),
+a `holderNeeded -gt 0` feltétel elhagyása (RED), a cap-növelés `+= $holderNeeded` -> `++` (RED),
+`MaxFails` 15->3 visszaállítás (RED). `npx tsc --noEmit` -- tiszta, 0 hiba. Scoped vitest
+(`src/__tests__/wsl-watchdog-disable-flag-early-exit.test.ts`, a szemafor-szkripten át) -- 1
+fájl/5 teszt zöld.
+
+**Mi maradt ki:** az élő kill-teszt (Kész-ha 4. pontja) -- MikroB explicit go-ja és a gate-ek
+(QA + CYBERSEC + RedHat) PASS/GO-ja NÉLKÜL nem futtatható (kártya feltétele, MikroB dispatch
+msg 25024).
+
+Ki döntött: Peti (irány jóváhagyása, Telegram 14776); backend3 (mérés, implementáció, teszt).
+Hivatkozás: kártya d97659cb (szülő b736f51a), 3f6bb903 komment 39084; `scripts/wsl-watchdog-holder-ensure.sh`,
+`scripts/install-wsl-watchdog.sh`, `scripts/install-wsl-watchdog.selftest.sh`.

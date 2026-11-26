@@ -1,7 +1,8 @@
 #!/bin/bash
-# Reports whether exactly one anti-idle-termination keepalive holder process
-# ("sleep infinity") is running inside THIS distro. Called by the Windows-side
-# watchdog (mikrob-wsl-watchdog.ps1) on every tick.
+# Reports how many anti-idle-termination keepalive holder processes
+# ("sleep infinity") are running inside THIS distro, against a target of
+# TARGET_HOLDERS (see below). Called by the Windows-side watchdog
+# (mikrob-wsl-watchdog.ps1) on every tick.
 #
 # CYBERED NO-GO (card 3f6bb903, comment 38947, F-1/F-2): the original design
 # asked wsl.exe to run `pgrep -f "sleep infinity"` directly through its `--`
@@ -37,10 +38,12 @@
 # Called as: wsl.exe -d <distro> -u <user> -e bash -lc "<this script>"
 # Exit codes (PowerShell side acts ONLY on exit 1 + the HOLDER_MISSING
 # marker together -- never on "any nonzero", per the F-2 fix):
-#   0 = exactly one holder present, nothing to do
-#   1 = zero holders present, PowerShell should launch one
-#   2 = ambiguous (2+ matches) or an internal error -- NEVER relaunch here,
-#       to avoid piling up duplicate holders on top of an already-odd state
+#   0 = exactly TARGET_HOLDERS present, nothing to do
+#   1 = fewer than TARGET_HOLDERS present, PowerShell should launch
+#       `need=<n>` more (the HOLDER_MISSING line's own count=/need= fields)
+#   2 = more than TARGET_HOLDERS (ambiguous) or an internal error -- NEVER
+#       relaunch here, to avoid piling up duplicate holders on top of an
+#       already-odd state
 #
 # CYBERED NO-GO round 3 (comment 39005, F-1/F-2): the decisive "zero
 # holders" branch above was never exercised by any test, because the live
@@ -53,9 +56,18 @@
 # point this at a fixture directory tree with 0/1/2/N synthetic
 # "<pid>/cmdline" files instead of the live distro's /proc -- no real
 # process is ever touched by the test.
+# Card d97659cb (3f6bb903 live-test follow-up, 2026-11-26): target holder
+# count raised 1 -> 2. The live kill-test on 3f6bb903 measured that a SOLE
+# holder leaves a gap where WSL's own idle-shutdown can tear the whole
+# distro down in the window between that holder dying and the next
+# watchdog tick relaunching it -- a second independent holder means losing
+# one still leaves one in place. TARGET_HOLDERS is the single source of
+# truth for that number so the HOLDER_OK/AMBIGUOUS boundary and the
+# `need=` count below cannot drift apart.
 set -u
 
 PROC_ROOT="${WSL_WATCHDOG_HOLDER_PROC_ROOT:-/proc}"
+TARGET_HOLDERS=2
 
 COUNT=0
 for cmdline_file in "$PROC_ROOT"/[0-9]*/cmdline; do
@@ -71,11 +83,11 @@ for cmdline_file in "$PROC_ROOT"/[0-9]*/cmdline; do
   COUNT=$((COUNT + 1))
 done
 
-if [ "$COUNT" -eq 1 ]; then
-  echo "HOLDER_OK count=1"
+if [ "$COUNT" -eq "$TARGET_HOLDERS" ]; then
+  echo "HOLDER_OK count=$COUNT"
   exit 0
-elif [ "$COUNT" -eq 0 ]; then
-  echo "HOLDER_MISSING count=0"
+elif [ "$COUNT" -lt "$TARGET_HOLDERS" ]; then
+  echo "HOLDER_MISSING count=$COUNT need=$((TARGET_HOLDERS - COUNT))"
   exit 1
 else
   echo "HOLDER_AMBIGUOUS count=$COUNT"
