@@ -103,7 +103,8 @@ src="$clone"
 # EXISTING, in-tree path -- it passes both the existence check above and the containment case
 # below (which explicitly allows "resolves to $src itself", for symlinks that legitimately point
 # back at their own containing directory without looping). `cp -RL` then recurses into it without
-# bound. Fixed by rejecting any symlink whose own directory sits at-or-under its resolved target.
+# bound. Fixed below (see the `find -L` loop detector; CYBERED NO-GO 39294 generalised this past
+# the original per-case ancestor check, which missed a multi-node cycle).
 # F-2: the loop above only validates symlinks `find` finds INSIDE $src -- it never validates $src
 # itself, or $LICENSE_FILE (found below, outside $src's tree when --subdir is set). Three routes
 # exploited this: --subdir's LAST component is itself a symlink out of the clone; a MIDDLE
@@ -116,23 +117,40 @@ case "$src_real" in
   "$clone_real"/*|"$clone_real") ;;
   *) echo "vendor-skill: --subdir resolves outside the upstream clone: $src -> $src_real" >&2; exit 4 ;;
 esac
+# CYBERED NO-GO 39294 (same card): the hand-rolled per-symlink loop guard above still missed two
+# shapes, identical on develop:
+# F-1: --subdir's LAST component is itself a symlink to a directory INSIDE the clone, and
+# `find "$src" -type l` (no -H) does not follow a symlinked START point during traversal -- it
+# lists $src itself as type l and never descends into it, so an escaping link NESTED inside that
+# target directory was never walked at all.
+# F-2: a mutual cycle between two sibling directories (a/x -> ../b, b/y -> ../a) resolves each
+# link to a real, existing, non-ancestor path -- it passed the loop guard above AND the existence
+# check, and only cp -RL's own traversal failure caught it, AFTER the payload wipe below.
+# Fixed by replacing the hand-rolled loop guard with CYBERED's validated two-step design, both
+# run before $dest is touched:
+# (1) `find -L "$src"` as an upfront loop detector. -L dereferences every symlink while
+#     traversing, and GNU find reports a non-zero exit on ANY filesystem loop -- self, ancestor,
+#     or a multi-node cycle -- which subsumes the old link_dir_real-vs-resolved check and
+#     additionally catches the mutual-cycle shape it missed.
+# (2) `find -H "$src" -type l` for the per-symlink existence/containment walk. -H follows a
+#     symlink given as the START point only (not ones found during traversal), so a symlinked
+#     --subdir is itself dereferenced for listing purposes and its CONTENTS get walked too,
+#     closing F-1.
+find -L "$src" >/dev/null 2>&1 || {
+  echo "vendor-skill: directory loop in upstream: $src" >&2
+  exit 4
+}
 while IFS= read -r -d '' link; do
   resolved="$(realpath -- "$link" 2>/dev/null)"
   [[ -n "$resolved" && -e "$resolved" ]] || {
     echo "vendor-skill: broken or cyclic symlink in upstream: $link" >&2
     exit 4
   }
-  link_dir_real="$(realpath -- "$(dirname "$link")")"
-  case "$link_dir_real" in
-    "$resolved"|"$resolved"/*)
-      echo "vendor-skill: upstream symlink creates a loop (points at its own ancestor): $link -> $resolved" >&2
-      exit 4 ;;
-  esac
   case "$resolved" in
     "$src_real"/*|"$src_real") ;;
     *) echo "vendor-skill: upstream symlink escapes its own tree: $link -> $resolved" >&2; exit 4 ;;
   esac
-done < <(find "$src" -type l -print0)
+done < <(find -H "$src" -type l -print0)
 
 # Licence text, if the upstream ships one (copied verbatim alongside the vendored files).
 # SUBDIR FIRST, repo root second: a skill monorepo can licence each skill separately and ship NO root
