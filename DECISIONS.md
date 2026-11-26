@@ -33839,3 +33839,52 @@ gate); fullstack (applied the fix).
 Végrehajtó: fullstack.
 Hivatkozás: kártya 7f3cbe92 (child of 5ecf6133), 6d542dc9 (the fix this corrects/extends),
 01b10349 (the upcoming bulk ingestion this must land before).
+
+## 2026-11-26 -- KG embeddings fix round: floating promise, slot-release pin, sweep re-arm, single-flight, stale-write guard (kártya 7f3cbe92, CYBERSEC NO-GO + QA FAIL 39145)
+
+CYBERSEC NO-GO + QA FAIL 39145 on the entry above's Gate-SHA (dfd54b2496a3c0e9d37f50623026bd0e0d388976)
+found five problems, all fixed in `src/kg/store.ts`:
+
+- F-1: `runEmbedSlot`'s `run().then().finally()` chain lost its `void` marker in this card's own
+  conflict resolution against 6d542dc9's landing (`no-floating-promises` had regressed 0 -> 1).
+  Restored; `lint-ratchet.sh` confirms 0 again.
+- F-5: `resetEmbedCountersForTest()` (this card's own addition) wipes `embedActive` back to 0
+  after every test -- which, before this fix, erased the ONLY thing that used to catch a deleted
+  `embedActive--` in `runEmbedSlot`'s `finally()`: the leaked, permanently-elevated counter used
+  to starve and fail the NEXT test (an accidental, implicit pin). Added `getEmbedActiveForTest()`
+  and an explicit, direct assertion in the existing F-1b concurrency test instead of depending on
+  cross-test leakage.
+- F-2: `scheduleBackfillSweep()` only ever ran one pass at `BACKFILL_SWEEP_LIMIT` (2000) and
+  nothing re-armed another -- CYBERSEC measured a 2500-row backlog leaving 446 rows still NULL
+  even after +1h of real time. Now re-arms whenever a pass's `attempted` count hits the limit,
+  until a pass returns under it.
+- F-3: the sweep had no "currently running" flag, only a pending-timer check cleared to null the
+  moment the timer fires -- before the long `backfillKgNodeEmbeddings` call it guards even starts.
+  A failure arriving mid-flight saw no pending timer and armed a FULLY CONCURRENT second sweep
+  over the same backlog -- CYBERSEC measured backend-down + a write every 3s producing 10,761
+  embed calls in 120s. Added a `backfillSweepRunning` single-flight flag, cleared before any F-2
+  re-arm call so the re-arm is never self-blocked.
+- F-4: `backfillKgNodeEmbeddings` read a row's text, awaited `generateEmbedding` (can be slow),
+  then wrote the result back unconditionally. If the text changed, or a fresher embedding already
+  landed, while that call was in flight, the stale write would overwrite it -- and since the
+  column stops being NULL, this sweep's own `WHERE embedding IS NULL` filter would never see the
+  row again to repair it. The `UPDATE` is now guarded on `embedding IS NULL` AND every field the
+  embedded text was built from still matching what was read; a mismatch makes it a no-op and the
+  still-NULL row is caught by the next sweep instead.
+
+All four non-trivial fixes (F-2/F-3/F-4/F-5) were verified by mutation, not just by a green
+suite: reverting each guard in turn (and running the relevant new test) reproduced exactly the
+behaviour CYBERSEC measured -- 41 overlapping sweeps hitting the same stuck row (F-3), the stale
+[1,2,3] vector landing over the fresh text (F-4), and the mutant test itself failing the moment
+`embedActive--` is deleted (F-5).
+
+Measured: `kg-embed-backfill.test.ts` 19/19 green (4 new cases: F-2's 2500-row backlog, F-3's
+single-flight storm, F-4's stale-write guard, plus F-5's explicit pin on the existing F-1b test).
+Full `src/__tests__` kg-filtered run: 697/697 green. `npx tsc --noEmit -p .` clean.
+`store/lint-ratchet.sh`: no rule got worse (459 findings, baseline holds).
+
+Ki döntött: cybersec (NO-GO 39145) + qa (FAIL 39145), both on this card's delta gate; fullstack
+(applied the fix). MikroB msg 25084 ordered the fix round.
+Végrehajtó: fullstack.
+Hivatkozás: kártya 7f3cbe92, gate comments/verdict 39145, MikroB inter-agent msg 25084, previous
+entry above (the round this corrects).
