@@ -32625,3 +32625,21 @@ Nincs teljes fleet-test (delta szabály, Peti 13846): egyetlen bash teszt-fájl,
 végrehajtó backend.
 **Hivatkozás:** kártya 2ba5fa66; `store/marveen-land.sh` (`land_one`,
 `card_designated_gates_agree`); `store/marveen-land-card-branch.selftest.sh`.
+
+## 2026-11-25 21:00 -- F7 kezdő lépés: `agent-worktree.sh --card` mód mopsionhoz (kártya 380a5e16)
+
+**Döntés:** `store/agent-worktree.sh` kapott egy `--card <id>` módot mopsionhoz, ugyanazzal a
+mechanizmussal mint az F4 (marveen) kártya-módú worktree-je: a kártya saját, eldobható worktree-jét
+`card/<id>` ágon hozza létre/tartja karban, a kártyánkénti `node_modules`-linkeléssel együtt.
+Selftest hozzáadva (`store/agent-worktree.selftest.sh`).
+**Miért:** a kártya 1. követelménye (`agent-worktree.sh --card <id> for mopsion`); Peti 13099
+döntése szerint a t3code/kártya-worktree mechanizmus az EGYETLEN irány, nem opcionális párhuzamos
+út.
+**Ellenőrzés:** `store/agent-worktree.selftest.sh` zöld (a `--card` ágra épülő új esetekkel).
+**Nincs ebben a bejegyzésben:** a kártya 2. (`mopsion-land.sh --card <id>`) és 3. (egy valós
+mopsion kártya kártya-módban landolva) követelménye -- ez a bejegyzés csak az 1. követelményt
+fedi; a kártya emiatt `waiting`-re ment review-ra, de a cím `[0%]` jelzése szándékosan nem lett
+felülírva, amíg a 2-3. pont nincs kész.
+**Ki döntött:** DevO (fullstack), kártya leírása szerint.
+**Hivatkozás:** kártya 380a5e16; commit 39a412993 (`feat(mopsion): add --card mode to
+agent-worktree.sh`); `store/agent-worktree.sh`, `store/agent-worktree.selftest.sh`.
