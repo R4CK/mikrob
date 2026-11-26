@@ -33964,3 +33964,34 @@ kapu (`shebang-files-executable.test.ts`) szerint git mode 100644-ként volt com
 (sima `chmod +x` ezen a fájlrendszeren nem marad meg az indexben), ugyanazon blob-sha mellett,
 commit 55be11a67d63f3c6b3a2b11f1d5e1b8f861d2bb5. Tartalmi változás nincs, csak a mód-bit.
 Hivatkozás: kártya 1b4c566e.
+
+**CYBERSEC NO-GO fix round (kártya 1b4c566e, gate-sha 184f8fa42, Peti 14792):**
+1. MUST F-1 (regresszió, javítva): a `<` redirect olvasó lookbeholdja `(?<!<)<(?!<)`-ről
+   `(?<![<=])<(?!<)`-re szélesedett, hogy a curl `-F name=<file` ne kettőzze a találatot a
+   dedikált GATEBINVAK916 olvasóval -- de ez a szélesítés egyúttal megszüntette MINDEN más
+   `x=<fájl` shell-redirect olvasását is (pl. `--body=</path/fajl`, ami bash-ben valódi
+   stdin-redirect), amin keresztül egy valódi, develop-en meglévő kapu (gondolatjel-tiltás)
+   34/40 próbált alakon némán 2-ről 0-ra váltott. A `-F` kettős találat ártalmatlan (mindkét
+   ág ugyanazt a fájlt olvassa, ugyanazt a szöveget fűzi a `parts`-hoz), ezért a lookbehind
+   visszaállítva az eredetire. CONTROL teszt hozzáadva (`--body=<file` küldésen), mutáció-
+   tesztelve: a visszaállított mutáns PONTOSAN ezt az egy esetet buktatja, mást nem.
+2. SHOULD (javítva): a `collect_bash_body` három fail-closed ága (olvashatatlan @file,
+   fel-nem-oldható $-útvonal, heredoc nélküli @-) eddig csak a kilépési kódot pinnelte --
+   mindhárom ág mutánsa (a korai `return` kivéve) zölden futott át, mert a konkrét OK-szöveg
+   nem volt ellenőrizve. Minden háromhoz hozzáadva egy `stderr`-ben megjelenő, ág-specifikus
+   almondat-ellenőrzés; egyenként mutáció-tesztelve, mindegyik PONTOSAN a saját esetét
+   buktatja.
+3. A kódkomment és a teszt-docstring helytelen indoklása javítva (CYBERSEC OBSERVATION): a
+   `main()` diszpécsere if/elif/else, ezért a `http_channel_gate` SOHA nem futhat egy olyan
+   híváson, amit a `telegram_bash_gate` már elvitt -- nincs futási-sorrendi kollízió a két
+   kapu között, a korábbi "némán megfordítaná az irányt" állítás téves volt. A valós ok: a
+   `telegram_bash_enabled()` alapból KI van kapcsolva, és amíg ki van kapcsolva, egy Telegram
+   küldés szándékosan TELJESEN auditálatlan marad -- a Telegram felvétele a
+   `http_channel_gate` céllistájába pont ebben az állapotban auditálná fail-closed irányban,
+   ami ellentétes a funkció saját "ki" alapértelmezésének szándékával.
+4. Telegram Bash küldések alapból (és fájl-törzzsel bekapcsolva is) auditálatlanok maradnak
+   -- ez MEGLÉVŐ, develop-on is azonos viselkedés, nem ezen a kártyán épült be és nem ezen a
+   kártyán változik; CYBERSEC LOW-nak minősítette, a felügyeleti csatorna szándékos
+   fail-open döntése.
+Hivatkozás: kártya 1b4c566e; CYBERSEC NO-GO komment 39236; `scripts/hooks/outgoing-copy-gate.py`,
+`scripts/__tests__/outgoing-copy-gate-outbound-union.test.py`.

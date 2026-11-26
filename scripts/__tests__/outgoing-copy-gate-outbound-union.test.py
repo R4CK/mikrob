@@ -14,8 +14,12 @@ What is pinned here, and why each case earns its place:
   - Telegram Bot API is DELIBERATELY NOT a target of http_channel_gate (see the
     decision comment above its definition in outgoing-copy-gate.py): that
     channel already has its own, deliberately fail-OPEN gate here
-    (telegram_bash_gate, GATETG816) and must not be silently flipped to
-    fail-closed by a second gate with the opposite failure direction;
+    (telegram_bash_gate, GATETG816). main()'s if/elif/else dispatch means the
+    two gates can never run on the same call (no run-order collision, CYBERSEC
+    comment 39236 corrected an earlier wrong claim that one existed); the real
+    reason is that telegram_bash_gate is opt-in and OFF by default, and while
+    off a Telegram send should stay fully unaudited by design, not get
+    audited fail-closed by http_channel_gate instead;
   - /api/messages (inter-agent) gets ONLY the homoglyph check, not the full
     copy audit (accent-free fleet traffic would false-positive constantly);
   - inter-agent failure direction is the OPPOSITE of the email/HTTP-channel
@@ -169,22 +173,39 @@ ATFILE_CASES = [
      f"wget https://api.resend.com/emails --body-file={bad_file}", 2),
     ("curl -d @- with a quoted heredoc still reads the heredoc, not the @- marker",
      "curl -s https://api.resend.com/emails -d @- <<'JSON'\n" + GOOD + "\nJSON", 0),
-    ("curl -d @- with NO heredoc is unreadable -> BLOCKS (fail-closed, no silent pass)",
-     "curl -s https://api.resend.com/emails -d @-", 2),
-    ("curl -d @$MISSING (unresolved shell var in the path) is unreadable -> BLOCKS",
-     "curl -s https://api.resend.com/emails -d @$MISSING/body.txt", 2),
-    ("curl -d @/nonexistent (missing file) is unreadable -> BLOCKS",
-     "curl -s https://api.resend.com/emails -d @/nonexistent/path/body.txt", 2),
-    ("-F name=<file keeps working as a normal shell redirect reader, not a redirect "
-     "mistaken for the file-body form (regression check for the (?<![<=]) fix)",
+    ("curl -d @- with NO heredoc is unreadable -> BLOCKS (fail-closed, no silent pass); "
+     "SHOULD-fix pin (CYBERSEC comment 39236, point 2): assert the specific stdin-without-"
+     "heredoc reason, not just the exit code, so a mutant that turns THIS branch into a "
+     "silent pass cannot hide behind some other unrelated block",
+     "curl -s https://api.resend.com/emails -d @-", 2, "stdin-rol jon"),
+    ("curl -d @$MISSING (unresolved shell var in the path) is unreadable -> BLOCKS; "
+     "SHOULD-fix pin: assert the specific unresolved-path reason",
+     "curl -s https://api.resend.com/emails -d @$MISSING/body.txt", 2, "fel nem oldhato utvonalrol"),
+    ("curl -d @/nonexistent (missing file) is unreadable -> BLOCKS; "
+     "SHOULD-fix pin: assert the specific unreadable-file reason",
+     "curl -s https://api.resend.com/emails -d @/nonexistent/path/body.txt", 2, "nem olvashato"),
+    ("-F name=<file keeps working as a normal shell redirect reader AND is matched "
+     "a second time by the dedicated file-body regex -- the double read is harmless, "
+     "both append the same text",
      f"curl -s https://api.resend.com/emails -F body=<{good_file}", 0),
+    ("CONTROL (CYBERSEC F-1, card 1b4c566e gate 184f8fa42): a plain `--body=<file` shell "
+     "redirect, unrelated to curl -F, still BLOCKS on an em-dash file. A widened lookbehind "
+     "that excludes '=' (i.e. putting back (?<![<=])<(?!<)) makes this pass silently -- that "
+     "exact mutant must turn this case red.",
+     f"python3 scripts/support-mail/send.py --to a@b.hu --body=<{bad_file}", 2),
 ]
-for name, cmd, want in ATFILE_CASES:
-    got, _stderr = run_gate(cmd)
-    ok = got == want
+for case in ATFILE_CASES:
+    name, cmd, want = case[0], case[1], case[2]
+    want_substr = case[3] if len(case) > 3 else None
+    got, stderr = run_gate(cmd)
+    ok = got == want and (want_substr is None or want_substr in stderr)
     if not ok:
         failed.append(name)
-    print(f"  [{'PASS' if ok else 'FAIL'}] {name}: exit={got} want={want}")
+    detail = f"exit={got} want={want}"
+    if want_substr is not None:
+        substr_status = "found" if want_substr in stderr else f"MISSING:{want_substr!r}"
+        detail += f" substr={substr_status}"
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
 
 print()
 if failed:

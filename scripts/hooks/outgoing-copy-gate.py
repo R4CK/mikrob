@@ -1729,7 +1729,17 @@ def collect_bash_body(cmd: str):
     # A single `<` only. Without the lookarounds a heredoc (`<<'EOF'`) matches
     # here and the quoted delimiter is taken for a filename -- caught by the
     # first live probe of this gate, which blocked with "'EOF': No such file".
-    redirect = re.search(r"(?<![<=])<(?!<)\s*([^\s|;&<>]+)", cmd)
+    # NOTE (CYBERSEC F-1, card 1b4c566e gate 184f8fa42, regression fix): this
+    # lookbehind was briefly widened to (?<![<=])<(?!<) to stop curl's
+    # `-F name=<file` form being matched twice (once here, once by the
+    # dedicated _FILE_BODY_FORMS entry below). That widening also stopped this
+    # branch from reading every OTHER `x=<file` shell redirect (e.g.
+    # `--body=</path/file`, a real stdin redirect in bash), a one-token
+    # evasion of the audit that did not exist on develop: 34 of 40 probed send
+    # shapes went from exit 2 to exit 0. The `-F` double-match this guarded
+    # against is harmless (both branches read the same file and append the
+    # same text to `parts`), so the lookbehind is reverted to the original.
+    redirect = re.search(r"(?<!<)<(?!<)\s*([^\s|;&<>]+)", cmd)
     if redirect:
         raw = redirect.group(1)
         path = os.path.expandvars(os.path.expanduser(raw))
@@ -1861,12 +1871,19 @@ def pass_with_warning(msg: str) -> str:
 # card 74181db2, telegram_bash_gate below) is deliberately fail-OPEN on the
 # exact same channel, because Telegram is the owner's only supervision
 # channel and silencing it costs more than a slipped accent -- a decision
-# already taken and tested here. Adding Telegram to this gate's target list
-# would silently flip that channel's failure direction the first time this
-# gate's own early-exit ran before telegram_bash_gate ever saw the call. Two
-# gates disagreeing about the SAME channel's failure direction is worse than
-# one of them not covering it, so Telegram stays out of this list; the
-# community API and Discord REST have no such prior decision to collide with.
+# already taken and tested here. main()'s dispatch is if/elif/else
+# (is_send_invocation / telegram_bash_enabled()+is_telegram_bash_send /
+# else), so http_channel_gate can never run on a call telegram_bash_gate
+# already took -- there is no run-order collision between the two gates
+# (CYBERSEC, comment 39236, card 1b4c566e gate 184f8fa42: the prior wording
+# here claimed one and was wrong). The real reason is the OFF state:
+# telegram_bash_enabled() defaults to false, and while it is off a Telegram
+# send falls through to this else arm untouched by telegram_bash_gate. Adding
+# Telegram to _HTTP_CHANNEL_TARGETS would then audit it fail-closed in
+# exactly the state the feature's own default means to leave it fully
+# unaudited -- "off" should mean off, not "audited by a sibling gate
+# instead". The community API and Discord REST have no such existing
+# default-off decision to override.
 _HTTP_CHANNEL_TARGETS = (
     ("marveen.io", re.compile(
         r"^((https?://)?([^/\s]*\.)?api\.marveen\.io|\$\{?\w+\}?)(/[^\s]*)?"
