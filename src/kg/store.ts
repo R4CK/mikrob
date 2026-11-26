@@ -14,9 +14,10 @@
 import Database from 'better-sqlite3'
 import { existsSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
-import { STORE_DIR } from '../config.js'
+import { STORE_DIR, EMBED_MODEL } from '../config.js'
 import { SECRET_PATTERNS } from '../security/secret-gate.js'
 import { MIGRATIONS, KG_SCHEMA_VERSION, type KgNodeType, type KgEdgeRel } from './schema.js'
+import { generateEmbedding } from '../db.js'
 
 export const KG_DB_FILENAME = 'knowledge-graph.db'
 
@@ -448,6 +449,47 @@ export function rebuild(db: Database.Database, dbPath: string): Database.Databas
   return openKgDb(dbPath)
 }
 
+/** The text sent to the embedding backend for a node -- same "fields joined by a space, skip
+ *  empty/null" shape src/db.ts's scheduleEmbedding/backfillEmbeddings use for memories (content +
+ *  keywords). Exported so the backfill and the auto-embed write path can never drift apart on
+ *  what "the node's text" means. */
+export function kgEmbedText(
+  title: string,
+  body?: string | null,
+  snippet?: string | null,
+  keywords?: string | null,
+): string {
+  return [title, body, snippet, keywords]
+    .filter((s): s is string => !!s && s.trim() !== '')
+    .join(' ')
+}
+
+/** Fire-and-forget, same posture as src/db.ts's scheduleEmbedding for memories: a down/missing
+ *  Ollama backend leaves the column NULL and backfillKgNodeEmbeddings picks the row up later --
+ *  caught, not thrown, so a write never fails because the embedding backend is unavailable. */
+function scheduleKgNodeEmbedding(db: Database.Database, id: string, text: string): void {
+  try {
+    // generateEmbedding itself can throw synchronously, not just reject -- e.g. a test double
+    // (several kg capture-pipeline tests mock '../db.js' down to only getKanbanCard/
+    // getKanbanComments) leaves it undefined, and calling undefined() throws before any Promise
+    // exists to .catch(). Caught here so that stays a silent no-embedding outcome, same as a
+    // real Ollama outage, instead of failing the whole node write.
+    generateEmbedding(text)
+      .then((emb) => {
+        if (emb) {
+          db.prepare('UPDATE kg_nodes SET embedding = ?, embed_model = ? WHERE id = ?').run(
+            Buffer.from(JSON.stringify(emb)),
+            EMBED_MODEL,
+            id,
+          )
+        }
+      })
+      .catch(() => {})
+  } catch {
+    // see comment above
+  }
+}
+
 export function upsertNode(db: Database.Database, input: KgNodeInput): void {
   assertValidIdentifiers(input)
   // F-a (card 4ecd75d0): sanitize BEFORE the secret-shape check, not after -- an invisible
@@ -538,6 +580,48 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
     })
   })
   tx()
+  // Card 6d542dc9 root cause: upsertNode never generated an embedding, so 0/890 kg_nodes had one
+  // and hybridKgSearch's semantic branch was dead graph-wide. Auto-embed every new/changed write
+  // UNLESS the caller already supplied one (even explicitly null, e.g. a caller doing its own
+  // backfill pass) -- same "don't duplicate what the caller already decided" reasoning as
+  // defaultCaptureEnabled's single read of the kill switch.
+  if (input.embedding === undefined) {
+    scheduleKgNodeEmbedding(db, input.id, kgEmbedText(title, body, snippet, piiRedactedKeywords ?? null))
+  }
+}
+
+export interface KgEmbedBackfillResult {
+  attempted: number
+  embedded: number
+  failed: number
+}
+
+/** Drains existing kg_nodes with no embedding (the 0/890 backlog), same shape as src/db.ts's
+ *  backfillEmbeddings() for memories: local Ollama only (generateEmbedding), a small delay
+ *  between calls so a large backlog does not hammer the backend, attempted/embedded/failed
+ *  reported separately so "nothing to do" and "every call failed" are never the same 0. */
+export async function backfillKgNodeEmbeddings(
+  db: Database.Database,
+  limit: number = 1000,
+): Promise<KgEmbedBackfillResult> {
+  const rows = db
+    .prepare('SELECT id, title, body, snippet, keywords FROM kg_nodes WHERE embedding IS NULL LIMIT ?')
+    .all(limit) as { id: string; title: string; body: string | null; snippet: string | null; keywords: string | null }[]
+  let embedded = 0
+  for (const row of rows) {
+    const text = kgEmbedText(row.title, row.body, row.snippet, row.keywords)
+    const emb = await generateEmbedding(text)
+    if (emb) {
+      db.prepare('UPDATE kg_nodes SET embedding = ?, embed_model = ? WHERE id = ?').run(
+        Buffer.from(JSON.stringify(emb)),
+        EMBED_MODEL,
+        row.id,
+      )
+      embedded++
+    }
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  return { attempted: rows.length, embedded, failed: rows.length - embedded }
 }
 
 /** INSERT OR IGNORE: the composite primary key (src,dst,rel) already gives idempotency, same
