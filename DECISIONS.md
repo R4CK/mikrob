@@ -33998,3 +33998,43 @@ Ki döntött: backend3 (gyökér-ok vizsgálat, javítás, mérés).
 Hivatkozás: kártya a1c38d36; commit 0abb49693 (eredeti fix), 141b42b04 (ideiglenes debug, visszavonva),
 95aa6cf58 (valódi gyökér-ok fix); `store/wsl-cleanup.selftest.sh`, `store/wsl-cleanup.sh:216-244`
 (sweep_tmp SANITY guard, csak olvasva).
+
+## 2026-11-26 19:15 -- Kártya a1c38d36, CYBERSEC NO-GO 39270 (68fe4d9c): a bare-/tmp pin-case tényleg sweep_tmp()-et futtatta a valós /tmp-en
+
+KONTEXTUS: CYBERSEC delta-gate 39270 a 68fe4d9c-s sha-n NO-GO-t adott. F-1 (MEDIUM, nem regresszió):
+a "SANITY guard pin, bare /tmp" eset (card e2425f05 öröksége) `source "$RUN"`-nal betölti
+`wsl-cleanup.sh`-t, majd DIREKT hívja `sweep_tmp()`-et -- ez megkerüli a `bash "$RUN" --dry-run`
+útvonalat, tehát a script saját `DRY_RUN=0` alapértéke volt érvényben: minden selftest/fleet-test
+futás a VALÓS /tmp aged bejegyzéseit törölte, Peti jóváhagyása nélkül (22. szabály). F-2 (LOW): a
+SANDBOX-LEAK guard (a1c38d36 saját korábbi köre) csak az ELSŐ (7 közül) WT_TMP_SANDBOX-invokációt
+fedte -- mutáció (M2: AGE-guard sor, M3: min-age-knob sor) a 6 másikon unpinned maradt, csendben
++30s-ot adott hozzá. F-3 (LOW): semmi nem pinnelte, hogy a cleanup trap TÉNYLEG törli-e
+WT_TMP_SANDBOX-ot (mutáció M4: `rm -rf "$TMP"` only túlélte, 49/0, egy sandbox-dir szivárgott).
+
+JAVÍTÁS:
+- F-1: a bare-/tmp esetben `DRY_RUN=1` a `source "$RUN"` UTÁN (a script maga felülírja 0-ra a
+  tetején, source előtti beállítás hatástalan lenne), PLUSZ egy `find() { :; }` shim, hogy a valós
+  /tmp bejárása (CYBERED F-3 hazárd, dry-runtól függetlenül) se történjen meg.
+- F-2: a 6 hiányzó invokáció (AGE guard, NAME-PATTERN guard, STAT-fallback guard, counter-split,
+  run_c1_case -- 3x hívva --, min-age-knob) mindegyike kapott egy `find` leak-shimet; a duplikált
+  assert-pár egy közös `assert_sandbox_leak_guard()` függvénybe lett kiemelve (az ELSŐ, már meglévő
+  helyszín is ezt hívja most, kód-azonosság, nem csak minta-másolás).
+- F-3: új "SANDBOX-RM guard" a fájl végén: a `cleanup` függvényt direktben meghívja (ugyanazt, amit
+  az EXIT trap is meghívna), és ellenőrzi, hogy WT_TMP_SANDBOX utána tényleg eltűnt.
+
+MÉRVE: standalone 67/67 PASS, ~1.7-1.9s. Mutáció-teszt (python3+hashlib sha256 ellenőrzött
+visszaállítás, SOHA `git checkout --` -- lásd lejjebb a buktatót): M2 (AGE-guard override törölve)
+66/1 FAIL, a SANDBOX-LEAK guard kapta el (talált '/tmp' search root). M4 (trap csak `$TMP`-t törli)
+66/1 FAIL, a SANDBOX-RM guard kapta el. Mindkét javítás load-bearing.
+
+BUKTATÓ (saját hiba ebben a körben, azonnal helyreállítva): az első M2-mutáció visszaállításakor
+`git checkout -- store/wsl-cleanup.selftest.sh`-t futtattam, ami NEM csak a mutánst, hanem a TELJES
+uncommitolt fix-munkát visszaállította a HEAD-re (68fe4d9c9) -- mivel a mutáns a saját, még nem
+commitolt javításom TETEJÉN élt, nem egy tiszta fán. Minden javítást (F-1/F-2/F-3) újra el kellett
+végezni. Ezután a mutáció-teszt visszaállítása kizárólag `cp` + sha256-ellenőrzés útján történt, a
+munkakönyvtáron KÍVÜLI biztonsági másolatból, nem git-művelettel.
+
+Ki döntött: backend3 (gyökér-ok vizsgálat, javítás, mérés, önjavítás a checkout-hibából).
+Hivatkozás: kártya a1c38d36; CYBERSEC NO-GO 39270 + QA PASS 39267 (sha 68fe4d9c); a javítás commitja
+ezen bejegyzés után következik; `store/wsl-cleanup.selftest.sh`; `store/wsl-cleanup.sh` (csak
+olvasva, nem módosult).
