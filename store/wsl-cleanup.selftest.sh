@@ -30,7 +30,15 @@ bad() { printf '  [FAIL] %s\n     %s\n' "$1" "${2:-}"; fail=$((fail+1)); }
 TMP="$(mktemp -d)"
 MARVEEN_MAIN_TEST="$TMP/main"
 CLEANCORE_MAIN_TEST="$TMP/no-git-here"
-mkdir -p "$MARVEEN_MAIN_TEST" "$CLEANCORE_MAIN_TEST"
+# Section-1 (throwaway-worktree) full-script invocations below don't care about /tmp at all, but
+# wsl-cleanup.sh's own default (WSL_CLEANUP_TMP_DIR="${WSL_CLEANUP_TMP_DIR:-/tmp}") makes every one
+# of them also run section 3's /tmp sweep against the REAL /tmp unless overridden -- measured
+# (CYBERED msg 25202/39219): ~4,726 real /tmp entries, ~27.7s per dry-run, 283.6s standalone PASS
+# at load 4-6, over the 180s vitest cap. Point every section-1 invocation at this empty, disposable
+# sandbox (cleaned up with the rest of $TMP) so section 3 still runs (no change to code paths
+# exercised) but scans nothing.
+WT_TMP_SANDBOX="$TMP/wt-tests-tmp-sandbox"
+mkdir -p "$MARVEEN_MAIN_TEST" "$CLEANCORE_MAIN_TEST" "$WT_TMP_SANDBOX"
 
 git init -q "$MARVEEN_MAIN_TEST"
 git -C "$MARVEEN_MAIN_TEST" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
@@ -73,8 +81,36 @@ git -C "$MARVEEN_MAIN_TEST" worktree add -q --detach "$DEAD_DIR" HEAD
 PAST=$(( $(date +%s) - 130 * 60 ))
 touch -d "@$PAST" "$LIVE_DIR" "$DEAD_DIR"
 
+# SANDBOX-LEAK guard (card a1c38d36): this (and every other section-1) full-script invocation
+# must route section 3's /tmp sweep at WT_TMP_SANDBOX, never fall back to scanning the real /tmp
+# (measured, CYBERED msg 25202/39219: ~4,726 real entries, ~27.7s per dry-run). Shim `find` to log
+# its first argument (the search root) and assert the real "/tmp" literal is never among them --
+# and, so this can't pass vacuously by `find` simply not being called, that the shim DID capture
+# something.
+FIND_LEAK_LOG="$(mktemp)"
+find() {
+  printf '%s\n' "$1" >>"$FIND_LEAK_LOG"
+  command find "$@"
+}
+export -f find
+export FIND_LEAK_LOG
+
 OUT="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-       WSL_CLEANUP_MIN_AGE_MIN=120 bash "$RUN" --dry-run 2>&1)"
+       WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" \
+       bash "$RUN" --dry-run 2>&1)"
+
+unset -f find
+if grep -qxF '/tmp' "$FIND_LEAK_LOG"; then
+  bad "SANDBOX-LEAK guard: find was invoked against the real /tmp (search root '/tmp')" "$(cat "$FIND_LEAK_LOG")"
+else
+  ok "SANDBOX-LEAK guard: find is never invoked against the real /tmp"
+fi
+if grep -q . "$FIND_LEAK_LOG"; then
+  ok "SANDBOX-LEAK guard: find shim actually captured calls (non-vacuous)"
+else
+  bad "SANDBOX-LEAK guard: find shim captured nothing -- the guard is vacuous" ""
+fi
+rm -f "$FIND_LEAK_LOG"
 
 # --- Case 1: clean, >2h old worktree whose owning PID is ALIVE must NOT be removed ----------
 if echo "$OUT" | grep -qF "SKIP (owning pid $LIVE_PID still alive): $LIVE_DIR"; then
@@ -115,7 +151,7 @@ AGE_DIR="/home/neon/marveen-land-selftestage-${AGE_PID}"
 rm -rf "$AGE_DIR"
 git -C "$MARVEEN_MAIN_TEST" worktree add -q --detach "$AGE_DIR" HEAD
 out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-       WSL_CLEANUP_MIN_AGE_MIN=120 bash "$RUN" --dry-run 2>&1)"
+       WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" bash "$RUN" --dry-run 2>&1)"
 if echo "$out" | grep -qF "worktree remove --force $AGE_DIR"; then
   bad "AGE guard (section 1): a brand-new worktree was (dry-run) removed -- age guard not enforced" "$out"
 else
@@ -134,7 +170,7 @@ git -C "$MARVEEN_MAIN_TEST" worktree add -q --detach "$NP_DIR" HEAD
 PAST=$(( $(date +%s) - 130 * 60 ))
 touch -d "@$PAST" "$NP_DIR"
 out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-       WSL_CLEANUP_MIN_AGE_MIN=120 bash "$RUN" --dry-run 2>&1)"
+       WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" bash "$RUN" --dry-run 2>&1)"
 if echo "$out" | grep -qF "$NP_DIR"; then
   bad "NAME-PATTERN guard (section 1): a non-matching-name worktree was mentioned/removed -- name-pattern guard not enforced" "$out"
 else
@@ -162,7 +198,7 @@ stat() {
 export -f stat
 export STATFAIL_DIR
 out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-       WSL_CLEANUP_MIN_AGE_MIN=120 bash "$RUN" --dry-run 2>&1)"
+       WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" bash "$RUN" --dry-run 2>&1)"
 unset -f stat
 if echo "$out" | grep -qF "worktree remove --force $STATFAIL_DIR"; then
   bad "STAT-fallback guard (section 1): a worktree whose stat call fails was (dry-run) removed -- fallback-to-now not enforced" "$out"
@@ -194,7 +230,7 @@ git() {
 export -f git
 export RCCOUNT_DIR
 out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-       WSL_CLEANUP_MIN_AGE_MIN=120 bash "$RUN" --dry-run 2>&1)"
+       WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" bash "$RUN" --dry-run 2>&1)"
 unset -f git
 if echo "$out" | grep -qF "skipped (git rc): 1"; then
   ok "counter-split pin: the summary line's 'skipped (git rc)' count reflects the git-rc failure"
@@ -240,7 +276,8 @@ run_c1_case() {
   GIT_FAIL_CMD=status GIT_FAIL_RC="$rc"
   local out
   out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-         WSL_CLEANUP_MIN_AGE_MIN=120 GIT_FAIL_CMD="$GIT_FAIL_CMD" GIT_FAIL_RC="$GIT_FAIL_RC" \
+         WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" \
+         GIT_FAIL_CMD="$GIT_FAIL_CMD" GIT_FAIL_RC="$GIT_FAIL_RC" \
          bash "$RUN" --dry-run 2>&1)"
   GIT_FAIL_CMD=""; GIT_FAIL_RC=0
 
@@ -804,7 +841,8 @@ rm -rf "$KNOB_WT"
 git -C "$MARVEEN_MAIN_KNOB" worktree add -q --detach "$KNOB_WT" HEAD
 touch -d '-3000 minutes' "$KNOB_WT"
 MINAGE_KNOB_OUT="$(MARVEEN_MAIN="$MARVEEN_MAIN_KNOB" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
-                   WSL_CLEANUP_MIN_AGE_MIN=lots bash "$RUN" --dry-run 2>&1)"
+                   WSL_CLEANUP_MIN_AGE_MIN=lots WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" \
+                   bash "$RUN" --dry-run 2>&1)"
 if printf '%s\n' "$MINAGE_KNOB_OUT" | grep -qF "worktree remove --force $KNOB_WT"; then
   ok "WSL_CLEANUP_MIN_AGE_MIN='lots': falls back to the default (120), old throwaway worktree still a dry-run candidate"
 else

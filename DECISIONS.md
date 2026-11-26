@@ -33912,3 +33912,48 @@ Ki döntött: MikroB (a fix-kör kötelező pontjai, msg 25049); backend3 (imple
 Hivatkozás: kártya d97659cb; QA PASS 39117, CYBERED GO 39119, CYBERSEC GO 39120 (H-1 feltétel,
 F-1/F-2/L-2..L-5 leletek); `scripts/wsl-watchdog-holder-ensure.sh`, `scripts/install-wsl-watchdog.sh`,
 `scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 -- Kártya a1c38d36: wsl-cleanup.selftest.sh ne a valódi /tmp-ot (4726 bejegyzés) sweepelje -- false red minden land fleet-test-ben
+
+Kontextus: CYBERED GO 39219 (1535f7f9) és CYBERSEC (msg 25202) mérése: `store/wsl-cleanup.selftest.sh`
+~10 teljes-script (`bash wsl-cleanup.sh --dry-run`) hívást futtat a szekció-1 (eldobható
+land/test worktree) logika tesztelésére, és ezek közül 7 (öt azonos alakú, egy a `run_c1_case`
+függvényen belül 3x hívva, egy a `MINAGE_KNOB` eseten) NEM állítja be a `WSL_CLEANUP_TMP_DIR`
+env-et, így a szkript saját alapértelmezése (`WSL_CLEANUP_TMP_DIR="${WSL_CLEANUP_TMP_DIR:-/tmp}"`)
+miatt mindegyik a VALÓS /tmp-ot sweepeli (dry-run, csak olvasás -- `find`/`stat`, biztonsági
+kockázat nincs, csak SEBESSÉG). Mérve: 4726 valós /tmp bejegyzés, ~27.7s/dry-run, önállóan
+283.6s PASS 47/47 load 4-6 mellett, a `src/__tests__/store-selftests-all-run.test.ts` 180s
+subprocess-cap (`execFileSync(..., {timeout: 180_000})`) felett -- minden land fleet-test-ben
+false red, nem csak az érintett kártyákon.
+
+Döntés: a 7 szekció-1 hívás mindegyike egy üres, eldobható sandbox könyvtárat kap
+(`WT_TMP_SANDBOX="$TMP/wt-tests-tmp-sandbox"`, a selftest saját `$TMP`-jén belül, a trap-ban már
+törölve) a `WSL_CLEANUP_TMP_DIR` env-en át, ÚGY hogy a sweep_tmp() kódágat (szekció 3) továbbra is
+lefuttatja a worktree-sweep tesztek alatt is -- csak egy üres könyvtáron, nem a 4726 bejegyzésű
+valós /tmp-on. `store/wsl-cleanup.sh` PRODUKCIÓS kódja NEM módosult (a `WSL_CLEANUP_TMP_DIR`
+override már létezett, csak a selftest nem használta mind a 7 hívásnál); élő viselkedés
+változatlan.
+
+Új pin (SANDBOX-LEAK guard): az első szekció-1 hívást (`OUT=...`) egy `find`-shim veszi körül,
+ami naplózza a keresési gyökér első argumentumát, majd asszertálja, hogy a '/tmp' literál SOHA
+nem jelenik meg a naplóban (a valós /tmp-ot sosem kéri find-tól), ÉS hogy a shim tényleg kapott
+legalább egy hívást (nem-vákuum kontroll -- egy sosem futó find mellett is zölden passzolna).
+
+MEGFIGYELÉS: a fix ELŐTT kézzel reprodukálva (ugyanaz a hívás, `WSL_CLEANUP_TMP_DIR` nélkül,
+`find`-shim-mel): a naplózott gyökér pontosan `/tmp`, a SANDBOX-LEAK guard RED. A fix UTÁN a teljes
+selftest 49/49 PASS (47 eredeti + 2 új SANDBOX-LEAK assertion), mért futásidő 30.58s és 30.95s
+két egymást követő futásnál, load average 5.18/5.98/5.21 mellett -- a 60s elfogadási küszöb alatt,
+és messze a 180s vitest-cap alatt. Mutáció-teszt: a `WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX"`
+override visszavonása az egyik (shim-mel körülvett) hívásnál a SANDBOX-LEAK guardot RED-re
+fordítja, és a teljes futás 60s felett timeoutol (reprodukálja az eredeti hibát) -- a fix
+load-bearing, nem kozmetikus. A mutáns és az eredeti fájl `sha256sum`-mal ellenőrizve
+byte-azonosan visszaállítva (d132270dddb98568ff706ce480866020f2ee4aea9717fb38404956669acf8528).
+
+Mi maradt ki: a `store/wsl-cleanup.sh` produkciós kódja és viselkedése NEM változott -- a kártya
+explicit kérte ezt. A `WSL_CLEANUP_TMP_DIR` mechanizmus maga (a sanity-guard, traverzál-escape
+védelem, stb.) a c9c1f159/657f12a3/e2425f05 kártyákon már lefedett, ezen a körön nem érintve.
+
+Ki döntött: MikroB (dispatch, msg 25203, a CYBERED 39219 / CYBERSEC msg 25202 mérése alapján
+HIGH-ra emelve); backend3 (implementáció, teszt).
+Hivatkozás: kártya a1c38d36; CYBERED GO 39219 (card 1535f7f9); `store/wsl-cleanup.selftest.sh`,
+`store/wsl-cleanup.sh` (csak olvasva, nem módosítva), `src/__tests__/store-selftests-all-run.test.ts`.
