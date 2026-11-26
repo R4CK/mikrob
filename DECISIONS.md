@@ -33098,3 +33098,73 @@ Ki döntött: MikroB (caught the baseline flaw, set the correction's scope); bac
 opened the follow-up card). Végrehajtó: backend.
 Hivatkozás: kártya eed988e7, 5ecf6133 (new, HIGH, the actual fix); `src/kg/capture-pipeline.ts:541`,
 `src/kg/search.ts` (RRF fusion + minScore).
+
+## 2026-11-26 -- CORRECTION 2: wording fixes per CYBERSEC NO-GO 38977 + CYBERED NO-GO 38978 (kártya eed988e7)
+
+Both gates agreed the isolation claims hold and the restated INCONCLUSIVE decision is right, but
+found the near-miss paragraph (first entry above) states as done two things that are not, and the
+cost numbers reused from it are off. Per the file's own append-only rule, the two entries above
+stand untouched; this entry corrects the specific sentences, not the conclusions.
+
+1. **The near-miss "restored" claim was false at the time written (CYBERSEC F-1 MEDIUM, CYBERED
+   F-1 MEDIUM, both blocking).** The first entry's sentence "MikroB restored the live clone with
+   `npm ci` after the then-running fleet-tests finished" was written in the past tense before it
+   happened. Measured by both gates at their read time: `node_modules/.package-lock.json` still
+   carries the `@trailhq/trail-code` entry, `npm ls --depth=0` lists 19-21 extraneous packages
+   (openai, dotenv, gray-matter, commander, web-tree-sitter and its depth/wasm siblings, the
+   vscode-languageserver family, argparse, esprima, js-yaml, etc.), and `@anthropic-ai/sdk` in
+   `node_modules` is still `0.133.0` against the lockfile's `0.120.0`. **Corrected statement: the
+   restore is PENDING, not done.** MikroB will run `npm ci` in the live main clone at the next
+   fleet-test-idle window and re-verify with `npm ls --depth=0` (extraneous count back to 0, no
+   `@trailhq` entry) plus a lockfile diff (`@anthropic-ai/sdk` back to `0.120.0`). This correction
+   entry does not itself perform or re-verify that restore -- it is MikroB's action, tracked
+   separately, out of this card's scope.
+2. **The sdk version bump is not "unrelated drift" (CYBERED F-2 MEDIUM, blocking).** The first
+   entry's near-miss paragraph called it "an unrelated `@anthropic-ai/sdk` version drift". CYBERED
+   measured the actual cause: `node_modules/@anthropic-ai/sdk` and `openai` were both rewritten at
+   08:14 (same timestamp as the hidden `.package-lock.json` entry for `@trailhq/trail-code@0.30.5`,
+   which itself declares `"@anthropic-ai/sdk": "^0.133.0"`), while untouched packages carry their
+   original 2026-11-21 timestamps. **Corrected statement: the sdk bump CAME FROM the near-miss
+   install** -- `trail-code`'s own dependency tree pulled a newer `@anthropic-ai/sdk` over the
+   lockfile-pinned `0.120.0` at the same moment as the accidental install, not a pre-existing or
+   coincidental drift. The restore in point 1 fixes this too (same `npm ci`).
+3. **Token-cost numbers were off and the ratio needs a caveat (CYBERSEC LOW-1, CYBERED F-3 LOW).**
+   The first entry's "~900 tokens ... roughly 24x" and the second entry's "the trail numbers ...
+   stand unchanged" are both corrected: the actual mean from comment 38964's table is **799 tokens
+   (range 424-952), about 21x** the F8 side's 38 tokens, not ~900/~24x. More importantly, the 38
+   tokens on the F8 side is the EMPTY envelope of the now-known-broken baseline (card 5ecf6133),
+   not a real competing system's output size -- so "21x" is not a real cost comparison and should
+   not be read as one when the F8 side is re-run on a working search path. The trail-side recall
+   (0.208), wall-time, and ground-truth/sample selection are unaffected by this and remain valid to
+   reuse; the token-ratio number is not.
+4. **Line-distance wording (CYBERED F-4 LOW, non-blocking).** The second entry's "the same value
+   already correctly used for `source_ref` two lines above" should read: `source_ref` is at line
+   515, **26 lines above** line 541 -- the lines directly above 541 are the commit node's own id,
+   repo and `source_ref: git:<sha>`, not the solution node's `source_ref`. The value claim itself
+   (the two fields held the same string) was correct; only the line-distance was wrong.
+5. **The 0.35 threshold was understated as "very hard to clear", not unreachable (CYBERSEC LOW-2,
+   CYBERED's own derivation) -- carried into 5ecf6133's scope.** Without an anchor-path match, the
+   best possible RRF score from the text+embedding branches alone is `1/61 + 1/61 ≈ 0.0328`,
+   strictly below the old default `minScore` of 0.35 -- this is unreachable, not merely unlikely.
+   This means fixing ONLY the embedding-coverage gap (point 3 of the entry above, split to child
+   card 6d542dc9) cannot by itself make `for-card` return anything: the anchor-path fix and/or the
+   score-threshold fix (both now also in 5ecf6133's scope per Peti's 2026-11-26 widening) are the
+   load-bearing pieces. Separately worth noting for 5ecf6133: `for-card`'s `known_pitfalls` and
+   `decisions` searches (`anti_pattern`/`finding` and `decision` node types) structurally return
+   empty today regardless of any fix here, because the live graph currently has no nodes of those
+   types at all (only `card`, `commit`, `solution`) -- a second, independent reason those two
+   arrays were empty in the pilot, not just the anchor/threshold bug.
+6. **README-scan wording (CYBERSEC LOW-3, non-blocking).** "Did not reproduce against current
+   main" (first entry) should read "did not reproduce on the 0.30.5 tarball README" -- CYBERSEC's
+   own grep was against the published tarball, not a check of upstream `main`. Also worth recording
+   for any future reader of this recipe: the real (non-dry-run) `trail init` wrote
+   `.trail/install.json` under the fake HOME even though `--dry-run` listed only repo-scoped paths,
+   and the package has a separate user-level path (`dist/cloud/share-hook.js`, a SessionStart hook
+   added to the REAL `~/.claude/settings.json` for its share-session feature) that this pilot never
+   reached only because of the fake HOME plus `--no-global --no-mcp` -- those two flags are
+   load-bearing in this recipe, not optional hardening.
+
+Ki döntött: cybersec (NO-GO 38977), cybered (NO-GO 38978); backend (applied the wording fixes).
+Végrehajtó: backend.
+Hivatkozás: kártya eed988e7, comments 38977 (CYBERSEC NO-GO), 38978 (CYBERED NO-GO), 38964 (the
+per-card measurement table); card 5ecf6133 (point 5 above folded into its scope).
