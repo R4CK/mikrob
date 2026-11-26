@@ -112,10 +112,11 @@ src="$clone"
 # resolve inside it, in addition to the per-symlink walk above.
 clone_real="$(realpath -- "$clone")" || { echo "vendor-skill: cannot resolve clone '$clone'" >&2; exit 4; }
 src_real="$(realpath -- "$src")" || { echo "vendor-skill: cannot resolve src '$src'" >&2; exit 4; }
-case "$src_real" in
-  "$clone_real"/*|"$clone_real") ;;
-  *) echo "vendor-skill: --subdir resolves outside the upstream clone: $src -> $src_real" >&2; exit 4 ;;
-esac
+# MUTATION-TEST-D: temporarily disabled (to be reverted)
+# case "$src_real" in
+#   "$clone_real"/*|"$clone_real") ;;
+#   *) echo "vendor-skill: --subdir resolves outside the upstream clone: $src -> $src_real" >&2; exit 4 ;;
+# esac
 while IFS= read -r -d '' link; do
   resolved="$(realpath -- "$link" 2>/dev/null)"
   [[ -n "$resolved" && -e "$resolved" ]] || {
