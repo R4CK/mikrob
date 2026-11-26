@@ -33912,3 +33912,47 @@ Ki döntött: MikroB (a fix-kör kötelező pontjai, msg 25049); backend3 (imple
 Hivatkozás: kártya d97659cb; QA PASS 39117, CYBERED GO 39119, CYBERSEC GO 39120 (H-1 feltétel,
 F-1/F-2/L-2..L-5 leletek); `scripts/wsl-watchdog-holder-ensure.sh`, `scripts/install-wsl-watchdog.sh`,
 `scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 15:22 -- Card 1b4c566e: upstream outbound-text gate union (HTTP-channel/Discord/community, inter-agent homoglifa, curl @file)
+
+**Döntés:** rendesen adoptáltam a három, az ee7bc2ba upstream-merge-ből tudatosan kihagyott
+outbound-szöveg kaput (Cybersec NO-GO @ 26f2b4f2: félig bekötött holt kód, hiányzó `_gate_log`),
+mint teljes unió a meglévő `outgoing-copy-gate.py`-jal:
+- GATEHTTP924 (`http_channel_gate`): community (marveen.io) + Discord REST curl-küldés audit.
+- INTERAGENTHOMOGLIF923 (`inter_agent_homoglyph_gate`): homoglifa-csak ellenőrzés a
+  `curl .../api/messages` (inter-agent) útvonalon.
+- GATEBINVAK916: curl `@file`/`-F`/`-T`/wget `--post-file`/`--body-file` fájl-törzs alakok a
+  `collect_bash_body`-ban (eddig csak a `<` redirect olvasódott, ezek az ekvivalens alakok
+  csendben semmit nem auditáltak, exit 0-t adva).
+- Hiányzó helperek pótolva: `_gate_log`/`_GATE_LOG`, `pass_with_warning`.
+- GATENEVSTRIP921 (`strip_for_name`/`NAME_MASK`) már be volt kötve a `_name_search`-be egy
+  korábbi, független fork-döntésen (b4404ed2) -- nem ezen a körön kellett megoldani.
+
+**Egy valódi eltérés az upstream mintától, tudatosan:** a Telegram Bot API NEM célpontja az
+adoptált `http_channel_gate`-nek. Upstream saját verziója fail-CLOSED egy olvashatatlan törzsön;
+ennek a forknak a saját, már létező Telegram-from-Bash kapuja (`telegram_bash_gate`, GATETG816,
+kártya 74181db2) ugyanazon a csatornán szándékosan fail-OPEN (a felügyeleti csatorna némítása
+drágább egy elcsúszott ekezetnél). A Telegram felvétele a `http_channel_gate` céllistájába
+némán megfordította volna ezt az iránya, ha a `http_channel_gate` korábban futott volna le --
+ezért a céllista csak a community + Discord célpontokat tartja, a döntés a kódban is rögzítve.
+
+**Egy pre-existing, nem ezen a körön javított lelet:** a megosztott `mixed_script_words()`
+tokenizáló (`UWORD = r"[^\W\d_]+"`) kihagyja a számjegyeket a "szóból", ezért egy
+számjegyeket-is-tartalmazó azonosítóba (pl. egy hex kártya-ID-be) kevert homoglifa karakter
+NEM esik egy LATIN+egyéb vegyes szóba, és átmegy. Egy betűkből-csak álló azonosítóban (agens-név,
+útvonal-szegmens) a kevert szó helyesen elkapja. Ez a `mixed_script_words` MEGLÉVŐ, más
+hívópontok által is használt viselkedése, nem ezen a kártyán épült be és nem ezen a kártyán
+javítva -- a dispatch a kapu-bekötést kérte, nem a megosztott tokenizáló újratervezését.
+
+**Tesztek:** `scripts/__tests__/outgoing-copy-gate-outbound-union.test.py` (új, 32 eset, mind a
+három kapura és a GATEBINVAK916 fájl-törzs alakokra), mutáció-tesztelve (a két új kapu `main()`-be
+kötését kikommenteltem, 5 eset pirosra vált, visszaállítva zöld). A meglévő
+`outgoing-copy-gate*.test.py` + `email-extract-parity.test.py` suite változatlan és zöld.
+`send-invocation-cases.json` `_comment`-je frissítve: a korábbi "az inter-agent útvonalon jelenleg
+semmilyen copy-ellenőrzés nem fut" állítás már nem igaz, a homoglifa-csak kapu most lefut rajta.
+
+**Ki döntött:** MikroB (dispatch, kártya 1b4c566e, msg 25096); backend2 (implementáció, teszt,
+a Telegram-kizárás és a mixed_script_words-lelet felismerése és dokumentálása).
+Hivatkozás: kártya 1b4c566e (predecessor ee7bc2ba); `scripts/hooks/outgoing-copy-gate.py`,
+`scripts/__tests__/outgoing-copy-gate-outbound-union.test.py`,
+`scripts/__tests__/email-extract-parity.test.py`, `scripts/hooks/send-invocation-cases.json`.

@@ -1729,7 +1729,7 @@ def collect_bash_body(cmd: str):
     # A single `<` only. Without the lookarounds a heredoc (`<<'EOF'`) matches
     # here and the quoted delimiter is taken for a filename -- caught by the
     # first live probe of this gate, which blocked with "'EOF': No such file".
-    redirect = re.search(r"(?<!<)<(?!<)\s*([^\s|;&<>]+)", cmd)
+    redirect = re.search(r"(?<![<=])<(?!<)\s*([^\s|;&<>]+)", cmd)
     if redirect:
         raw = redirect.group(1)
         path = os.path.expandvars(os.path.expanduser(raw))
@@ -1739,9 +1739,62 @@ def collect_bash_body(cmd: str):
         if reason:
             return ("\n".join(parts), f"a torzs-fajl nem olvashato ({path}: {reason})")
         parts.append(text)
+    # GATEBINVAK916 (upstream, adopted on card 1b4c566e): curl's `@file` payload
+    # (-d/--data/--data-binary/--data-urlencode/--json @path) and the sibling
+    # file-body shapes -- -F/--form name=@path, wget --post-file/--body-file,
+    # curl -T/--upload-file. Before this, only the `<` redirect above was read;
+    # these equivalent file-body flags fell through to the pipe-check below and
+    # (having no pipe either) returned clean text ('') -- an audit that silently
+    # inspected nothing while reporting success. This gate only AUDITS at call
+    # time, it never anchors an approval on what it reads (unlike
+    # email_extract.py's PR2 approval gate, which treats the SAME shapes as
+    # unreadable/fail-closed for exactly that reason, TOCTOU924/card 14256aac) --
+    # so it is correct to READ and audit the file here, same as the `<` redirect
+    # immediately above, not to refuse it.
+    for label, rx in _FILE_BODY_FORMS:
+        m = rx.search(cmd)
+        if not m:
+            continue
+        ref = m.group(1)
+        if ref in ("-", "."):
+            if not parts:
+                return ("", f"a torzs stdin-rol jon ({label} {ref}), heredoc nelkul -- a hook nem latja")
+            continue
+        path = os.path.expandvars(os.path.expanduser(ref))
+        if "$" in path:
+            return ("\n".join(parts), f"a torzs egy fel nem oldhato utvonalrol jon ({label} {ref})")
+        text, reason = _safe_read_text(path)
+        if reason:
+            return ("\n".join(parts), f"a torzs-fajl nem olvashato ({label} {path}: {reason})")
+        parts.append(text)
     if not parts and re.search(r"\|\s*(python3?|node|tsx)?[^|]*send", cmd):
         return ("", "a torzs egy pipe-bol jon, a hook nem latja")
     return ("\n".join(parts), None)
+
+
+# GATEBINVAK916: the file-body shapes. Each flag must stand alone (leading
+# space or start), so an address like x@y.hu or an @ inside a quoted payload is
+# never taken for a file. Measured list (email_extract.py's own GATEBINVAK916
+# review, same regex set, kept in step on purpose): the six @-flags, plus the
+# five shapes that also send a FILE but were not read: --data-urlencode
+# name@file, -F/--form name=@file or name=<file, wget --post-file/--body-file,
+# curl -T. NOT here, deliberately: --data-raw (sends a literal "@path", reads
+# no file) and --form-string (literal). The inline literal flags (-d '...',
+# --post-data '...') stay outside this branch as before.
+_REF = r"['\"]?([^\s'\"|;&<>]+)"
+_FILE_BODY_FORMS = (
+    ("@", re.compile(
+        r"(?:^|\s)(?:-d|--data|--data-binary|--data-ascii|--json|--data-urlencode)"
+        r"(?:=|\s+|(?<=-d))['\"]?@([^\s'\"|;&<>]+)")),
+    ("--data-urlencode name@", re.compile(
+        r"(?:^|\s)--data-urlencode(?:=|\s+)['\"]?[A-Za-z0-9_.-]+@([^\s'\"|;&<>]+)")),
+    ("-F/--form name=@|<", re.compile(
+        r"(?:^|\s)(?:-F|--form)(?:=|\s+)['\"]?[^\s'\"=]+=[@<]([^\s'\";|&<>]+)")),
+    ("wget --post-file/--body-file", re.compile(
+        r"(?:^|\s)--(?:post|body)-file(?:=|\s+)" + _REF)),
+    ("curl -T/--upload-file", re.compile(
+        r"(?:^|\s)(?:-T|--upload-file)(?:=|\s+)" + _REF)),
+)
 
 
 def collect_mcp_body(tool_input: dict):
@@ -1763,13 +1816,314 @@ def collect_mcp_body(tool_input: dict):
 MDV2_ESCAPE = re.compile(r"\\([^\w\s])")
 
 
-# UPSTREAM-SYNC Koteg 18 (card d06a325d): upstream's GATEHTTP924 (Discord/Telegram-API/community
-# curl-send audit, function http_channel_gate) is NOT re-adopted here. This fork already evaluated
-# this exact function on card ee7bc2ba (Cybersec NO-GO @ 26f2b4f2) and found it half-wired dead
-# code -- defined, never called from main(), so its presence would only look like coverage without
-# providing any. Re-checked fresh against THIS round's copy: still never wired into main()'s Bash
-# dispatch, same finding. If this gap is worth closing, it needs its own card with the wiring done
-# in the same change, not a definition left for a later round to maybe call.
+# UPSTREAM-SYNC Koteg 18 (card d06a325d) left upstream's GATEHTTP924 (Discord/
+# community curl-send audit, function http_channel_gate) out as half-wired dead
+# code (Cybersec NO-GO @ 26f2b4f2, card ee7bc2ba): defined, never called from
+# main(). Card 1b4c566e closes that gap -- wired below, in the same change.
+
+
+def _gate_log(message: str) -> None:
+    """Append one TIMESTAMPED line to the gate log (adopted from upstream
+    verbatim, card 1b4c566e). Local time with the offset, never UTC, so an
+    entry can be placed in time."""
+    try:
+        from datetime import datetime
+        stamp = datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+        with open(_GATE_LOG, "a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} {message.rstrip()}\n")
+    except OSError:
+        pass
+
+
+_GATE_LOG = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
+
+
+def pass_with_warning(msg: str) -> str:
+    """A non-blocking warning, for BOTH readers (adopted from upstream
+    verbatim, card 1b4c566e). `systemMessage` is shown on the host's terminal
+    only; the agent that just made the call learns of it through
+    `hookSpecificOutput.additionalContext`."""
+    return json.dumps({
+        "systemMessage": msg,
+        "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": msg},
+    })
+
+
+# --- HTTP channel sends made with curl (GATEHTTP924) ------------------------
+# Before this, the Bash arm recognised exactly one kind of send (email) plus,
+# opt-in, the fork's own Telegram-Bot-API-from-Bash feature (GATETG816). A curl
+# to the community API or to Discord's REST API went with no audit at all.
+#
+# TELEGRAM BOT API IS DELIBERATELY NOT A TARGET HERE, unlike upstream's own
+# list. Upstream's http_channel_gate is fail-CLOSED on an unreadable body
+# ("these are deferrable writes... a public text that skipped the audit costs
+# more than a retry"). This fork's OWN Telegram-from-Bash gate (GATETG816,
+# card 74181db2, telegram_bash_gate below) is deliberately fail-OPEN on the
+# exact same channel, because Telegram is the owner's only supervision
+# channel and silencing it costs more than a slipped accent -- a decision
+# already taken and tested here. Adding Telegram to this gate's target list
+# would silently flip that channel's failure direction the first time this
+# gate's own early-exit ran before telegram_bash_gate ever saw the call. Two
+# gates disagreeing about the SAME channel's failure direction is worse than
+# one of them not covering it, so Telegram stays out of this list; the
+# community API and Discord REST have no such prior decision to collide with.
+_HTTP_CHANNEL_TARGETS = (
+    ("marveen.io", re.compile(
+        r"^((https?://)?([^/\s]*\.)?api\.marveen\.io|\$\{?\w+\}?)(/[^\s]*)?"
+        r"/(feed/posts(/[^/\s]+/comments)?|mentions/[^/\s]+/reply)/?(\?\S*)?$", re.I)),
+    ("Discord API", re.compile(
+        r"^(https?://)?([^/\s]*\.)?discord(app)?\.com/api(/v\d+)?/channels/[^/\s]+/messages(/[^/\s]+)?/?(\?\S*)?$",
+        re.I)),
+)
+# Only the prose a human reads. ids, chat ids, parse modes and urls stay out:
+# auditing them would block on tokens nobody reads as text.
+_HTTP_TEXT_FIELDS = ("title", "content", "text", "caption", "message")
+
+
+def _http_channel_segment(cmd: str):
+    """(label, tokens) of the first curl segment that SENDS to a covered
+    human-facing HTTP channel, or (None, None)."""
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return None, None
+    for toks in segments:
+        while toks and _ENV_ASSIGN.match(toks[0]):
+            toks = toks[1:]
+        if not toks or not _CURLISH.match(_basename(toks[0])):
+            continue
+        rest = toks[1:]
+        for label, target in _HTTP_CHANNEL_TARGETS:
+            if any(target.match(t) for t in rest):
+                if _curl_resend_verdict(_basename(toks[0]), rest) == "read":
+                    return None, None  # a GET of the feed: nothing is sent
+                return label, toks
+    return None, None
+
+
+def _http_channel_text(raw: str) -> str:
+    """The human-read prose of a channel body: JSON object fields, or the same
+    fields form-encoded (Telegram accepts both, kept for other form-encoded
+    channels). Unknown shape: the raw body."""
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        obj = None
+    if isinstance(obj, dict):
+        return "\n".join(str(obj[f]) for f in _HTTP_TEXT_FIELDS
+                         if isinstance(obj.get(f), str) and obj.get(f))
+    if obj is None:
+        from urllib.parse import parse_qs
+        form = parse_qs(raw, keep_blank_values=False)
+        got = [v for f in _HTTP_TEXT_FIELDS for v in form.get(f, [])]
+        if got:
+            return "\n".join(got)
+    return raw
+
+
+def http_channel_gate(cmd: str) -> None:
+    """Exit 2 on a copy problem or an unreadable body, exit 0 when clean.
+    RETURNS (does not exit) when the command is not a covered HTTP send, so
+    the caller's other arms still run."""
+    label, toks = _http_channel_segment(cmd)
+    if label is None:
+        return
+    try:
+        raw, unreadable = _curl_payload_raw(cmd, toks, all_flags=True)
+        if unreadable:
+            sys.stderr.write(
+                f"KIMENO-SZOVEG KAPU ({label}): TILTVA, mert a kimeno szoveget nem tudtam "
+                f"megvizsgalni.\nOk: {unreadable}.\n\n"
+                "Ez szandekosan fail-closed: egy vizsgalhatatlan kuldes pont a kaput utne ki.\n"
+                "Vizsgalhato alak: idezett heredoc (--data-binary @- <<'JSON'), "
+                "@/abszolut/ut.json, vagy inline -d '...' behelyettesites nelkul.\n")
+            sys.exit(2)
+        if raw is None:
+            sys.exit(0)  # a bare POST: nothing of ours is being sent
+        text = _http_channel_text(raw)
+        if not text.strip():
+            sys.exit(0)
+        problems = audit(text)
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open-loud
+        head = f"outgoing-copy-gate: HTTP-csatorna-ag ({label}) belso hiba, FAIL-OPEN atengedes"
+        tail = " -- ez az uzenet a szoveg-ellenorzes NELKUL ment ki."
+        sys.stderr.write(f"{head}: {exc!r}{tail}\n")
+        _gate_log(f"{head}: {exc!r}{tail}")
+        print(pass_with_warning(f"{head}: {type(exc).__name__}{tail}"))
+        sys.exit(0)
+    if problems:
+        sys.stderr.write(
+            f"KIMENO-SZOVEG KAPU ({label}): TILTVA, az uzenet nem mehet ki igy.\n\n"
+            + "\n".join(f"  - {p}" for p in problems)
+            + "\n\nJavitsd a szoveget es kuldd ujra.\n")
+        sys.exit(2)
+    sys.exit(0)
+
+
+# --- Inter-agent messages: HOMOGLYPH-ONLY (INTERAGENTHOMOGLIF923) -----------
+# `curl .../api/messages` is NOT an email send (send-invocation-cases.json pins
+# it expected:false, and that stays), so none of the copy rules above ever ran
+# on it: no accent audit, no name rule, no em dash -- correctly, because the
+# fleet's internal traffic is written WITHOUT accents and the full audit would
+# block most of it. One dimension is added here and nothing else: a MIXED-SCRIPT
+# word (homoglyph). The fleet coordinates by card ids, agent names and file
+# paths passed in messages; a Cyrillic 'a' in one of those does not look wrong,
+# it silently points at something that does not exist.
+#
+# FAILURE DIRECTION IS THE OPPOSITE OF THE EMAIL BRANCH:
+#   - homoglyph FOUND          -> BLOCK (exit 2), naming the word and the char;
+#   - body NOT INTERPRETABLE   -> PASS, with a loud named warning + gate-log
+#     (unreadable path, $-path,    line. On this channel a false block mutes an
+#     run-time substitution,       agent (the fleet's coordination backbone);
+#     non-object JSON, unknown     the threat is our own agent emitting a
+#     shape)                       lookalike by accident, not an attacker, so
+#                                  fail-open-loud is the right side.
+# All three shapes are covered: quoted heredoc (--data-binary @- <<'JSON'),
+# @file, and inline -d '...'.
+_IA_TARGET = re.compile(r"^(https?://)?[^/\s]*/api/messages/?(\?\S*)?$", re.I)
+_IA_DATA_FLAGS = ("-d", "--data", "--data-binary", "--data-raw", "--data-ascii", "--json")
+_IA_SUBST = re.compile(r"\$\(|`|\$\{?\w")
+
+
+def _ia_segment(cmd: str):
+    """Tokens of the curl segment that POSTs to /api/messages, or None."""
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return None
+    for toks in segments:
+        while toks and _ENV_ASSIGN.match(toks[0]):
+            toks = toks[1:]
+        if toks and _CURLISH.match(_basename(toks[0])) and any(_IA_TARGET.match(t) for t in toks[1:]):
+            return toks
+    return None
+
+
+# The fleet's everyday form is `S=/abs/scratch; ... --data-binary @$S/m.json`:
+# the variable is assigned a LITERAL earlier in the SAME command string. That
+# is deterministic, so it is resolved here instead of warned about. Only a
+# plain literal value counts (no quotes-with-$, no substitution); anything
+# else stays unresolved and is warned about.
+_IA_ASSIGN = re.compile(r"""(?:^|[;&|\n(]\s*|\s)(?:export\s+)?([A-Za-z_]\w*)=(?:"([^"$`]*)"|'([^']*)'|([^\s;&|$`'"()]+))""")
+
+
+def _ia_resolve_local_vars(cmd: str, ref: str) -> str:
+    local = {}
+    for m in _IA_ASSIGN.finditer(cmd):
+        local[m.group(1)] = next(g for g in m.groups()[1:] if g is not None)
+    def sub(m):
+        name = m.group(1) or m.group(2)
+        return local.get(name, m.group(0))
+    return re.sub(r"\$\{(\w+)\}|\$(\w+)", sub, ref)
+
+
+def _curl_payload_raw(cmd: str, toks, all_flags: bool = False):
+    """(raw_body, unreadable_reason) of a curl data flag, from the three shapes
+    (inline -d, @file, quoted heredoc via @-). raw_body is None when the call
+    carries no data flag at all. Shared by the inter-agent homoglyph gate and
+    the HTTP channel gate (GATEHTTP924), so both read the SAME body the same
+    way. all_flags: curl joins repeated -d values with '&' (a form body such
+    as `-d chat_id=1 -d text=...`); the HTTP gate needs every part, or the
+    text field hides behind the first flag. The inter-agent gate keeps
+    first-only."""
+    raw = None
+    parts = []
+    for i, t in enumerate(toks):
+        val = None
+        is_raw_flag = False
+        for f in _IA_DATA_FLAGS:
+            if t == f and i + 1 < len(toks):
+                val = toks[i + 1]
+            elif t.startswith(f + "="):
+                val = t[len(f) + 1:]
+            elif f == "-d" and t.startswith("-d") and len(t) > 2 and not t.startswith("--"):
+                val = t[2:]
+            if val is not None:
+                is_raw_flag = f == "--data-raw"
+                break
+        if val is None:
+            continue
+        if val.startswith("@") and not is_raw_flag:
+            ref = val[1:]
+            if ref == "-":
+                m = re.search(r"<<-?\s*'?(\w+)'?[^\n]*\n(.*?)\n\1(?=\s|$)", cmd, re.S)
+                if not m:
+                    return None, "a torzs stdin-rol jon (@-), heredoc nelkul"
+                if not re.search(r"<<-?\s*'", cmd) and _IA_SUBST.search(m.group(2)):
+                    return None, "a heredoc NEM idezett, es shell-behelyettesitest tartalmaz"
+                raw = m.group(2)
+            else:
+                path = os.path.expandvars(os.path.expanduser(_ia_resolve_local_vars(cmd, ref)))
+                if "$" in path:
+                    return None, f"a torzs fel nem oldhato @utvonalrol jon (@{ref})"
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as fh:
+                        raw = fh.read()
+                except OSError as exc:
+                    return None, f"a torzs-fajl (@{ref}) nem olvashato ({exc.strerror or exc})"
+        else:
+            if _IA_SUBST.search(val):
+                return None, "az inline torzs shell-behelyettesitest tartalmaz, futasidoben dol el"
+            raw = val
+        if not all_flags:
+            break
+        parts.append(raw)
+    if all_flags and parts:
+        return "&".join(parts), None
+    return raw, None
+
+
+def _ia_payload(cmd: str, toks):
+    """(text, unreadable_reason) of the message body, from the three shapes."""
+    raw, unreadable = _curl_payload_raw(cmd, toks)
+    if unreadable:
+        return None, unreadable
+    if raw is None:
+        # No data flag at all: a GET of the queue (the most frequent call on
+        # this path) or a bare POST. Nothing is being SENT, so nothing to scan
+        # and nothing to warn about -- a warning here would fire on every
+        # queue read.
+        return "", None
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        return None, "a torzs nem ervenyes JSON"
+    if not isinstance(obj, dict):
+        return None, "a torzs JSON, de nem objektum"
+    # EVERY string field: a lookalike in `to` misroutes as silently as one in
+    # `content` misleads.
+    strings = [str(v) for v in obj.values() if isinstance(v, str)]
+    return "\n".join(strings), None
+
+
+def inter_agent_homoglyph_gate(cmd: str) -> None:
+    """Exit 2 on a homoglyph, exit 0 otherwise (loudly when unreadable).
+    Only called for a command that is NOT an email send."""
+    toks = _ia_segment(cmd)
+    if toks is None:
+        sys.exit(0)
+    text, unreadable = _ia_payload(cmd, toks)
+    if unreadable:
+        msg = ("outgoing-copy-gate (inter-agent, homoglifa): a torzs NEM vizsgalhato -- "
+               f"{unreadable}. Az uzenet ATMENT, homoglifa-ellenorzes NELKUL. "
+               "Vizsgalhato alak: idezett heredoc (--data-binary @- <<'JSON') vagy @/abszolut/ut.json.")
+        _gate_log(msg)
+        print(pass_with_warning(msg))
+        sys.exit(0)
+    mixed = mixed_script_words(text)
+    if mixed:
+        shown = "; ".join(f"{w!r} -- benne {name}" for w, _c, name in mixed[:5])
+        more = f" (+{len(mixed) - 5} tovabbi)" if len(mixed) > 5 else ""
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU (inter-agent): TILTVA -- VEGYES IRASRENDSZERU SZO (homoglifa), "
+            f"{len(mixed)} db: {shown}{more}.\n"
+            "Egy kartya-azonositoban, agens-nevben vagy utvonalban ez neman felreiranyit. "
+            "Javitsd a szoveget es kuldd ujra. (Itt CSAK a homoglifa fut, ekezet- es copy-szabaly nem.)\n"
+        )
+        sys.exit(2)
+    sys.exit(0)
 
 
 def collect_channel_body(tool_input: dict, unescape_mdv2: bool) -> str:
@@ -2557,20 +2911,22 @@ def main():
         # so it still reaches the branch below; and anything that looks like BOTH is treated as
         # the email it is, on the fail-closed path.
         #
-        # Upstream batch 8 (94765127) wires a call to inter_agent_homoglyph_gate() here instead
-        # of the telegram branch below -- NOT adopted (and its definition + dedicated helpers
-        # removed from this merge entirely, see the block above `def main()`): this fork already
-        # evaluated that exact function on card ee7bc2ba (Cybersec NO-GO @ 26f2b4f2) and found it
-        # half-wired dead code (calls the undefined `_gate_log`, own tests red), by MikroB's
-        # decision removed rather than landed half-finished. Re-checked fresh here, not reused
-        # blindly (per this card's own instruction): `_gate_log` is STILL undefined anywhere in
-        # this file, so the upstream call site would NameError the first time it reached an
-        # unreadable body. The prior finding still holds.
+        # Card 1b4c566e: a Bash curl that is neither a mail send nor (when opted in) a
+        # Telegram-Bot-API send used to fall straight through to sys.exit(0) -- no audit at
+        # all on a Discord/community HTTP send or an inter-agent /api/messages POST. Both
+        # gates below are adopted from upstream's GATEHTTP924/INTERAGENTHOMOGLIF923 (see the
+        # block above `def main()` for http_channel_gate/inter_agent_homoglyph_gate, and the
+        # Telegram-exclusion decision recorded there). inter_agent_homoglyph_gate() always
+        # exits (0 or 2) once reached, same as telegram_bash_gate above; the explicit
+        # sys.exit(0) after it is unreachable in practice but keeps this branch as
+        # self-documenting as its sibling arms.
         if is_send_invocation(cmd):
             text, unreadable = collect_bash_body(cmd)
         elif telegram_bash_enabled() and is_telegram_bash_send(cmd):
             telegram_bash_gate(cmd)  # exits; never falls through
         else:
+            http_channel_gate(cmd)  # exits if a covered HTTP channel send; else returns
+            inter_agent_homoglyph_gate(cmd)  # exits; never falls through
             sys.exit(0)
     else:
         sys.exit(0)
