@@ -161,11 +161,13 @@ else
   echo "created $TREE on $BRANCH"
 fi
 
-# node_modules (card 0b23ec28). A directory symlink here is the enabler behind the 9dc0fba8 class:
-# `cd $TREE/node_modules && rm -rf ../src` resolves `..` inside the MAIN clone, because cd lands the
-# process in the resolved directory. store/agent-worktree-deps.sh replaces the link with a REAL
-# directory, which is the only shape where `..` cannot leave the worktree -- per-entry symlinks only
-# move the exit one level deeper (318 packages, 318 doors).
+# node_modules (card 0b23ec28, extended to --card mode by card cf678d23). A directory symlink
+# here is the enabler behind the 9dc0fba8 class: `cd $TREE/node_modules && rm -rf ../src` resolves
+# `..` inside the MAIN clone, because cd lands the process in the resolved directory.
+# store/agent-worktree-deps.sh replaces the link with a REAL directory, which is the only shape
+# where `..` cannot leave the worktree -- per-entry symlinks only move the exit one level deeper
+# (318 packages, 318 doors). agent-worktree-deps.sh now has a --card mode (cf678d23), so this
+# applies identically to card worktrees.
 #
 # THE SLOW STEP LIVES THERE, NOT HERE, and the new shape is OPT-IN for now. This script is called
 # idempotently from dispatch paths as a cheap "make sure the worktree exists"; a ~1GB copy inside it
@@ -174,18 +176,23 @@ fi
 # time (plan-grilling verdict, card 0b23ec28). Set MARVEEN_WORKTREE_REAL_DEPS=1 to get the real
 # directory at creation time.
 if [ -L "$TREE/node_modules" ]; then
-  echo "node_modules: symlink -> $MAIN/node_modules (SHARED with every worktree; \`bash store/agent-worktree-deps.sh $AGENT\` makes it real)"
+  if [ -n "$CARD" ]; then
+    echo "node_modules: symlink -> $MAIN/node_modules (SHARED with every worktree; \`bash store/agent-worktree-deps.sh --card $CARD\` makes it real)"
+  else
+    echo "node_modules: symlink -> $MAIN/node_modules (SHARED with every worktree; \`bash store/agent-worktree-deps.sh $AGENT\` makes it real)"
+  fi
 elif [ -d "$TREE/node_modules" ]; then
   echo "node_modules: real directory -- no shared-ground symlink here"
-elif [ -z "$CARD" ] && [ "${MARVEEN_WORKTREE_REAL_DEPS:-0}" = "1" ]; then
-  bash "$MAIN/store/agent-worktree-deps.sh" "$AGENT" || die 3 "could not populate node_modules"
+elif [ "${MARVEEN_WORKTREE_REAL_DEPS:-0}" = "1" ]; then
+  if [ -n "$CARD" ]; then
+    bash "$MAIN/store/agent-worktree-deps.sh" --card "$CARD" || die 3 "could not populate node_modules"
+  else
+    bash "$MAIN/store/agent-worktree-deps.sh" "$AGENT" || die 3 "could not populate node_modules"
+  fi
 else
   ln -s "$MAIN/node_modules" "$TREE/node_modules"
   if [ -n "$CARD" ]; then
-    # agent-worktree-deps.sh is keyed by AGENT (resolves the per-agent tree internally), not by card
-    # id -- it has no --card mode yet, so MARVEEN_WORKTREE_REAL_DEPS is deliberately not honoured
-    # here. A card-worktree therefore always shares node_modules with $MAIN for now.
-    echo "node_modules: linked from $MAIN/node_modules (shared -- real-deps for card worktrees is not built yet, see store/agent-worktree-deps.sh)"
+    echo "node_modules: linked from $MAIN/node_modules (shared; run \`bash store/agent-worktree-deps.sh --card $CARD\` to make it a real directory)"
   else
     echo "node_modules: linked from $MAIN/node_modules (shared; run \`bash store/agent-worktree-deps.sh $AGENT\` to make it a real directory)"
   fi

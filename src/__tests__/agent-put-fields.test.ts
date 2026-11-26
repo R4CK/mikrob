@@ -188,6 +188,9 @@ describe('checkConfigPutFields', () => {
       // known set is refused by checkConfigPutFields, which is the mismatch
       // this pin exists to catch.
       'dailyHandoffEnabled', 'dailyHandoffTime',
+      // New-card-dispatch tier (card f5f78e13): same reasoning as the
+      // daily-handoff tier above -- it needs a default to be saveable.
+      'newCardHandoffEnabled',
     ])
   })
 })

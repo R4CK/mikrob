@@ -7,9 +7,44 @@
 // Globals from app-agents.js: stopAgentsBusyPoll, startAgentsBusyPoll, loadAgents
 // Globals from app-agents-team.js: _agentsActiveView, _setAgentsView
 // ... plus many more page-load fns from other modules (all resolved at call time)
-// Exposed globally: switchPage(), setSidebarOpen(), navLinks, pages
+// Exposed globally: switchPage(), setSidebarOpen(), navLinks, pages, _switchProviderTab()
 const navLinks = document.querySelectorAll('.sb-link[data-page], .nav-link[data-page]')
 const pages = document.querySelectorAll('.page')
+
+// === Providers page tabs (card f1e33cfb): Local model / FreeLLM / Gemini, plus the nested
+// Local-model Állapot/Katalógus sub-tabs. Same toggle-by-data-attribute pattern as switchAgentTab
+// in app-agent-detail.js -- panels differ by a data attribute, not a fixed id list, so adding a
+// fourth provider later is a markup-only change. ===
+function _switchProviderTab(tab) {
+  const nav = document.getElementById('providersTabNav')
+  if (nav) nav.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.providerTab === tab))
+  const panels = { local: 'tabProviderLocal', freellm: 'tabProviderFreellm', gemini: 'tabProviderGemini' }
+  Object.keys(panels).forEach((key) => {
+    const el = document.getElementById(panels[key])
+    if (el) el.hidden = key !== tab
+  })
+}
+function _switchLocalLlmSubTab(tab) {
+  const nav = document.getElementById('localLlmSubTabNav')
+  if (nav) nav.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.localTab === tab))
+  const panels = { status: 'localLlmSubStatus', catalog: 'localLlmSubCatalog' }
+  Object.keys(panels).forEach((key) => {
+    const el = document.getElementById(panels[key])
+    if (el) el.hidden = key !== tab
+  })
+}
+;(function wireProviderTabs() {
+  const outer = document.getElementById('providersTabNav')
+  if (outer) outer.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn')
+    if (btn) _switchProviderTab(btn.dataset.providerTab)
+  })
+  const inner = document.getElementById('localLlmSubTabNav')
+  if (inner) inner.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn')
+    if (btn) _switchLocalLlmSubTab(btn.dataset.localTab)
+  })
+})()
 
 function confirmSettingsLeave() {
   if (settingsDirty.size === 0) return true
@@ -19,6 +54,14 @@ function confirmSettingsLeave() {
 function switchPage(pageId) {
   // 'team' is merged into 'agents'; any internal call still passing 'team' redirects.
   if (pageId === 'team') { _agentsActiveView = 'tree'; pageId = 'agents' }
+  // 'localLlm'/'freellm'/'geminiCalls' merged into 'providers' (card f1e33cfb, phase 36dc9240):
+  // old deep-links and nav code paths redirect here and land on the matching tab, same pattern
+  // as the 'team' redirect above. Safety window: old anchors keep working, not removed.
+  if (pageId === 'localLlm' || pageId === 'freellm' || pageId === 'geminiCalls') {
+    const tab = pageId === 'localLlm' ? 'local' : pageId === 'freellm' ? 'freellm' : 'gemini'
+    pageId = 'providers'
+    if (typeof _switchProviderTab === 'function') _switchProviderTab(tab)
+  }
   // Guard unsaved settings before leaving the settings page
   if (!document.getElementById('settingsPage').hidden && pageId !== 'settings' && !confirmSettingsLeave()) return
   pages.forEach((p) => (p.hidden = p.id !== pageId + 'Page'))
@@ -45,10 +88,11 @@ function switchPage(pageId) {
   if (pageId === 'agents') { loadAgents().then(() => _setAgentsView(_agentsActiveView || 'grid')); startAgentsBusyPoll() }
   if (pageId === 'memories') { loadMemAgents(); loadMemStats(); loadMemories() }
   if (pageId === 'skills') loadGlobalSkills()
-  if (pageId !== 'localLlm') stopLocalLlmPoll()
-  if (pageId === 'localLlm') loadLocalLlm()
-  if (pageId !== 'freellm') stopFreellmPoll()
-  if (pageId === 'freellm') loadFreellm()
+  // Providers page (card f1e33cfb): Local model + FreeLLM + Gemini merged into one page with tabs;
+  // all three load on entry (cheap, keeps every tab warm when switching), both polls stop on leave.
+  if (pageId !== 'providers') stopLocalLlmPoll()
+  if (pageId !== 'providers') stopFreellmPoll()
+  if (pageId === 'providers') { loadLocalLlm(); loadFreellm(); loadGeminiCalls() }
   if (pageId === 'connectors') loadConnectors()
   if (pageId === 'migrate') loadMigrateAgents()
   if (pageId === 'docs') loadDocs()
@@ -65,9 +109,11 @@ function switchPage(pageId) {
   if (pageId === 'messages') loadMessagesPage()
   if (pageId === 'tokenUsage') loadTokenUsage()
   if (pageId === 'costs') loadCosts()
-  if (pageId === 'llmMonitor') loadLlmMonitor()
-  if (pageId === 'llmMonitor') loadLlmMonitor()
-  if (pageId === 'geminiCalls') loadGeminiCalls()
+  // Card f1e33cfb ("Live load" page): the GPU-spectrum canvas + model-distribution swimlane,
+  // relocated here from Overview, keep their own 5s/15s polls alongside loadLlmMonitor()'s
+  // one-shot task-timeline load. Both polls self-stop by checking llmMonitorPage.hidden.
+  if (pageId !== 'llmMonitor') { stopOvwSpectrum(); stopOvwLlmDist() }
+  if (pageId === 'llmMonitor') { loadLlmMonitor(); startOvwSpectrum(); startOvwLlmDist() }
   if (pageId === 'kg') loadKgPage()
   if (pageId === 'llmLedger') initLlmLedgerPage()
   if (pageId === 'ideas') loadIdeasPage()

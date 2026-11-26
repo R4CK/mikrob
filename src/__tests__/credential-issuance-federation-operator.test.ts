@@ -21,6 +21,24 @@ vi.mock('../web/operator-access.js', async (orig) => {
   }
 })
 
+// Card 329bda2d: setEnabled(false)/putDoc/DELETE below run through the REAL tryHandleFederation,
+// which calls ensureFederationClaudeMdSection() after each write (federation.ts's own production
+// wiring). This file isolates the federation CONFIG store (_setFederationStoreDirForTest below)
+// but not PROJECT_ROOT, so an unmocked call wrote the REAL repo root's CLAUDE.md -- on a fresh
+// checkout the federation store starts disabled, so ensureFederationClaudeMdSection's remove
+// branch (ensureBlockInFile(..., null, ...)) stripped the already-committed MARVEEN-FEDERATION
+// block, exactly the dirt three failed 51c68eeb land attempts attributed to an unrelated selftest
+// running concurrently in another vitest worker on the same shared tree (card 99a4a2d4's
+// before/after guard only sees WHEN the tree changed, not WHO). Same isolation as
+// federation-lifecycle.test.ts's own fix (card a5b71f29) -- mocking it out is correct here because
+// federation-onboarding.test.ts is what actually tests ensureFederationClaudeMdSection's rendering.
+const { ensureFederationClaudeMdSectionMock } = vi.hoisted(() => ({
+  ensureFederationClaudeMdSectionMock: vi.fn(() => false),
+}))
+vi.mock('../web/federation/onboarding.js', () => ({
+  ensureFederationClaudeMdSection: () => ensureFederationClaudeMdSectionMock(),
+}))
+
 import { initDatabase, getDb, getDashboardUser } from '../db.js'
 import { tryHandleAuth } from '../web/routes/auth.js'
 import { tryHandleFederation, _resetInboxDedupForTest } from '../web/routes/federation.js'

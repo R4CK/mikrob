@@ -5,6 +5,7 @@ import { getSettingDefinition } from '../../config-registry.js'
 import { json, readBody, RequestBodyTooLargeError } from '../http-helpers.js'
 import { isKnownAgent } from '../agent-config.js'
 import { logger } from '../../logger.js'
+import { rejectIfNotHumanAuth } from './auth.js'
 import type { RouteContext } from './types.js'
 
 // card 1a3c6459 (F2 on e96d56c5): a budget PUT body is one small integer field, never a bulk
@@ -55,13 +56,15 @@ export async function tryHandleLlmLedger(ctx: RouteContext): Promise<boolean> {
     // peer must not be able to lower (or forge-raise) another agent's budget. ctx.auth.agent
     // (X-Agent-Id on a 'token' caller) is explicitly "attribute, never authorize" per
     // RouteContext's own doc comment -- it was never a credential this write could lean on.
-    const auth = ctx.auth
-    if (auth?.kind !== 'session' && auth?.kind !== 'device') {
-      logger.warn({ authKind: auth?.kind ?? 'none', agentId: budgetMatch[1] },
-        'LLM ledger budget PUT refused: requires a session or device principal (card 1a3c6459 F1)')
-      json(res, { error: 'Setting an LLM budget requires a dashboard session or device credential, not a shared fleet token' }, 403)
-      return true
-    }
+    //
+    // Card 52114c2f (CYBERED NO-GO 34673, F1): `kind === 'device'` alone is NOT human -- an
+    // agent:<id> device key (card 9655494c) resolves to this exact shape, and the check above
+    // let it through, i.e. once per-agent keys roll out, agent qa2's OWN key could lower/raise
+    // ANOTHER agent's budget (reproduced live: PUT as device agent:backend3 -> 200, budget row
+    // written for qa2). rejectIfNotHumanAuth is the shared predicate (card 93ed929a, RedHat
+    // 16876 B1) that already excludes an agent device key from every other write route --
+    // reusing it here closes the same gap instead of re-deriving the exclusion a fifth time.
+    if (rejectIfNotHumanAuth(ctx)) return true
 
     let body: Buffer
     try {
@@ -102,7 +105,8 @@ export async function tryHandleLlmLedger(ctx: RouteContext): Promise<boolean> {
     // F1: updated_by is now the AUTHENTICATED principal, never the body's "actor" field (WhiteHat2
     // measured a forged "peti (forged)" stored verbatim). The body no longer has a say in who gets
     // credited/blamed for the change.
-    const updatedBy = auth.kind === 'session' ? (auth.user ?? null) : (auth.device ?? null)
+    const auth = ctx.auth
+    const updatedBy = auth?.kind === 'session' ? (auth.user ?? null) : (auth?.kind === 'device' ? (auth.device ?? null) : null)
     setAgentLlmBudget(budgetMatch[1], dailyBudget, updatedBy)
     logger.info({ agentId: budgetMatch[1], dailyBudget, updatedBy }, 'Per-agent LLM daily budget updated')
     json(res, { ok: true, agent_id: budgetMatch[1], daily_budget: dailyBudget })

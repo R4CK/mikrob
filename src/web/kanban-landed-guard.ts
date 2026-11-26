@@ -142,7 +142,28 @@ export const GENERATED_COMMENT_AUTHORS: ReadonlySet<string> = new Set([
   'local-llm',
   'gate-pretriage',
   'gemini-orch-review',
+  // card b20d2062: marveen-land.sh's own carry-forward comment (--allow-carry-forward) cites both
+  // the old gated sha and the new develop-drift-merged tip in full, from a non-gate author. Left
+  // unmarked, kanban-gate-completeness-guard.ts's currentRoundStartTs would read the new sha
+  // citation as a fresh round boundary and demand a verdict AFTER it -- exactly the gap that
+  // forced a manual force-close on every one of the 5 real incidents this card fixes. The tool
+  // has already independently proven (via git, not by self-declaration) that the two shas are
+  // content-equivalent for the card's own files before it ever posts this comment.
+  'marveen-land',
 ])
+
+/**
+ * `GENERATED_COMMENT_AUTHORS.has(author)` on its own only catches an exact-cased, untrimmed
+ * match. The Python side (`gate-closure-check.py`'s `_is_generated_author`) already does
+ * `.strip().lower()` before comparing; every TS reader of this set compared case-insensitively
+ * but not trim-insensitively (card 60aeca01, F1: a dashboard-posted `" local-llm "` author with
+ * incidental whitespace passed the Python check and failed this one). One function so the four
+ * TS call sites (this file, kanban-gate-completeness-guard.ts x3, kanban-draft-review-guard.ts)
+ * can't drift on normalisation the way they drifted on trimming.
+ */
+export function isGeneratedCommentAuthor(author: string | null | undefined): boolean {
+  return GENERATED_COMMENT_AUTHORS.has((author ?? '').trim().toLowerCase())
+}
 
 export interface LandedVerdict {
   readonly blocked: boolean
@@ -186,7 +207,7 @@ async function claimedCommits(cardId: string, repo: string): Promise<Claimed> {
   const nonGenerated: string[] = []
   let skippedGenerated = 0
   for (const c of getKanbanComments(cardId)) {
-    if (GENERATED_COMMENT_AUTHORS.has(c.author ?? '')) {
+    if (isGeneratedCommentAuthor(c.author)) {
       skippedGenerated += 1
       continue
     }

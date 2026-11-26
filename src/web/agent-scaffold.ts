@@ -82,6 +82,19 @@ const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, A
 // 200; this had been silently killing sub-agent memory saves and searches.
 const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
 
+// Card 52114c2f (2520b85a slice 2.5): helper that prints the right
+// "Authorization: Bearer <value>" line for curl -H @- -- an agent's own
+// agent:<id> device key when it has one (card 9655494c), the shared token
+// otherwise. Same absolute-path reasoning as tokenPath above.
+const agentAuthHeaderPath = join(PROJECT_ROOT, 'store', 'agent-auth-header.sh')
+
+// Card 01eb0d0c: wrapper scripts that DO the message-close / memory-search recipe (notify
+// boolean, X-Memory-Search header check) instead of teaching it inline in every agent's
+// CLAUDE.md -- the generator now names these commands, see buildMessageCloseBody /
+// buildMemorySearchLabelBody below.
+const agentMessageCloseScriptPath = join(PROJECT_ROOT, 'store', 'agent-message-close.sh')
+const agentMemorySearchScriptPath = join(PROJECT_ROOT, 'store', 'agent-memory-search.sh')
+
 // Hook commands run under `/bin/sh -c` with a NON-interactive PATH. On nvm
 // installs a bare `node` is not on that PATH, so the hook exits 127 -- which
 // Claude Code treats as a NON-blocking error and lets the tool call through:
@@ -507,6 +520,9 @@ export function hookScriptAlreadyEffectiveInOtherScope(
 // would also match paths of other projects (or ~/.claude/agents/).
 export const INSTALL_ANCHORED_SUFFIXES = [
   '/store/.dashboard-token',
+  '/store/agent-auth-header.sh',
+  '/store/agent-message-close.sh',
+  '/store/agent-memory-search.sh',
   '/scripts/hooks/',
   '/scripts/skill-index.sh',
   '/scripts/skill-lint.mjs',
@@ -1041,6 +1057,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectGitProtectGuard(existing)
   injectNpmProtectGuard(existing)
   injectDbWriteGuard(existing)
+  injectLiveCheckoutWriteGuard(existing)
   injectSymlinkedNodeModulesGuard(existing)
   injectAgentKeySecretGuard(existing)
   injectBlastRadiusGuard(existing)
@@ -1844,6 +1861,52 @@ export function ensureDbWriteGuard(name: string): boolean {
   if (ptuJson.includes('db-write-guard.py') && hookCommandWired(ptuJson, command)) return false
   if (isUnsafeHookCommand(command)) return false
   injectDbWriteGuard(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Idempotently wire the live-checkout-write-guard PreToolUse hook (card 0c3b13b5): blocks a
+// sub-agent's Bash/Write/Edit/MultiEdit/NotebookEdit call from touching a TRACKED file in the live
+// checkout /home/neon/marveen -- two incidents (backend 11:55, backend3 12:24) edited files there
+// directly instead of in their own worktree, the second blocking a Peti-approved update.sh. Applied
+// to EVERY agent, main included: the live checkout is reachable from any agent's cwd via an
+// absolute path, not just the main agent's own session.
+export function injectLiveCheckoutWriteGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'live-checkout-write-guard.py'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('live-checkout-write-guard.py')),
+    entry,
+  ]
+}
+
+// Same reasoning as ensureDbWriteGuard: injectLiveCheckoutWriteGuard alone reaches an agent only
+// when its settings.json is regenerated, so this runs in the startup migration loop to arm
+// already-provisioned agents on a dashboard restart.
+export function ensureLiveCheckoutWriteGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'live-checkout-write-guard.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('live-checkout-write-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectLiveCheckoutWriteGuard(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
@@ -3638,7 +3701,7 @@ function buildAutonomyBody(name: string): string {
     'Az autonóm műveletek fokozatait a store/autonomy-config.json szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent). Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét.',
     '',
     '**Level 1 (csak jelez)**: küldj inter-agent értesítést a főágensnek, de NE végezd el a műveletet. Ezután ÁLLJ MEG.',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X POST ${dashboardOrigin}/api/messages -H "Content-Type: application/json" -d '{"from":"${name}","to":"${MAIN_AGENT_ID}","content":"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek."}'`,
+    `${agentAuthHeaderPath} ${name} | curl -s -H @- -X POST ${dashboardOrigin}/api/messages -H "Content-Type: application/json" -d '{"from":"${name}","to":"${MAIN_AGENT_ID}","content":"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek."}'`,
     'A payload EGYSZERES idézőjelben megy. A `-d "{...}"` dupla idézőjeles alak TILOS: a shell a',
     'backtickot és a `$(...)`-t VÉGREHAJTJA a payloadon belül, a szöveg helyére a parancs KIMENETE',
     'kerül, és a küldés HTTP 200-at ad -- semmi nem jelzi. Ha a szövegbe egy `\'` is kerülne, ne a',
@@ -3653,11 +3716,11 @@ function buildAutonomyBody(name: string): string {
     '**Level 2 (jóváhagyás szükséges)**: kérj jóváhagyást az API-n MIELŐTT cselekszel.',
     '',
     'Jóváhagyás kérése (POST):',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X POST ${dashboardOrigin}/api/approvals -H "Content-Type: application/json" -d '{"agent_id":"${name}","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'`,
+    `${agentAuthHeaderPath} ${name} | curl -s -H @- -X POST ${dashboardOrigin}/api/approvals -H "Content-Type: application/json" -d '{"agent_id":"${name}","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'`,
     'A válaszban kapott id-vel kérdezheted le a döntést.',
     '',
     'Döntés lekérdezése (GET, 60 mp-enként ismételve):',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- "${dashboardOrigin}/api/approvals/<id>"`,
+    `${agentAuthHeaderPath} ${name} | curl -s -H @- "${dashboardOrigin}/api/approvals/<id>"`,
     'status=approved -> végezd el a műveletet. status=rejected vagy status=timeout -> ne csináld, naplózd az okot.',
     '',
     '**Level 3 (autonóm)**: elvégzed a műveletet, majd utána jelented a főágensnek.',
@@ -4703,7 +4766,7 @@ export function buildSystemDirectiveAuthBody(name: string): string {
     // rejects it. The pipe form below is the fleet's standard shape everywhere
     // else in these instructions anyway, and there is no request body here, so
     // reading the header from stdin cannot swallow one.
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -H @- -s ${dashboardOrigin}/api/messages/<N>`,
+    `${agentAuthHeaderPath} ${name} | curl -H @- -s ${dashboardOrigin}/api/messages/<N>`,
     '```',
     `Elfogadás feltétele MIND: a sor létezik; from_agent="${SYSTEM_DIRECTIVE_SENDER}"; to_agent="${name}";`,
     'a status NEM "failed"; és a content szó szerint a direktíva szövege (a `[SYSTEM-DIREKTIVA ...]`',
@@ -4783,7 +4846,7 @@ export function buildAgentIdHeaderBody(name: string): string {
     'nevedet, hogy a szerver meg tudja nevezni, ki írt felül egy idegen bejegyzést:',
     '',
     '```bash',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" \\`,
+    `${agentAuthHeaderPath} ${name} \\`,
     `| curl -H @- -s -X PUT ${dashboardOrigin}/api/memories/<id> \\`,
     '  -H "Content-Type: application/json" \\',
     `  -H "X-Agent-Id: ${name}" \\`,
@@ -5135,38 +5198,26 @@ const MEMORY_SEARCH_LABEL_BLOCK_RE = new RegExp(
 // same time cannot read each other's label out of one shared /tmp path.
 export function buildMemorySearchLabelBody(name: string): string {
   return [
-    '## Memória-keresés: a FEJLÉCET is olvasd el (KÖTELEZŐ)',
+    '## Memória-keresés: a `agent-memory-search.sh` paranccsal (KÖTELEZŐ ezt használni)',
     '',
     'A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a',
-    'maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint',
-    'egy valódi találat -- a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik. Ezért a',
-    'keresés receptje `-D`-vel megy, és a `grep` NEM opcionális:',
+    'maradék töltelékszavakra hozott sorokat adja vissza -- a body ilyenkor UGYANÚGY néz ki, mint',
+    'egy valódi találat, a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik. Ez a script',
+    'kódolja a kérdést, kiolvassa a fejlécet és felkiáltja, ha a válasz nem bizonyíték:',
     '',
     '```bash',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -D /tmp/mem-fejlec-${name}.txt \\`,
-    `  "${dashboardOrigin}/api/memories?agent=${name}&q=KULCSSZO"`,
-    `grep -i '^x-memory-search' /tmp/mem-fejlec-${name}.txt`,
+    `${agentMemorySearchScriptPath} ${name} "KULCSSZÓ" [--category hot|warm|cold|shared] \\`,
+    '    [--date tegnap|ÉÉÉÉ-HH-NN] [--since ÉÉÉÉ-HH-NN] [--until ÉÉÉÉ-HH-NN] [--strict]',
     '```',
     '',
-    '- `relaxed=true` -- semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett',
-    '  közelítés, NEM bizonyíték. Egy sosem létezett minta így ötven sorral válaszol.',
-    '- `relaxed=false` -- a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez',
-    '  MINDEN, és azt sem, hogy van találat: a `relaxed=false; hits=0` létező válasz.',
+    '- Kilépő kód 0 = valódi (`relaxed=false`) találat vagy valódi, ellenőrzött 0 találat.',
+    '- Kilépő kód 6 = `relaxed=true`: amit kaptál, MENTETT KÖZELÍTÉS, nem bizonyíték --',
+    '  egy sosem létezett minta így is ötven sorral válaszolhat.',
+    '- Kilépő kód 5 = a kérés nem futott le; ÜRES TALÁLATKÉNT SOHA ne olvasd, a script ezt',
+    '  külön jelzi, nem engedi összekeverni a kettőt.',
+    '- Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), add meg a `--strict` flaget.',
     '',
-    'Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a',
-    '`&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik.',
-    '',
-    'Időszakra szűrés: `&date=tegnap` (ma, tegnap, múlt héten, `ÉÉÉÉ-HH-NN`, `ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN`)',
-    'vagy `&since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN`, ékezet nélkül, kódolva. A szűrő nem lazul: érvénytelen',
-    'kifejezésre 400 jön, és az `X-Memory-Search` fejléc `date=<tól>..<ig>` mezője mutatja a ténylegesen',
-    'használt tartományt. A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).',
-    '',
-    'NYERS ÉKEZET A `q`-BAN = HTTP 400, ÜRES TÖRZZSEL. A `q=funkcionális` alak 400-at ad, a',
-    '`q=funkcion%C3%A1lis` és a `-G --data-urlencode "q=..."` alak 200-at. A 400-on NINCS',
-    '`X-Memory-Search` fejléc, tehát a fenti `grep` némán semmit nem ír, és a nulla sor pontosan',
-    'úgy néz ki, mint egy üres találat, holott a keresés EL SEM INDULT. Ezért: a magyar keresőszót',
-    'százalék-kódold (vagy `-G --data-urlencode`), vagy keress ékezet nélküli szótővel, és a',
-    '`grep` mellett a fejléc LÉTÉT is nézd: ha nincs `X-Memory-Search` sor, az elszállt kérés, nem üres találat.',
+    'A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).',
   ].join('\n')
 }
 
@@ -5386,26 +5437,15 @@ A memoria 3 retegbol all (hot/warm/cold) + napi naplo.
 - **cold**: Hosszútávú tanulságok, történeti döntések, archívum
 - **shared**: Más ágenseknek is releváns információk
 
-### NINCS MENTAL NOTE! Ha meg kell jegyezni -> AZONNAL mentsd:
-
 Minden /api/* végpont Bearer tokenes: a token a ${tokenPath} fájlban.
 A munkakönyvtárad NEM a projekt gyökere, hanem ${join(PROJECT_ROOT, 'agents')}/AGENT_NAME, ezért a projekt fájljaira (token, scripts/) MINDIG abszolút úttal hivatkozz. Relatív úttal a fájl nem létezik: a cat üres sztringet ad, a curl üres Bearert küld, és a hívás némán 401-gyel elhal.
 
-Memória mentés:
-printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X POST ${dashboardOrigin}/api/memories -H "Content-Type: application/json" -d '{"agent_id":"AGENT_NAME","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'
+### NINCS MENTAL NOTE! Ha meg kell jegyezni -> AZONNAL mentsd:
 
-Napi napló (append-only):
-printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X POST ${dashboardOrigin}/api/daily-log -H "Content-Type: application/json" -d '{"agent_id":"AGENT_NAME","content":"## HH:MM -- Tema\nMi tortent, mi lett az eredmeny"}'
-
-Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
-printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -D /tmp/mem-fejlec-AGENT_NAME.txt "${dashboardOrigin}/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
-grep -i '^x-memory-search' /tmp/mem-fejlec-AGENT_NAME.txt
-
-A -D NEM dísz, és a fejlécet KÖTELEZŐ elolvasni. A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint egy valódi találat -- a különbség KIZÁRÓLAG az X-Memory-Search fejlécben utazik.
-relaxed=true  -> semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett közelítés, NEM bizonyíték.
-relaxed=false -> a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez MINDEN, és azt sem, hogy van találat (hits=0 is lehet mellette).
-Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a &strict=1-et: ott az üres válasz pontosan azt jelenti, aminek látszik.
-Időszakra szűrés: &date=tegnap (ma, tegnap, múlt héten, ÉÉÉÉ-HH-NN, ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN) vagy &since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN, ékezet nélkül, kódolva. A szűrő nem lazul, érvénytelen kifejezésre 400 jön; az X-Memory-Search fejléc date=<tól>..<ig> mezője mutatja a ténylegesen használt tartományt. A napi napló bejegyzései is kereshetők ([Napló ÉÉÉÉ-HH-NN ÓÓ:PP] kezdettel, cold tierben).
+A memória mentés, a napi napló és a keresés pontos curl-receptjét NE írd bele ide: azokat a
+process-indítás saját, idempotens generátora (ensureMemorySaveSection, ensureDailyLogSection,
+ensureMemorySearchLabelSection) illeszti be az agent saját CLAUDE.md-jébe közvetlenül e sor
+alá, az agent saját kulcsával (agentAuthHeaderPath), nem a megosztott tokennel.
 
 ### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
 
@@ -5659,28 +5699,32 @@ const MSGCLOSE_BLOCK_RE = new RegExp(
   `${MSGCLOSE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MSGCLOSE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-export function buildMessageCloseBody(): string {
+export function buildMessageCloseBody(name: string): string {
   return [
-    '## Üzenet lezárása: bejövő riportnál `notify:false`',
+    '## Üzenet lezárása: a `agent-message-close.sh` paranccsal',
     '',
-    'Egy neked jött inter-agent üzenetet a `PUT /api/messages/<id>` zár le (`"status":"done"` vagy',
-    '`"failed"`). A lezárás ALAPBÓL egy `[Result] msg_id:<id>` nyugtát küld vissza az eredeti feladónak.',
-    '',
-    '- DELEGÁLT FELADAT (a feladó az eredményre vár): zárd a szokásos módon, a nyugta maga az',
-    '  eredmény -- a `result` mezőbe írd, mit csináltál.',
-    '- BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): zárd `"notify":false`-szal. Itt a nyugta',
-    '  csak a feladó sorát növeli, és nála egy ágens-kört visz el (mérve 2026-09-27: három lezárás a',
-    '  feladó várakozó sorát 1-ről 4-re vitte).',
+    'Egy neked jött inter-agent üzenetet ezzel zárd le -- a script adja a PUT-ot, a JSON boolean',
+    '`notify` mezőt és a 409 (már lezárt) eset csendes kezelését, nem kell kézzel curl-t írnod:',
     '',
     '```bash',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" \\`,
-    `| curl -H @- -s -X PUT ${dashboardOrigin}/api/messages/<id> -H "Content-Type: application/json" \\`,
-    `  --data-binary '{"status":"done","notify":false}'`,
+    `${agentMessageCloseScriptPath} ${name} <id>                                        # bejövő riport/értesítés`,
+    `${agentMessageCloseScriptPath} ${name} <id> --notify true --result-file <path>      # delegált feladat eredménye`,
     '```',
-    'A `notify` csak valódi JSON boolean lehet: a `"false"` string 400-at kap, és ilyenkor a lezárás sem',
-    'történik meg. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
-    'Egy MÁR lezárt (done/failed) üzenet újabb lezárása 409-et ad (`Message already closed`): az első',
-    'lezárás érvényes, semmi nem változott, nyugta nem ment. Ez nem hiba, nem kell ismételni vagy jelenteni.',
+    '',
+    '- DELEGÁLT FELADAT (a feladó az eredményre vár): írd ki az eredményt a Write toollal egy',
+    '  fájlba, majd `--notify true --result-file <path>` -- a nyugta maga az eredmény.',
+    '- BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): flag nélkül -- alapértelmezés `--notify false`,',
+    '  mert a nyugta itt csak a feladó sorát növeli (mérve 2026-09-27: három lezárás a feladó',
+    '  várakozó sorát 1-ről 4-re vitte).',
+    '- SOHA ne írd `--result "..."` KÖZVETLENÜL a parancssorba dupla idézőjelben: egy backtick vagy',
+    '  `$(...)` a szövegben a TE saját héjadban fut le, mielőtt a script elindulna (CYBERSEC NO-GO',
+    '  38468). A biztonságos forma a `--result-file <path>` (írd ki a Write toollal, add át az',
+    '  útvonalat) -- a `--result-stdin` CSAK egyszeres idézőjeles heredocból (`<<\'EOF\'`) biztonságos,',
+    '  mert egy dupla idézőjeles `echo`/`printf` ugyanúgy végrehajtja a backtickot/`$(...)`-t a HÍVÓ',
+    '  héjában, mielőtt a script látná a szöveget.',
+    '- Egy MÁR lezárt üzenet újabb lezárása (409) a script számára NEM hiba: egy sort ír stderr-re és',
+    '  0-val lép ki, NEM kell megismételni a lezárást, és NEM kell jelenteni.',
+    '- A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
   ].join('\n')
 }
 
@@ -5691,7 +5735,7 @@ export function ensureMessageCloseSection(name: string): void {
   const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody()}\n${MSGCLOSE_END}`
+  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody(name)}\n${MSGCLOSE_END}`
 
   let existing: string
   try {
@@ -5702,6 +5746,96 @@ export function ensureMessageCloseSection(name: string): void {
 
   const updated = MSGCLOSE_BLOCK_RE.test(existing)
     ? existing.replace(MSGCLOSE_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+const MEMORY_SAVE_BEGIN = '<!-- BEGIN GENERATED: memory-save (auto-generated, do not edit by hand) -->'
+const MEMORY_SAVE_END = '<!-- END GENERATED: memory-save -->'
+const MEMORY_SAVE_BLOCK_RE = new RegExp(
+  `${MEMORY_SAVE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MEMORY_SAVE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+// Card 52114c2f: the memory-save recipe used to live only in the one-time, LLM-written
+// new-agent CLAUDE.md prompt (never regenerated afterward), still reading the shared token
+// via tokenPath. This makes it a proper idempotent-replace section like the others, on the
+// per-agent helper (agentAuthHeaderPath) instead.
+export function buildMemorySaveBody(name: string): string {
+  return [
+    '## Memória mentés',
+    '',
+    'Fontos döntést/tanulságot azonnal ments:',
+    '```bash',
+    `${agentAuthHeaderPath} ${name} \\`,
+    `| curl -H @- -s -X POST ${dashboardOrigin}/api/memories -H "Content-Type: application/json" \\`,
+    `  -d '{"agent_id":"${name}","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'`,
+    '```',
+  ].join('\n')
+}
+
+/** Idempotently ensures the memory-save block is present and current; same no-op-on-main
+ *  contract as ensureMessageCloseSection. */
+export function ensureMemorySaveSection(name: string): void {
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${MEMORY_SAVE_BEGIN}\n${buildMemorySaveBody(name)}\n${MEMORY_SAVE_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = MEMORY_SAVE_BLOCK_RE.test(existing)
+    ? existing.replace(MEMORY_SAVE_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+const DAILY_LOG_BEGIN = '<!-- BEGIN GENERATED: daily-log (auto-generated, do not edit by hand) -->'
+const DAILY_LOG_END = '<!-- END GENERATED: daily-log -->'
+const DAILY_LOG_BLOCK_RE = new RegExp(
+  `${DAILY_LOG_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${DAILY_LOG_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+// Card 52114c2f: same fix as buildMemorySaveBody/ensureMemorySaveSection, for the daily-log
+// recipe (also stuck on tokenPath in the one-time new-agent prompt).
+export function buildDailyLogBody(name: string): string {
+  return [
+    '## Napi napló (append-only)',
+    '```bash',
+    `${agentAuthHeaderPath} ${name} \\`,
+    `| curl -H @- -s -X POST ${dashboardOrigin}/api/daily-log -H "Content-Type: application/json" \\`,
+    `  -d '{"agent_id":"${name}","content":"## HH:MM -- Tema\\nMi tortent, mi lett az eredmeny"}'`,
+    '```',
+  ].join('\n')
+}
+
+/** Idempotently ensures the daily-log block is present and current; same no-op-on-main
+ *  contract as ensureMessageCloseSection. */
+export function ensureDailyLogSection(name: string): void {
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${DAILY_LOG_BEGIN}\n${buildDailyLogBody(name)}\n${DAILY_LOG_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = DAILY_LOG_BLOCK_RE.test(existing)
+    ? existing.replace(DAILY_LOG_BLOCK_RE, block)
     : existing.trimEnd() + '\n\n' + block + '\n'
 
   if (updated === existing) return

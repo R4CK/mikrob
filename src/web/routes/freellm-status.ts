@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { readBody, json } from '../http-helpers.js'
 import { STORE_DIR } from '../../config.js'
-import { getDb } from '../../db.js'
+import { getFreellmCallRows, getFreellmOutcomeCounts, getLatestFreellmFailure } from '../../db.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
@@ -18,7 +18,9 @@ export const FREELLM_ENABLED_PATH = join(STORE_DIR, 'freellm-enabled.json')
 // Same strict parse as freellm-call.sh's own switch check (card 4eb3743e F4): `d.get('enabled')
 // is True`, not a truthy/string compare -- {"enabled":"true"} or {"enabled":1} must read as OFF.
 // Missing/unreadable/malformed file = OFF, fail-closed like every other switch in this codebase.
-function readFreellmEnabled(): boolean {
+// Exported for card 954a6a93 (GET /api/llm/chain's switches.freellmEnabled) -- same switch file,
+// same strict-boolean read, reused rather than re-derived a second time.
+export function readFreellmEnabled(): boolean {
   if (!existsSync(FREELLM_ENABLED_PATH)) return false
   try {
     const raw = readFileSync(FREELLM_ENABLED_PATH, 'utf-8')
@@ -37,37 +39,107 @@ function writeFreellmEnabled(enabled: boolean): void {
   atomicWriteFileSync(FREELLM_ENABLED_PATH, JSON.stringify({ enabled }) + '\n', { mode: 0o600 })
 }
 
-// Counters come from the kanban_comments trail offload-dispatch.sh already writes (author
-// "local-llm", card 4eb3743e's freellm_draft_comment_body / fail_body headers) -- no new log
-// format, same "read what already exists" principle as card-build-route-24h-measure.sh.
-const FREELLM_DRAFT_HEADER = '[LOCAL-LLM DRAFT | freellm'
-function freellmCounters24h(): { calls: number; drafts: number; lastError: string | null } {
-  const db = getDb()
-  const cutoff = Math.floor(Date.now() / 1000) - 24 * 3600
-  const rows = db
-    .prepare(
-      `SELECT content, created_at FROM kanban_comments
-       WHERE author = 'local-llm' AND content LIKE ? AND created_at >= ?
-       ORDER BY created_at ASC`,
-    )
-    .all(`${FREELLM_DRAFT_HEADER}%`, cutoff) as Array<{ content: string; created_at: number }>
+// Card 685f25cb (MikroB follow-up, msg 21888): names of callers that are not real production
+// traffic -- excluded from the dashboard's real-traffic counts by default so a manual/selftest
+// freellm-call.sh invocation never inflates what the operator reads as live usage. Opt back in
+// per-request with ?includeTest=1 (GET /api/freellm/calls only; /status always excludes).
+// Exported for card 954a6a93 (GET /api/llm/chain), same exclusion list reused rather than
+// re-derived a second time.
+export const FREELLM_TEST_CALLER_IDS = ['test-agent', 'selftest', 'queue']
 
-  let calls = 0
-  let drafts = 0
-  let lastError: string | null = null
-  for (const row of rows) {
-    calls += 1
-    if (row.content.startsWith(`${FREELLM_DRAFT_HEADER} FAILED]`)) {
-      lastError = row.content
-    } else {
-      drafts += 1
-    }
+// Card 685f25cb: counters now come from llm_ledger (provider='freellm'), one row per REAL call --
+// success and failure both -- appended by freellm-call.sh's own _freellm_ledger_log on every exit
+// path (card e96d56c5 F4). The earlier version counted only kanban_comments rows left by the
+// local-llm offload path, which miscounted/missed calls that never produced a draft comment at
+// all (MikroB root-cause measurement, card 685f25cb, 2026-11-20).
+function freellmCounters24h(): { calls: number; drafts: number; lastError: string | null } {
+  const cutoff = Math.floor(Date.now() / 1000) - 24 * 3600
+  const counts = getFreellmOutcomeCounts(cutoff, FREELLM_TEST_CALLER_IDS)
+  const latestFailure = getLatestFreellmFailure(cutoff, FREELLM_TEST_CALLER_IDS)
+  return {
+    calls: counts.ok + counts.fail + counts.stalled + counts.rate_429 + counts.auth,
+    drafts: counts.ok,
+    lastError: latestFailure ? `FreeLLM call failed: ${latestFailure.fail_reason ?? 'unknown'}` : null,
   }
-  return { calls, drafts, lastError }
+}
+
+// Normalizes llm_ledger's fail_reason strings (set by freellm-call.sh's own exit handling) into
+// the outcome vocabulary agreed with Fron Ted (card 685f25cb / ebe20efe, msg 21876): fail_reason
+// is never prompt/response content -- it is one of a fixed, short set of labels freellm-call.sh
+// itself writes (auth_401, auth_403, quota_429, http_<code>, http_<code> with an empty code for a
+// stalled/fully-timed-out attempt). MUST stay in sync with getFreellmOutcomeCounts's SQL (db.ts),
+// which buckets the same four shapes for the window-wide counts.
+function freellmOutcome(ok: boolean, failReason: string | null): string {
+  if (ok) return 'ok'
+  if (!failReason) return 'fail'
+  if (failReason.startsWith('auth_')) return 'auth'
+  if (failReason === 'quota_429') return '429'
+  if (failReason === 'http_') return 'stalled'
+  return 'fail'
+}
+
+const FREELLM_CALLS_DEFAULT_WINDOW_S = 7 * 24 * 3600
+const FREELLM_CALLS_MAX_LIMIT = 500
+const FREELLM_CALLS_DEFAULT_LIMIT = 50
+
+async function handleFreellmCalls(ctx: RouteContext): Promise<void> {
+  const { res, url } = ctx
+  const limitRaw = url.searchParams.get('limit')
+  const limit = limitRaw !== null ? parseInt(limitRaw, 10) : FREELLM_CALLS_DEFAULT_LIMIT
+  if (!Number.isInteger(limit) || limit < 1 || limit > FREELLM_CALLS_MAX_LIMIT) {
+    json(res, { error: `limit must be an integer between 1 and ${FREELLM_CALLS_MAX_LIMIT}` }, 400)
+    return
+  }
+  const sinceRaw = url.searchParams.get('since')
+  const now = Math.floor(Date.now() / 1000)
+  let sinceS: number
+  if (sinceRaw !== null) {
+    const parsed = parseInt(sinceRaw, 10)
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      json(res, { error: 'since must be a non-negative unix timestamp (seconds)' }, 400)
+      return
+    }
+    sinceS = parsed
+  } else {
+    sinceS = now - FREELLM_CALLS_DEFAULT_WINDOW_S
+  }
+
+  const includeTest = url.searchParams.get('includeTest') === '1'
+  const excludeAgents = includeTest ? [] : FREELLM_TEST_CALLER_IDS
+
+  const rows = getFreellmCallRows({ sinceS, limit, excludeAgents })
+  json(res, {
+    calls: rows.map((r) => ({
+      ts: r.ts,
+      agent: r.agent_id,
+      card: r.card_id,
+      model: r.model,
+      // Reserved: freellm-call.sh's FREELLM_MODEL is the ROUTING request ("auto"), not the real
+      // upstream that answered it -- the OpenAI-compatible response body is never parsed for that
+      // today, so there is nothing truthful to put here yet. Always null until that is added.
+      provider: null,
+      outcome: freellmOutcome(r.ok, r.fail_reason),
+      fail_reason: r.fail_reason,
+      duration_ms: r.latency_ms,
+    })),
+    counts_24h: getFreellmOutcomeCounts(now - 24 * 3600, excludeAgents),
+    counts_7d: getFreellmOutcomeCounts(now - 7 * 24 * 3600, excludeAgents),
+  })
 }
 
 export async function tryHandleFreellmStatus(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
+
+  if (path === '/api/freellm/calls' && method === 'GET') {
+    try {
+      await handleFreellmCalls(ctx)
+    } catch (err) {
+      logger.error({ err }, 'freellm-calls: unexpected failure')
+      json(res, { error: 'internal_error' }, 500)
+    }
+    return true
+  }
+
   if (path !== '/api/freellm/status') return false
 
   try {

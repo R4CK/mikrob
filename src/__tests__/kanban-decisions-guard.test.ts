@@ -30,6 +30,7 @@ let decisionsDiff = ''
 // above, so every pre-existing test (one sha per test) is untouched.
 let decisionsDiffBySha: Record<string, string> = {}
 let diffShouldFail = false
+let mergeBaseShouldFail = false
 export let diffCalls: string[][] = []
 vi.mock('node:child_process', () => ({
   execFile: (
@@ -41,9 +42,14 @@ vi.mock('node:child_process', () => ({
     const a = [...args]
     diffCalls.push(a)
     queueMicrotask(() => {
+      if (a.includes('merge-base')) {
+        if (mergeBaseShouldFail) { cb(new Error('no merge base'), ''); return }
+        cb(null, 'mergebasesha')
+        return
+      }
       if (a.includes('diff')) {
         if (diffShouldFail) { cb(new Error('bad revision'), ''); return }
-        const sha = a[5] // git() prepends ['-C', repo, ...]: ['-C', repo, 'diff', '--no-color', `${sha}^1`, sha, '--', 'DECISIONS.md']
+        const sha = a[5] // git() prepends ['-C', repo, ...]: ['-C', repo, 'diff', '--no-color', `${sha}^1`, sha, '--', 'DECISIONS.md'] (entry-presence guard) or ['-C', repo, 'diff', '--no-color', <merge-base>, sha, '--', 'DECISIONS.md'] (header guard, F2)
         cb(null, (sha !== undefined && sha in decisionsDiffBySha) ? decisionsDiffBySha[sha]! : decisionsDiff)
         return
       }
@@ -67,7 +73,7 @@ vi.mock('node:fs', () => ({
   },
 }))
 
-const { decisionsGuardVerdict, decisionsGuardCheck } = await import('../web/kanban-decisions-guard.js')
+const { decisionsGuardVerdict, decisionsGuardCheck, decisionsHeaderGuardVerdict } = await import('../web/kanban-decisions-guard.js')
 
 const SHA = 'cafefeed'
 
@@ -81,6 +87,7 @@ beforeEach(() => {
   decisionsDiff = ''
   decisionsDiffBySha = {}
   diffShouldFail = false
+  mergeBaseShouldFail = false
   diffCalls = []
 })
 
@@ -302,5 +309,141 @@ describe('decisionsGuardCheck (warn-only side effect, trivial cards only)', () =
     } finally {
       delete process.env['DECISIONS_GUARD']
     }
+  })
+})
+
+// Card 84f90b4e (MikroB scope-add, comment 1795199177): an undated header shape made
+// try_append_union correctly, but silently, refuse a later auto-merge. This blocks the shape at
+// REVIEW time, for ANY card (not scoped to isNonTrivialCard -- a malformed header breaks the
+// auto-merge for every future card touching that region, regardless of this card's own tier).
+describe('decisionsHeaderGuardVerdict (blocking path, all cards)', () => {
+  // MikroB decision (msg 22885, 2026-11-21): a bold-dated header (card 60aeca01's own legacy
+  // shape) is no longer flagged -- decisions-append-union.sh now accepts it as a valid entry
+  // boundary (header_glob_bold), and DECISIONS.md's append-only rule means the existing entry
+  // using it is never rewritten, so there is nothing left to catch here.
+  it('does NOT block a bold-dated header -- try_append_union now accepts that boundary shape', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+**2026-11-20 -- a dated bold header**\n+leírás...\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(false)
+  })
+
+  it('blocks when the diff adds a "## " header missing the leading date', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+## Kártya 60aeca01: utómunka\n+leírás...\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(true)
+  })
+
+  it('allows a dated "## YYYY-MM-DD -- Title" header', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+## 2026-11-20 -- Title\n+leírás...\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(false)
+  })
+
+  it('allows a dated "## YYYY-MM-DD: Title" header (colon form)', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+## 2026-11-20: Title\n+leírás...\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(false)
+  })
+
+  it('a bold header that is only CONTEXT (no leading "+") does not trip it -- pre-existing content, not newly added', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = ' **2026-11-16 -- pre-existing bold header, unchanged context**\n+## 2026-11-20 -- new entry\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(false)
+  })
+
+  it('applies to a PLAIN normal-priority card too -- not scoped to isNonTrivialCard', async () => {
+    card.priority = 'normal'
+    card.title = 'plain card'
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+## Kártya 60aeca01: utómunka (undated hash header)\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(true)
+  })
+
+  it('the `+++ b/DECISIONS.md` file header itself never counts as an added header', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+++ b/DECISIONS.md\n+## 2026-11-20 -- fine\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(false)
+  })
+
+  it('allows (no claim to check) when the REVIEW names no Gate-SHA at all', async () => {
+    comments = [{ content: 'REVIEW: config-only, Gate-SHA: n/a (config-only)' }]
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(false)
+  })
+
+  it('force actor bypasses the block', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+## Kártya 60aeca01: utómunka (undated hash header)\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', true, 'mikrob')
+    expect(v.blocked).toBe(false)
+  })
+
+  // CYBERSEC NO-GO 35145, check 4 / M7: the suite only ever exercised force=true with an
+  // allowlisted actor ('mikrob'), so a mutant that drops isForceActor() entirely and treats any
+  // truthy `force` as a bypass survived green (33/33). These two rows pin the two cases that
+  // actually distinguish isForceActor()'s real logic from "any truthy force bypasses".
+  it('force=true from a NON-allowlisted actor does NOT bypass the block (M7)', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+## Kártya 60aeca01: utómunka (undated hash header)\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', true, 'fullstack')
+    expect(v.blocked).toBe(true)
+  })
+
+  it('force=false from an allowlisted actor does NOT bypass the block (M7)', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+## Kártya 60aeca01: utómunka (undated hash header)\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'mikrob')
+    expect(v.blocked).toBe(true)
+  })
+
+  // CYBERSEC NO-GO 35145 F2: decisionsHeaderGuardVerdict used to diff only `<sha>^1 <sha>`, the
+  // Gate-SHA's own last commit -- invisible to a bad header added by an EARLIER commit on the
+  // same card branch. It must now diff merge-base(mainRef, sha)..sha instead.
+  it('diffs merge-base(mainRef, sha)..sha, not sha^1..sha, so a header added in an EARLIER commit of the branch is still caught (F2)', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    // What the whole-card diff (merge-base..sha) would show, including a bad header that an
+    // earlier commit on the branch introduced, with a clean commit on top of it.
+    decisionsDiff = '+## Kártya 60aeca01: added by an earlier commit on this branch\n+## 2026-11-20 -- a later, clean entry\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(true)
+    expect(diffCalls.some((a) => a.includes('merge-base') && a.includes('origin/develop') && a.includes(SHA))).toBe(true)
+    expect(diffCalls.some((a) => a.includes('diff') && a.includes(`${SHA}^1`))).toBe(false)
+  })
+
+  it('fails open (allows) when merge-base itself cannot resolve', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+**2026-11-20 -- not dated**\n'
+    mergeBaseShouldFail = true
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(false)
+  })
+
+  it('a non-waiting target status is never in scope', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+**2026-11-20 -- not dated**\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'in_progress', false, 'fullstack')
+    expect(v.blocked).toBe(false)
+  })
+
+  it('re-asserting an already-waiting status is not a fresh hand-off', async () => {
+    card.status = 'waiting'
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+**2026-11-20 -- not dated**\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(false)
+  })
+
+  it('fails open (allows) when git cannot resolve the diff at all', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    diffShouldFail = true
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(false)
   })
 })

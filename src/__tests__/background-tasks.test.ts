@@ -19,7 +19,10 @@ const claudeResolveState = vi.hoisted(() => ({ shouldThrow: true, binPath: '/bin
 // the dangerous channel vars never reach it, WITHOUT changing behaviour for the existing tests in
 // this file -- every call (including non-'new-session' ones, and tmuxBin()'s own `which` lookup
 // via execSync, which this does not touch) still runs the real implementation.
-const execFileCallLog = vi.hoisted(() => ({ newSessionEnvs: [] as (NodeJS.ProcessEnv | undefined)[] }))
+const execFileCallLog = vi.hoisted(() => ({
+  newSessionEnvs: [] as (NodeJS.ProcessEnv | undefined)[],
+  newSessionArgs: [] as (readonly string[])[],
+}))
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   const { promisify } = await import('node:util')
@@ -29,6 +32,7 @@ vi.mock('node:child_process', async (importOriginal) => {
       if (args?.[0] === 'new-session') {
         const env = (options as { env?: NodeJS.ProcessEnv } | undefined)?.env
         execFileCallLog.newSessionEnvs.push(env)
+        execFileCallLog.newSessionArgs.push(args)
       }
       return actual.execFileSync(file, args as string[], options as Parameters<typeof actual.execFileSync>[2])
     },
@@ -50,6 +54,7 @@ vi.mock('node:child_process', async (importOriginal) => {
           if (args?.[0] === 'new-session') {
             const env = (options as { env?: NodeJS.ProcessEnv } | undefined)?.env
             execFileCallLog.newSessionEnvs.push(env)
+            execFileCallLog.newSessionArgs.push(args)
           }
           const promise = (promisify(actual.execFile) as (f: string, a?: readonly string[], o?: unknown) => Promise<{ stdout: string; stderr: string }>)(
             file, args, options,
@@ -317,6 +322,7 @@ describe('spawnBackgroundTask: channel env vars must never reach `tmux new-sessi
     initDatabase(':memory:')
     claudeResolveState.shouldThrow = false
     execFileCallLog.newSessionEnvs.length = 0
+    execFileCallLog.newSessionArgs.length = 0
     savedEnv = {}
     for (const key of Object.keys(plantedVars)) {
       savedEnv[key] = process.env[key]
@@ -343,14 +349,46 @@ describe('spawnBackgroundTask: channel env vars must never reach `tmux new-sessi
     }
   })
 
-  it('leaves unrelated env vars (PATH, BG_PROMPT) untouched', async () => {
+  it('leaves unrelated env vars (PATH) untouched', async () => {
     const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
 
     await spawnBackgroundTask('marveen', 'yet another prompt')
 
     const spawnedEnv = execFileCallLog.newSessionEnvs[0]
     expect(spawnedEnv?.PATH).toBe(process.env.PATH)
-    expect(spawnedEnv?.BG_PROMPT).toBe('yet another prompt')
+  })
+
+  // Card 99ade79b (MEDIUM): the prompt no longer rides in this `env` object at all -- it is
+  // written to a 0600 temp file and only the file's PATH crosses into the tmux client's argv/env.
+  it('never puts the raw prompt into the `env` object passed to execFileSync', async () => {
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+
+    await spawnBackgroundTask('marveen', 'a prompt that must not leak into env')
+
+    const spawnedEnv = execFileCallLog.newSessionEnvs[0]
+    expect(spawnedEnv?.BG_PROMPT).toBeUndefined()
+    expect(JSON.stringify(spawnedEnv)).not.toContain('a prompt that must not leak into env')
+  })
+
+  // Card 99ade79b (MEDIUM, self-audit 2026-11-20): the prompt used to be spelled directly into
+  // this `execFileSync` call's own argv (`-e BG_PROMPT=${prompt}`) -- readable by any local user
+  // via /proc/<pid>/cmdline of the tmux CLIENT process while it runs. Only a temp-file PATH may
+  // appear in argv now, never the prompt text.
+  it('never puts the raw prompt text into the tmux client argv (card 99ade79b)', async () => {
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+    const distinctivePrompt = 'ARGVLEAKPIN-distinctive-prompt-marker-with spaces'
+
+    await spawnBackgroundTask('marveen', distinctivePrompt)
+
+    expect(execFileCallLog.newSessionArgs.length).toBe(1)
+    const args = execFileCallLog.newSessionArgs[0] ?? []
+    for (const arg of args) {
+      expect(arg).not.toContain(distinctivePrompt)
+    }
+    // The file-path pointer IS expected to appear somewhere in argv (the `-e BG_PROMPT_FILE=...`
+    // pair) -- a vacuous pass (e.g. the prompt never reaching this call at all) would also satisfy
+    // the loop above, so pin that the mechanism is actually present.
+    expect(args.some((a) => a.includes('BG_PROMPT_FILE='))).toBe(true)
   })
 })
 
@@ -360,12 +398,21 @@ describe('spawnBackgroundTask: channel env vars must never reach `tmux new-sessi
 // environment" -- captured once when the server first started -- not the `env` option passed to
 // this `tmux new-session` client call. BG_PROMPT therefore arrived EMPTY in the pane every time
 // except when this was the very first session on a cold server (masking the bug in a one-off
-// manual test). Repro: point the mocked claude resolver at a real, tiny shell script that writes
-// $BG_PROMPT to a file, run spawnBackgroundTask through the REAL tmux binary (no `claude` process
-// ever starts -- only `/bin/true`-class stand-ins, same convention as the describe blocks above),
-// and read that file back.
-describe('spawnBackgroundTask: BG_PROMPT must reach the pane on an ALREADY-RUNNING tmux server (card 68eaeb93)', () => {
+// manual test). Repro: point the mocked claude resolver at a real, tiny shell script, run
+// spawnBackgroundTask through the REAL tmux binary (no `claude` process ever starts -- only
+// `/bin/true`-class stand-ins, same convention as the describe blocks above), and read back what
+// the stand-in actually received.
+//
+// Card 99ade79b round 2 (CYBERSEC NO-GO 34703 F1/F2): the prompt no longer reaches the pane via
+// BG_PROMPT at all (env AND argv leaks closed) -- it is piped to the stand-in's STDIN instead. The
+// stand-in below records both its own argv (must never contain the prompt text -- this is the
+// NO-GO's F1, one level past the tmux-client argv the test at "card 99ade79b" above already
+// covers) and its stdin (must be exactly the prompt -- this is the "pane still receives it" half
+// of the card's own acceptance criterion).
+describe('spawnBackgroundTask: prompt reaches the pane via stdin, never argv or env (card 68eaeb93 + 99ade79b round 2)', () => {
   let outFile: string
+  let argvFile: string
+  let envFile: string
   let sessionName: string | undefined
 
   beforeEach(async () => {
@@ -375,7 +422,13 @@ describe('spawnBackgroundTask: BG_PROMPT must reach the pane on an ALREADY-RUNNI
     const dir = mkdtempSync(join(tmpdir(), 'bg-prompt-repro-'))
     const scriptPath = join(dir, 'fake-claude.sh')
     outFile = join(dir, 'out.txt')
-    writeFileSync(scriptPath, `#!/bin/bash\nprintf '%s' "$BG_PROMPT" > ${JSON.stringify(outFile)}\n`, { mode: 0o700 })
+    argvFile = join(dir, 'argv.txt')
+    envFile = join(dir, 'env.txt')
+    writeFileSync(
+      scriptPath,
+      `#!/bin/bash\nprintf '%s\\n' "$@" > ${JSON.stringify(argvFile)}\ncat > ${JSON.stringify(outFile)}\nenv > ${JSON.stringify(envFile)}\n`,
+      { mode: 0o700 }
+    )
     claudeResolveState.binPath = scriptPath
   })
 
@@ -388,7 +441,7 @@ describe('spawnBackgroundTask: BG_PROMPT must reach the pane on an ALREADY-RUNNI
     sessionName = undefined
   })
 
-  it('a prompt reaches the pane even though this process already has a running tmux server', async () => {
+  it('a prompt reaches the pane via stdin even though this process already has a running tmux server, and never appears in the stand-in\'s own argv', async () => {
     const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
     const prompt = 'repro prompt for card 68eaeb93, with spaces'
 
@@ -407,5 +460,160 @@ describe('spawnBackgroundTask: BG_PROMPT must reach the pane on an ALREADY-RUNNI
     }
 
     expect(seen).toBe(prompt)
+    const argvSeen = existsSync(argvFile) ? readFileSync(argvFile, 'utf-8') : ''
+    expect(argvSeen).not.toContain(prompt)
+    // CYBERSEC NO-GO 34703 F2: the round-1 fix introduced `export BG_PROMPT=...` in the pane,
+    // putting the prompt into the claude process's own environ too. Round 2 drops that export.
+    const envSeen = existsSync(envFile) ? readFileSync(envFile, 'utf-8') : ''
+    expect(envSeen).not.toContain(prompt)
+    expect(envSeen).not.toMatch(/^BG_PROMPT=/m)
+  }, 10_000)
+})
+
+// Card fb3fff4d point 1 (CYBERSEC GO on 68eaeb93 @368a83990): a prompt of 16 KiB or more makes
+// `tmux new-session -e BG_PROMPT=...` fail with tmux's own opaque "command too long" error. The
+// explicit cap in spawnBackgroundTask must catch this BEFORE any row is created or any tmux call
+// is attempted, with a named, readable error.
+describe('spawnBackgroundTask: a 16 KiB+ prompt gets a named, readable error (card fb3fff4d)', () => {
+  beforeEach(async () => {
+    const { initDatabase } = await import('../db.js')
+    initDatabase(':memory:')
+  })
+
+  it('rejects a prompt at the 16 KiB boundary before touching the DB or tmux', async () => {
+    claudeResolveState.shouldThrow = true // irrelevant: the cap must fire before claudeBin() is even called
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+    const { getRunningBackgroundTasks } = await import('../db.js')
+
+    const hugePrompt = 'x'.repeat(16 * 1024)
+    const result = await spawnBackgroundTask('marveen', hugePrompt)
+
+    expect(result).toHaveProperty('error')
+    expect((result as { error: string }).error).toMatch(/16384|túl nagy/)
+    expect(getRunningBackgroundTasks()).toEqual([])
+  })
+
+  it('CONTROL: a prompt one byte under the boundary is NOT rejected by the cap', async () => {
+    claudeResolveState.shouldThrow = false
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+    const { getBackgroundTasks } = await import('../db.js')
+
+    const almostHugePrompt = 'x'.repeat(16 * 1024 - 1)
+    await spawnBackgroundTask('marveen', almostHugePrompt)
+
+    // includeFinished=true: the real tmux spawn may itself fail in this sandboxed environment,
+    // same convention as the ca593869 CONTROL test above -- only the insert is being pinned here.
+    expect(getBackgroundTasks('marveen', true).length).toBe(1)
+  })
+})
+
+// Card fb3fff4d point 2 (CYBERSEC GO on 68eaeb93 @368a83990): the a5ef4771 channel-var strip only
+// ever removed the key from the `env` OPTION passed to `tmux new-session` -- the exact same cold-
+// server-only limitation BG_PROMPT had (card 68eaeb93). This test proves the strip is now
+// effective even when a channel var is already sitting in the server's persistent GLOBAL
+// environment (the one scenario the a5ef4771 describe block above cannot reach, because it only
+// ever asserts on the `env` option this process's OWN execFileSync call received, not on what a
+// pane started against an already-polluted server actually sees). A PRIVATE tmux server (its own
+// TMUX_TMPDIR, never touched by any other test in this file) is started cold, a channel var is
+// planted on it via `set-environment -g` -- the real mechanism a stray pre-a5ef4771 session or a
+// manual `tmux set-environment -g` could have left behind -- and ONLY THEN does
+// spawnBackgroundTask run against that already-warm, already-polluted server.
+describe('spawnBackgroundTask: the channel-var strip must be effective on an already-running, globally-polluted tmux server (card fb3fff4d)', () => {
+  let privateTmuxTmpdir: string
+  let savedTmuxTmpdir: string | undefined
+  let savedTmux: string | undefined
+  let savedTmuxPane: string | undefined
+  let sessionName: string | undefined
+  let outFile: string
+  // Card 8ab5eef3 fold-in (cybersec GO 38495, finding M1): afterEach's bare `tmux kill-server`
+  // must never run unless THIS block's own private server was actually brought up -- otherwise a
+  // beforeEach throw BEFORE the TMUX clear below (e.g. initDatabase, mkdtempSync) leaves $TMUX
+  // still pointing at the live server, and the old unconditional kill-server killed it. Only the
+  // successful new-session call below sets this true.
+  let privateServerReady = false
+
+  beforeEach(async () => {
+    const { initDatabase } = await import('../db.js')
+    initDatabase(':memory:')
+    claudeResolveState.shouldThrow = false
+
+    savedTmuxTmpdir = process.env.TMUX_TMPDIR
+    privateTmuxTmpdir = mkdtempSync(join(tmpdir(), 'bg-private-tmux-'))
+    process.env.TMUX_TMPDIR = privateTmuxTmpdir
+
+    // Card 8ab5eef3: tmux resolves its target server from $TMUX first, and only falls back to
+    // TMUX_TMPDIR's default socket when $TMUX is unset -- setting TMUX_TMPDIR above does NOT
+    // isolate this block from an already-running server if this process inherited $TMUX (e.g. a
+    // fleet-test run launched from an agent's own tmux pane). Without this, start-server/
+    // set-environment -g/kill-server below all silently targeted the LIVE server instead of the
+    // private one: planting a fake bot token in its global env, then killing it outright.
+    savedTmux = process.env.TMUX
+    savedTmuxPane = process.env.TMUX_PANE
+    delete process.env.TMUX
+    delete process.env.TMUX_PANE
+
+    // Cold-start the private server, then plant the channel var GLOBALLY on it -- this is the
+    // state a leaked var in the server's persistent global env looks like, independent of
+    // whatever `env` any later `new-session` client call passes.
+    //
+    // Card 8ab5eef3: with $TMUX correctly cleared above, a bare `start-server` really does start
+    // a cold server with zero sessions -- and tmux's default `exit-empty on` tears such a server
+    // down again immediately (measured: the very next command then sees "no server running").
+    // This never surfaced before because the bug above made every command here silently target
+    // the live, already-populated server instead. `new-session -d` starts the server AND gives
+    // it a session in one call, so it stays up; this keepalive session is killed alongside the
+    // server in afterEach's kill-server.
+    execFileSync('tmux', ['new-session', '-d', '-s', 'fb3fff4d-keepalive'])
+    privateServerReady = true
+    execFileSync('tmux', ['set-environment', '-g', 'TELEGRAM_BOT_TOKEN', '123456:leaked-global-token'])
+
+    const dir = mkdtempSync(join(tmpdir(), 'bg-prompt-repro-'))
+    const scriptPath = join(dir, 'fake-claude.sh')
+    outFile = join(dir, 'out.txt')
+    writeFileSync(scriptPath, `#!/bin/bash\nprintf '%s' "\${TELEGRAM_BOT_TOKEN:-UNSET}" > ${JSON.stringify(outFile)}\n`, { mode: 0o700 })
+    claudeResolveState.binPath = scriptPath
+  })
+
+  afterEach(() => {
+    claudeResolveState.binPath = '/bin/true'
+    claudeResolveState.shouldThrow = true
+    // Card 8ab5eef3 fold-in: only touch the server at all if beforeEach actually got far enough
+    // to clear $TMUX and bring up the private one -- otherwise $TMUX (if set) still resolves to
+    // the live default server, and kill-session/kill-server must not run against it.
+    if (privateServerReady) {
+      if (sessionName) {
+        try { execFileSync('tmux', ['kill-session', '-t', sessionName]) } catch { /* already gone */ }
+      }
+      try { execFileSync('tmux', ['kill-server']) } catch { /* already gone */ }
+    }
+    sessionName = undefined
+    privateServerReady = false
+    if (savedTmuxTmpdir === undefined) delete process.env.TMUX_TMPDIR
+    else process.env.TMUX_TMPDIR = savedTmuxTmpdir
+    if (savedTmux === undefined) delete process.env.TMUX
+    else process.env.TMUX = savedTmux
+    if (savedTmuxPane === undefined) delete process.env.TMUX_PANE
+    else process.env.TMUX_PANE = savedTmuxPane
+  })
+
+  it('the pane does not see a channel var already planted in the server\'s global environment', async () => {
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+    const prompt = 'repro prompt for card fb3fff4d'
+
+    const task = await spawnBackgroundTask('marveen', prompt)
+    if ('error' in task) throw new Error(task.error)
+    sessionName = task.tmux_session ?? undefined
+
+    const deadline = Date.now() + 5000
+    let seen = ''
+    while (Date.now() < deadline) {
+      if (existsSync(outFile)) {
+        seen = readFileSync(outFile, 'utf-8')
+        if (seen) break
+      }
+      await new Promise((r) => setTimeout(r, 100))
+    }
+
+    expect(seen).toBe('UNSET')
   }, 10_000)
 })

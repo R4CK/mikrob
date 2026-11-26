@@ -261,6 +261,7 @@ run_c1_case() {
 run_c1_case 137 a
 run_c1_case 127 b
 run_c1_case 1 c
+unset -f git
 
 # --- section 3: /tmp sweep (card c9c1f159, Cybered GO 32928 on 6c41214a) --------------------
 # Sandboxed via WSL_CLEANUP_TMP_DIR, never touches the real /tmp.
@@ -469,6 +470,50 @@ else
 fi
 rm -rf "$TMP5" "$RMFAIL_OUT" 2>/dev/null
 
+# LOG-LINE FORGERY pin, failed-rm message (card e2425f05, Cybered GO 33287 on 657f12a3): `say`
+# is plain `echo "wsl-cleanup: $*"` -- a newline embedded in an attacker-reachable /tmp entry name
+# would print as a literal line break, letting a crafted name forge what looks like a second,
+# unrelated log line. The fix formats the name with `%q` before logging it. Same rm-shim pattern
+# as the counter pin above, but the failing entry's name itself contains a newline.
+TMP6="$(mktemp -d -p /tmp)"
+PAST6=$(( $(date +%s) - 3000 * 60 ))
+NEWLINE_RM_NAME="rm-fails-"$'\n'"FORGED-LINE"
+mkdir -p -- "$TMP6/$NEWLINE_RM_NAME"
+touch -d "@$PAST6" "$TMP6/$NEWLINE_RM_NAME"
+RMFAIL_NL_OUT="$(mktemp)"
+(
+  rm() {
+    local a
+    for a in "$@"; do
+      case "$a" in
+        "$TMP6"/*) return 1 ;;
+      esac
+    done
+    command rm "$@"
+  }
+  WSL_CLEANUP_TMP_DIR="$TMP6"
+  export WSL_CLEANUP_TMP_DIR
+  # shellcheck source=./wsl-cleanup.sh
+  source "$RUN"
+  sweep_tmp
+) >"$RMFAIL_NL_OUT" 2>&1
+# Without %q, echo prints the entry's literal embedded newline as a REAL line break, so
+# "FORGED-LINE" lands on its own physical line with no "rm failed for" prefix on that same line
+# (the prefix stays on the PRECEDING line) -- two lines total, one of them unprefixed. With %q,
+# the newline is escaped into a printable sequence, so the whole name -- including "FORGED-LINE"
+# -- stays on the SAME single, prefixed line as "rm failed for". Checking line count alone (as an
+# earlier version of this test did) does not discriminate: grep -c "rm failed for" is 1 either
+# way, since only the first physical line ever contains that substring. The real signal is
+# whether "FORGED-LINE" ever appears on a line that does NOT also carry the "rm failed for" lead-in.
+FORGED_LINE_COUNT="$(grep -cF 'FORGED-LINE' "$RMFAIL_NL_OUT")"
+FORGED_LINE_WITH_PREFIX_COUNT="$(grep -F 'FORGED-LINE' "$RMFAIL_NL_OUT" | grep -cF 'rm failed for')"
+if [ "$FORGED_LINE_COUNT" = "1" ] && [ "$FORGED_LINE_WITH_PREFIX_COUNT" = "1" ]; then
+  ok "LOG-LINE FORGERY: the newline-containing name's rm-failed message stays one prefixed line, no split-off standalone line"
+else
+  bad "LOG-LINE FORGERY: 'FORGED-LINE' appeared $FORGED_LINE_COUNT time(s), $FORGED_LINE_WITH_PREFIX_COUNT with the 'rm failed for' prefix on the same line (want 1/1)" "$(cat "$RMFAIL_NL_OUT")"
+fi
+rm -rf "$TMP6" "$RMFAIL_NL_OUT" 2>/dev/null
+
 rm -rf "$TMP3"
 
 # --- SECURITY (Cybered NO-GO, card c9c1f159, comment 32973): run()'s eval let a quote-injection
@@ -580,6 +625,14 @@ TRAVERSAL_OUTER="$HOME/wsl-cleanup-selftest-traversal-$$"
 rm -rf "$TRAVERSAL_OUTER"
 mkdir -p "$TRAVERSAL_OUTER"
 touch -d "@$PAST4" "$TRAVERSAL_OUTER"
+# VACUOUS-PIN FIX (card e2425f05, Cybered GO 33287 on 657f12a3): $TRAVERSAL_OUTER itself is the
+# resolved SWEEP ROOT (realpath of the traversal path lands exactly on it), never an rm -rf
+# candidate itself (the sweep only enumerates mindepth 1 -maxdepth 1 ENTRIES under its root, it
+# never removes the root). Checking "$TRAVERSAL_OUTER" survives is therefore vacuous -- it would
+# survive even with the guard fully disabled. Put a real, old entry INSIDE it and assert on that.
+TRAVERSAL_ENTRY="$TRAVERSAL_OUTER/old-entry"
+mkdir -p "$TRAVERSAL_ENTRY"
+touch -d "@$PAST4" "$TRAVERSAL_ENTRY"
 TRAVERSAL_SUB="$(mktemp -d -p /tmp)"
 TRAVERSAL_REL="$(realpath --relative-to="$TRAVERSAL_SUB" "$TRAVERSAL_OUTER")"
 TRAVERSAL_PATH="$TRAVERSAL_SUB/$TRAVERSAL_REL"
@@ -600,10 +653,10 @@ if grep -qF "REFUSING /tmp sweep" "$TRAVERSAL_OUT"; then
 else
   bad "SANITY guard (traversal): a /tmp/-prefixed path resolving outside /tmp was NOT refused" "$(cat "$TRAVERSAL_OUT")"
 fi
-if [ -e "$TRAVERSAL_OUTER" ]; then
-  ok "SANITY guard (traversal): the entry the traversal would have reached survives"
+if [ -e "$TRAVERSAL_ENTRY" ]; then
+  ok "SANITY guard (traversal): the real outside entry the traversal would have swept survives"
 else
-  bad "SANITY guard (traversal): the traversal-reached entry was removed despite the sanity guard" ""
+  bad "SANITY guard (traversal): the real outside entry was removed despite the sanity guard" ""
 fi
 rm -rf "$TRAVERSAL_SUB" "$TRAVERSAL_OUTER" "$TRAVERSAL_OUT" 2>/dev/null
 
@@ -625,7 +678,145 @@ else
 fi
 rm -rf "$LOOSE_OUT" 2>/dev/null
 
+# SANITY guard pin, bare /tmp (card e2425f05, Cybered GO 33287 on 657f12a3): the exact literal
+# "/tmp" (no trailing slash, no subpath) must be ACCEPTED -- it is the real-world default and the
+# case pattern's own "/tmp" branch, but it had no dedicated case asserting it is not refused.
+BARE_OUT="$(mktemp)"
+(
+  WSL_CLEANUP_TMP_DIR="/tmp"
+  export WSL_CLEANUP_TMP_DIR
+  # shellcheck source=./wsl-cleanup.sh
+  source "$RUN"
+  sweep_tmp
+) >"$BARE_OUT" 2>&1
+if grep -qF "REFUSING /tmp sweep" "$BARE_OUT"; then
+  bad "SANITY guard (bare /tmp): the literal '/tmp' was refused" "$(cat "$BARE_OUT")"
+else
+  ok "SANITY guard (bare /tmp): the literal '/tmp' is accepted, not refused"
+fi
+rm -rf "$BARE_OUT" 2>/dev/null
+
+# SANITY guard pin, sweep uses the RESOLVED path (card e2425f05, Cybered GO 33287 on 657f12a3):
+# `WSL_CLEANUP_TMP_DIR="$resolved"` reassigns the variable AFTER the guard so the find/rm loop
+# below enumerates the resolved path, not the raw string -- unpinned until now. Point the raw
+# value at a NON-canonical form (a real /tmp subdir plus a trailing "/.") that resolves to the
+# same directory, and confirm an old entry placed directly in the real (resolved) directory is
+# still swept -- if the loop used the raw string as-is, `find "<dir>/."` still lists the same
+# entries on Linux, so this alone would not discriminate; the real risk this pins is a raw value
+# that STRINGS differently from its resolution (here: trailing "/."), proving the loop runs
+# against $resolved and not a stale/unresolved copy of the original variable.
+RESOLVED_SWEEP_DIR="$(mktemp -d -p /tmp)"
+RESOLVED_ENTRY="$RESOLVED_SWEEP_DIR/old-entry"
+mkdir -p "$RESOLVED_ENTRY"
+touch -d "@$PAST4" "$RESOLVED_ENTRY"
+RESOLVED_OUT="$(mktemp)"
+(
+  WSL_CLEANUP_TMP_DIR="$RESOLVED_SWEEP_DIR/."
+  export WSL_CLEANUP_TMP_DIR
+  # shellcheck source=./wsl-cleanup.sh
+  source "$RUN"
+  sweep_tmp
+) >"$RESOLVED_OUT" 2>&1
+if [ -e "$RESOLVED_ENTRY" ]; then
+  bad "SANITY guard (resolved-path sweep): an old entry under the resolved dir was NOT swept via a '/.'-suffixed raw value" "$(cat "$RESOLVED_OUT")"
+else
+  ok "SANITY guard (resolved-path sweep): an old entry under the resolved dir is swept via a '/.'-suffixed raw value"
+fi
+rm -rf "$RESOLVED_SWEEP_DIR" "$RESOLVED_OUT" 2>/dev/null
+
+# FAIL-CLOSED ON REALPATH FAILURE (card e2425f05, Cybered GO 33287 on 657f12a3): a realpath
+# failure (rc 1/127/137/139 -- missing binary, killed, OOM) used to fall back to the RAW,
+# unresolved value, which is exactly the lexical string the sanity guard exists to stop trusting.
+# Shim `realpath` to fail with each of the measured exit codes and confirm the sweep REFUSES
+# rather than falling through to the raw (here: traversal-shaped) value.
+for REALPATH_RC in 1 127 137 139; do
+  REALPATH_FAIL_OUTER="$HOME/wsl-cleanup-selftest-realpath-fail-$$-$REALPATH_RC"
+  rm -rf "$REALPATH_FAIL_OUTER"
+  mkdir -p "$REALPATH_FAIL_OUTER"
+  REALPATH_FAIL_ENTRY="$REALPATH_FAIL_OUTER/old-entry"
+  mkdir -p "$REALPATH_FAIL_ENTRY"
+  touch -d "@$PAST4" "$REALPATH_FAIL_ENTRY"
+  REALPATH_FAIL_SUB="$(mktemp -d -p /tmp)"
+  REALPATH_FAIL_REL="$(realpath --relative-to="$REALPATH_FAIL_SUB" "$REALPATH_FAIL_OUTER")"
+  REALPATH_FAIL_PATH="$REALPATH_FAIL_SUB/$REALPATH_FAIL_REL"
+  REALPATH_FAIL_OUT="$(mktemp)"
+  (
+    realpath() { return "$REALPATH_RC"; }
+    WSL_CLEANUP_TMP_DIR="$REALPATH_FAIL_PATH"
+    export WSL_CLEANUP_TMP_DIR
+    # shellcheck source=./wsl-cleanup.sh
+    source "$RUN"
+    sweep_tmp
+  ) >"$REALPATH_FAIL_OUT" 2>&1
+  if grep -qF "REFUSING /tmp sweep" "$REALPATH_FAIL_OUT" && [ -e "$REALPATH_FAIL_ENTRY" ]; then
+    ok "FAIL-CLOSED: realpath failing with rc=$REALPATH_RC refuses the sweep, real entry survives"
+  else
+    bad "FAIL-CLOSED: realpath failing with rc=$REALPATH_RC did NOT refuse the sweep / entry did not survive" "$(cat "$REALPATH_FAIL_OUT")"
+  fi
+  rm -rf "$REALPATH_FAIL_SUB" "$REALPATH_FAIL_OUTER" "$REALPATH_FAIL_OUT" 2>/dev/null
+done
+
 rm -rf "$TMP4"
+
+# NON-INTEGER GUARD, age knobs (card e2425f05, scope extension comment 33299, Cybered GO 33297 on
+# 8cb1e168): MIN_AGE_MIN (throwaway worktrees) and TMP_MIN_AGE_MIN (/tmp sweep) had no integer
+# guard at all. Pin both the fallback log line and that the real sweep still runs correctly
+# (falls back to the documented default, does not crash or silently sweep nothing).
+TMP7="$(mktemp -d -p /tmp)"
+PAST7=$(( $(date +%s) - 3000 * 60 ))
+mkdir -p "$TMP7/old-entry"
+touch -d "@$PAST7" "$TMP7/old-entry"
+TMPKNOB_OUT="$(mktemp)"
+(
+  WSL_CLEANUP_TMP_DIR="$TMP7"
+  WSL_CLEANUP_TMP_MIN_AGE_MIN="not-a-number"
+  export WSL_CLEANUP_TMP_DIR WSL_CLEANUP_TMP_MIN_AGE_MIN
+  # shellcheck source=./wsl-cleanup.sh
+  source "$RUN"
+  sweep_tmp
+) >"$TMPKNOB_OUT" 2>&1
+if [ -e "$TMP7/old-entry" ]; then
+  bad "WSL_CLEANUP_TMP_MIN_AGE_MIN='not-a-number': old entry was NOT swept, fallback did not apply" "$(cat "$TMPKNOB_OUT")"
+else
+  ok "WSL_CLEANUP_TMP_MIN_AGE_MIN='not-a-number': falls back to the default (2880), old entry still swept"
+fi
+if grep -qF "WSL_CLEANUP_TMP_MIN_AGE_MIN='not-a-number' is not a positive integer -- falling back to the documented default (2880)" "$TMPKNOB_OUT"; then
+  ok "WSL_CLEANUP_TMP_MIN_AGE_MIN='not-a-number' prints the documented fallback log line"
+else
+  bad "WSL_CLEANUP_TMP_MIN_AGE_MIN='not-a-number' fallback log line missing" "$(cat "$TMPKNOB_OUT")"
+fi
+rm -rf "$TMP7" "$TMPKNOB_OUT" 2>/dev/null
+
+# MIN_AGE_MIN (throwaway worktrees): full-script invocation, same convention and the same REAL
+# literal path prefix (/home/neon/marveen-land-<name>-<pid>) the live header-block tests above
+# use -- the sweep pattern is a hardcoded absolute prefix, not derived from MARVEEN_MAIN, so a
+# worktree under any other path would never be a candidate regardless of the guard. A dead-PID,
+# old, clean worktree must still be reported as a dry-run removal candidate when
+# WSL_CLEANUP_MIN_AGE_MIN is invalid (falls back to 120).
+MARVEEN_MAIN_KNOB="$(mktemp -d)"
+git init -q "$MARVEEN_MAIN_KNOB"
+git -C "$MARVEEN_MAIN_KNOB" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+( exit 0 ) &
+KNOB_DEAD_PID=$!
+wait "$KNOB_DEAD_PID" 2>/dev/null
+KNOB_WT="/home/neon/marveen-land-selftestknob-${KNOB_DEAD_PID}"
+rm -rf "$KNOB_WT"
+git -C "$MARVEEN_MAIN_KNOB" worktree add -q --detach "$KNOB_WT" HEAD
+touch -d '-3000 minutes' "$KNOB_WT"
+MINAGE_KNOB_OUT="$(MARVEEN_MAIN="$MARVEEN_MAIN_KNOB" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
+                   WSL_CLEANUP_MIN_AGE_MIN=lots bash "$RUN" --dry-run 2>&1)"
+if printf '%s\n' "$MINAGE_KNOB_OUT" | grep -qF "worktree remove --force $KNOB_WT"; then
+  ok "WSL_CLEANUP_MIN_AGE_MIN='lots': falls back to the default (120), old throwaway worktree still a dry-run candidate"
+else
+  bad "WSL_CLEANUP_MIN_AGE_MIN='lots': old throwaway worktree was NOT reported, fallback did not apply" "$MINAGE_KNOB_OUT"
+fi
+if printf '%s\n' "$MINAGE_KNOB_OUT" | grep -qF "WSL_CLEANUP_MIN_AGE_MIN='lots' is not a positive integer -- falling back to the documented default (120)"; then
+  ok "WSL_CLEANUP_MIN_AGE_MIN='lots' prints the documented fallback log line"
+else
+  bad "WSL_CLEANUP_MIN_AGE_MIN='lots' fallback log line missing" "$MINAGE_KNOB_OUT"
+fi
+git -C "$MARVEEN_MAIN_KNOB" worktree remove --force "$KNOB_WT" 2>/dev/null
+rm -rf "$MARVEEN_MAIN_KNOB" "$KNOB_WT" 2>/dev/null
 
 echo
 echo "wsl-cleanup.selftest: $pass passed, $fail failed"

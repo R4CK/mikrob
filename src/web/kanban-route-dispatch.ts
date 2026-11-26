@@ -138,3 +138,33 @@ export function __resetRouteDispatchStateForTests(): void {
   queue.length = 0
   running = 0
 }
+
+// L3 / RedHat F-1 (card 562698d4, F4 follow-up of ed332869): self-advance-pickup.sh's own step 4b
+// creates the per-card marveen worktree when MARVEEN_CARD_WORKTREE=1, but that script is only ONE
+// of the ways a card reaches in_progress -- MikroB's own /move dispatch and a bare actor PUT (the
+// two call sites below) never ran it, so the flag only ever reached a fraction of dispatches.
+// Mirrors self-advance-pickup.sh's own scoping exactly (same env var, same `[MikroB]` title gate):
+// flag ON + an assignee + `[MikroB]` in the title -> best-effort card-worktree create. Fire-and-
+// forget, same contract as fireCardBuildRoute: never throws, never slows or fails the dispatch.
+const WORKTREE_SCRIPT_PATH = `${STORE_DIR}/agent-worktree-marveen.sh`
+const WORKTREE_TIMEOUT_MS = 30_000
+
+export function fireCardWorktree(cardId: string, agent: string | null | undefined, title: string | null | undefined): void {
+  try {
+    if (process.env.MARVEEN_CARD_WORKTREE !== '1') return
+    if (!agent) return
+    if (typeof title !== 'string' || !title.includes('[MikroB]')) return
+    const child = spawn('bash', [WORKTREE_SCRIPT_PATH, agent, '--card', cardId], { detached: true })
+    child.on('error', (err) => {
+      logger.warn({ err: err instanceof Error ? err.message : String(err), cardId, agent }, 'kanban-route-dispatch: card-worktree spawn failed (dispatch still succeeded)')
+    })
+    const timer = setTimeout(() => {
+      if (typeof child.pid === 'number') {
+        try { process.kill(-child.pid, 'SIGKILL') } catch { /* already exited */ }
+      }
+    }, WORKTREE_TIMEOUT_MS)
+    child.on('exit', () => clearTimeout(timer))
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : String(err), cardId, agent }, 'kanban-route-dispatch: card-worktree dispatch failed (dispatch still succeeded)')
+  }
+}

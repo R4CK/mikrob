@@ -91,9 +91,12 @@ describe('local-llm-distribution-widget: loadLlmDistWidget function', () => {
     expect(occurrences).toBeGreaterThanOrEqual(2)
   })
 
-  it('is called from loadOverview via startOvwLlmDist (own poll timer, card fix 2026-09-11)', () => {
+  // Card f1e33cfb (phase 36dc9240, item 4 "Live load"): relocated from Overview onto the Live-load
+  // page (pageId 'llmMonitor'); starts/stops there now, not with Overview's own loadOverview().
+  it('is called from switchPage(\'llmMonitor\') via startOvwLlmDist (own poll timer), not loadOverview', () => {
     const loadBody = fnBody(APP, 'async function loadOverview(')
-    expect(loadBody).toContain('startOvwLlmDist()')
+    expect(loadBody).not.toContain('startOvwLlmDist()')
+    expect(APP).toContain("if (pageId === 'llmMonitor') { loadLlmMonitor(); startOvwSpectrum(); startOvwLlmDist() }")
     const startBody = fnBody(APP, 'function startOvwLlmDist()')
     expect(startBody).toContain('loadLlmDistWidget()')
   })
@@ -104,7 +107,7 @@ describe('local-llm-distribution-widget: loadLlmDistWidget function', () => {
   })
 
   it('is stopped on page-leave in switchPage, same pattern as stopOvwSpectrum', () => {
-    const idx = APP.indexOf("if (pageId !== 'overview') stopOvwLlmDist()")
+    const idx = APP.indexOf("if (pageId !== 'llmMonitor') { stopOvwSpectrum(); stopOvwLlmDist() }")
     expect(idx).toBeGreaterThan(-1)
   })
 })
@@ -253,13 +256,16 @@ describe('local-llm-distribution-widget: HTML', () => {
     expect(HTML).toContain('id="ovwLlmDistMeta"')
   })
 
+  // Card f1e33cfb: relocated onto llmMonitorPage; the "ALATT" (below, not beside) relationship is
+  // preserved -- both are still a plain vertical stack, now followed by the task-timeline KPI row
+  // instead of Overview's .overview-grid.
   it('sits directly below the existing load spectrum card (Peti: "ALATT")', () => {
     const spectrumIdx = HTML.indexOf('id="ovwSpectrumCard"')
     const distIdx = HTML.indexOf('id="ovwLlmDistCard"')
-    const gridIdx = HTML.indexOf('class="overview-grid"')
+    const kpisIdx = HTML.indexOf('id="llmMonKpis"')
     expect(spectrumIdx).toBeGreaterThan(-1)
     expect(distIdx).toBeGreaterThan(spectrumIdx)
-    expect(gridIdx).toBeGreaterThan(distIdx)
+    expect(kpisIdx).toBeGreaterThan(distIdx)
   })
 })
 

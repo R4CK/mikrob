@@ -33,6 +33,27 @@ const LAUNCHER_END = 'async function stopAgentProcessUnlocked('
 const launcherBody = SRC.slice(SRC.indexOf(LAUNCHER_START), SRC.indexOf(LAUNCHER_END))
 if (launcherBody.length < 2000) throw new Error('startAgentProcessUnlocked slice looks wrong -- marker text may have moved')
 
+// Card 11c6cab4 R1/R2 (RedHat follow-up on this same card, comment 14986): a mutant that replaces
+// `const customProviderId = readAgentCustomProvider(name)` with `const customProviderId = null`
+// stayed green across the whole 153-test suite this file's describe blocks belong to (RedHat's
+// own measured L6), because every test drives the launcher's DOWNSTREAM behaviour from a
+// customProviderId it sets up some other way, never pinning that the launcher's own source
+// actually calls the real reader. This source-shape assertion is the fix for that gap: it fails
+// the instant the call site stops reading from readAgentCustomProvider(name), independent of any
+// test that exercises what happens after.
+describe('L6: the launcher body genuinely calls readAgentCustomProvider(name), not a stub', () => {
+  it('customProviderId is assigned from the real reader call, not a literal', () => {
+    expect(launcherBody).toMatch(/const customProviderId = readAgentCustomProvider\(name\)/)
+  })
+
+  it('a present-but-unusable customProvider value refuses the start before resolveProviderEnv ever runs', () => {
+    const idx = launcherBody.indexOf('const customProviderId = readAgentCustomProvider(name)')
+    const afterRead = launcherBody.slice(idx, idx + 800)
+    expect(afterRead).toMatch(/isAgentCustomProviderFieldUnusable\(name\)/)
+    expect(afterRead).toMatch(/return \{ ok: false, error: 'customProvider:/)
+  })
+})
+
 describe('F1: the launcher actually wires customProviderId through to resolveProviderEnv', () => {
   it('passes customProviderId as the 3rd argument of the real resolveProviderEnv call', () => {
     expect(launcherBody).toMatch(/resolveProviderEnv\([\s\S]*?,\s*customProviderId\)\.exportsStr/)

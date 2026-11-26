@@ -172,6 +172,23 @@ describe('the live hook', () => {
     expect(keys(rows())).toEqual(['card live03 card 03d2ae9c pair-fe'])
   })
 
+  // Card 60aeca01 (F3, e7f91eb9 follow-up): a generated comment's unescaped output can carry a
+  // stray "Gate-SHA: <sha>"-looking line nobody actually declared -- kanban-landed-guard.ts and
+  // kanban-gate-completeness-guard.ts already guard their own readers against exactly this; the
+  // relation graph was the one reader still missing it.
+  it('does NOT record a Gate-SHA line from a local-llm draft comment', () => {
+    createKanbanCard({ id: 'live05', title: 'c' })
+    addKanbanComment('live05', 'local-llm', '[LOCAL-LLM DRAFT]\nGate-SHA: 0f417136')
+    expect(rows()).toEqual([])
+  })
+
+  it('still records a Gate-SHA line from a REAL author on the SAME card', () => {
+    createKanbanCard({ id: 'live06', title: 'c' })
+    addKanbanComment('live06', 'local-llm', '[LOCAL-LLM DRAFT]\nGate-SHA: 0f417136')
+    addKanbanComment('live06', 'backend', 'REVIEW\nGate-SHA: e7c2726d')
+    expect(keys(rows())).toEqual(['card live06 sha e7c2726d gate-sha'])
+  })
+
   it('CANNOT fail the comment write it hangs off', () => {
     // The isolation is the point: kanban_relations is a derived index the sweep rebuilds, the
     // comment is the artefact the whole gate flow runs on. Proven by removing the table under the
@@ -234,6 +251,22 @@ describe('the reconcile sweep', () => {
     updateKanbanCard('r4', { parent_id: '9d7a247a' })
     reconcileKanbanRelations({ apply: true })
     expect(keys(rows())).toEqual(['card r4 card 9d7a247a child-of'])
+  })
+
+  // Card 60aeca01 (F3): the sweep reads straight from SQL (`SELECT card_id, content, author`), not
+  // through addKanbanComment, so the live-hook fix above does not by itself prove the sweep is
+  // covered too -- a row inserted directly (same gap recovers() above exploits for cards) would
+  // otherwise still seed a stray edge on the NEXT apply.
+  it('does NOT recover a Gate-SHA-looking line from a directly-inserted local-llm comment', () => {
+    createKanbanCard({ id: 'r7', title: 'c' })
+    getDb()
+      .prepare(
+        `INSERT INTO kanban_comments (card_id, author, content, created_at)
+         VALUES ('r7', 'local-llm', '[LOCAL-LLM DRAFT]\nGate-SHA: 0f417136', 1788000000)`,
+      )
+      .run()
+    expect(reconcileKanbanRelations({ apply: true }).missing).toBe(0)
+    expect(rows()).toEqual([])
   })
 
   it('NEVER touches a row written under another source', () => {

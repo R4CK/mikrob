@@ -52,19 +52,20 @@ function freellmResetStatusDisplay() {
   if (draftsCount) draftsCount.textContent = '—'
 }
 
+// Card 685f25cb (MikroB root-cause measurement, 2026-11-20): lastError is a PER-CALL fact (the
+// most recent failed freellm call, if any within the window), not a sign that this status READ
+// itself failed. A live 200 response with real enabled/calls/drafts next to a lastError is valid,
+// current data -- it must render normally, with the error notice shown alongside it. The earlier
+// version treated any truthy lastError as "status unknown" and blanked the whole panel, which is
+// why the page showed nothing even while freellm was working. freellmResetStatusDisplay() is still
+// used, deliberately, by the actual "we have no fresh data at all" paths: the fetch-throws catch
+// block in freellmLoadStatus below.
 function freellmRenderStatus(data) {
   const toggle = document.getElementById('freellmToggle')
   const label = document.getElementById('freellmLabel')
   const callsCount = document.getElementById('freellmCallsCount')
   const draftsCount = document.getElementById('freellmDraftsCount')
 
-  if (data.lastError) {
-    // Do not set the fresh fields first and then overwrite them -- the payload's own enabled/
-    // calls/drafts next to an error are not trustworthy, so skip straight to the neutral display.
-    freellmResetStatusDisplay()
-    freellmShowErrorSection(String(data.lastError))
-    return
-  }
   if (toggle) { toggle.checked = !!data.enabled; toggle.disabled = false }
   if (label) {
     label.textContent = t(data.enabled ? 'freellm.status.on' : 'freellm.status.off')
@@ -72,7 +73,12 @@ function freellmRenderStatus(data) {
   }
   if (callsCount) callsCount.textContent = String(data.calls || 0)
   if (draftsCount) draftsCount.textContent = String(data.drafts || 0)
-  freellmHideErrorSection()
+
+  if (data.lastError) {
+    freellmShowErrorSection(String(data.lastError))
+  } else {
+    freellmHideErrorSection()
+  }
 }
 
 async function freellmLoadStatus() {
@@ -112,6 +118,183 @@ async function freellmPostStatus(enabled) {
   }
 }
 
+// --- Call log (card ebe20efe, Peti 14295) --------------------------------------------------
+// Contract (backend2, Pair-BE 685f25cb, msg_id:21895, reconciling an earlier draft 21882 after a
+// MikroB scope correction -- branch fix/freellm-call-journal-685f25cb, commit cb3e9e23a, not yet
+// landed): GET /api/freellm/calls?since=<unix_s>&limit=<1..500>
+//   -> { calls: [{ ts: <unix SECONDS>, agent, card, model, provider: null (reserved, never
+//          populated today), outcome: 'ok'|'fail'|'auth'|'429'|'stalled', fail_reason: <string>|
+//          null, duration_ms }, ...], // newest first, no `attempt` field (not recorded today)
+//        counts_24h: { ok, fail, stalled, rate_429, auth }, counts_7d: { same shape } }
+// `ts` is unix SECONDS, not ms (Date() needs *1000). The counts object's key for the 429 bucket
+// is `rate_429`, but a ROW's own outcome value for the same thing is the string '429' -- two
+// different spellings for the same case, both handled below. outcome is a closed enum but
+// rendered through a lookup with a safe fallback, so an unexpected future value never breaks the
+// page. `provider` and `attempt` are not rendered (the panel never used them).
+const FREELLM_CALLS_LIMIT = 50
+const FREELLM_COUNT_FIELDS = ['ok', 'fail', 'stalled', 'rate_429', 'auth']
+let _freellmCallsRefreshBound = false
+
+// Cybersec MEDIUM (card ebe20efe, gate on e594a37f3): the real t() (web/app.js) returns the
+// lookup KEY ITSELF on a miss, which is a truthy non-empty string -- a `t(key) || fallback` or
+// `if (translated) ...` check never catches a miss in production, only in a test whose own fakeT
+// happens to return '' instead (exactly the card d96f1418 root cause, repeated here). The correct
+// miss test is comparing the result AGAINST the key it was looked up with.
+function freellmOutcomeLabel(outcome) {
+  const key = 'freellm.calls.outcome.' + outcome
+  const label = t(key)
+  if (label !== key) return label
+  return t('freellm.calls.outcome.unknown', { outcome: String(outcome) })
+}
+
+// The aggregate counts object spells the 429 bucket 'rate_429'; a call row's own outcome value
+// spells the same case '429'. Route 'rate_429' to the same label as outcome '429' rather than
+// requiring (and risking someone forgetting) a second, parallel translation key.
+function freellmCountFieldLabel(field) {
+  const outcomeKey = field === 'rate_429' ? '429' : field
+  return freellmOutcomeLabel(outcomeKey)
+}
+
+// A technical fail_reason code (e.g. "http_404") gets a translated label if we have one, else a
+// generic, still-descriptive i18n fallback carrying the raw code (rule 12) -- never the bare
+// underscored string, and never a raw, unresolved i18n key either (see the comment above
+// freellmOutcomeLabel for why a truthy/miss check on t() does not work).
+function freellmFailReasonLabel(reason) {
+  const key = 'freellm.calls.fail_reason.' + reason
+  const label = t(key)
+  if (label !== key) return label
+  return t('freellm.calls.fail_reason.unknown', { reason: String(reason) })
+}
+
+// Rows the table highlights as failed (rule 12: the operator needs the bad ones to stand out).
+function freellmOutcomeIsFailure(outcome) {
+  return outcome !== 'ok'
+}
+
+function freellmFmtDuration(ms) {
+  if (ms == null || isNaN(ms)) return '—'
+  if (ms < 1000) return Math.round(ms) + ' ms'
+  return (ms / 1000).toFixed(1) + ' s'
+}
+
+// ts from the backend is unix SECONDS, not milliseconds.
+function freellmFmtTime(tsSeconds) {
+  if (tsSeconds == null || isNaN(tsSeconds)) return '—'
+  try {
+    return new Date(tsSeconds * 1000).toLocaleString()
+  } catch {
+    return '—'
+  }
+}
+
+function freellmSetCallsLoading(on) {
+  const el = document.getElementById('freellmCallsLoading')
+  if (el) el.hidden = !on
+}
+
+function freellmSetCallsError(msg) {
+  const el = document.getElementById('freellmCallsError')
+  if (!el) return
+  if (msg) {
+    el.hidden = false
+    el.textContent = msg
+  } else {
+    el.hidden = true
+    el.textContent = ''
+  }
+}
+
+function freellmSetCallsEmpty(on) {
+  const el = document.getElementById('freellmCallsEmpty')
+  if (el) el.hidden = !on
+}
+
+function freellmRenderCountsRow(elId, counts) {
+  const el = document.getElementById(elId)
+  if (!el) return
+  el.textContent = ''
+  const safe = counts || {}
+  FREELLM_COUNT_FIELDS.forEach((field) => {
+    const span = document.createElement('span')
+    span.className = 'freellm-calls-count-chip freellm-calls-count-chip--' + field
+    span.textContent = freellmCountFieldLabel(field) + ': ' + String(safe[field] || 0)
+    el.appendChild(span)
+  })
+}
+
+function freellmRenderCallsTable(calls) {
+  const tbody = document.getElementById('freellmCallsTbody')
+  if (!tbody) return
+  tbody.textContent = ''
+  calls.forEach((call) => {
+    const tr = document.createElement('tr')
+    if (freellmOutcomeIsFailure(call.outcome)) tr.className = 'freellm-calls-row--failed'
+    // rule 12: the generic 'fail' outcome shows WHY via fail_reason (e.g. an HTTP status) --
+    // auth/429/stalled already say why through the outcome label itself, and their raw
+    // fail_reason strings (auth_401, quota_429, the empty-code http_ for a stalled attempt) would
+    // look like broken, half-translated text if appended verbatim.
+    const outcomeText = call.outcome === 'fail' && call.fail_reason
+      ? freellmOutcomeLabel(call.outcome) + ' (' + freellmFailReasonLabel(call.fail_reason) + ')'
+      : freellmOutcomeLabel(call.outcome)
+    const cells = [
+      freellmFmtTime(call.ts),
+      call.agent != null ? String(call.agent) : '—',
+      call.card != null ? String(call.card) : '—',
+      call.model != null ? String(call.model) : '—',
+      outcomeText,
+      freellmFmtDuration(call.duration_ms),
+    ]
+    cells.forEach((text) => {
+      const td = document.createElement('td')
+      td.textContent = text
+      tr.appendChild(td)
+    })
+    tbody.appendChild(tr)
+  })
+}
+
+async function freellmLoadCalls() {
+  freellmSetCallsLoading(true)
+  freellmSetCallsError(null)
+  freellmSetCallsEmpty(false)
+  const countsEl = document.getElementById('freellmCallsCounts')
+  const tableWrap = document.getElementById('freellmCallsTableWrap')
+
+  try {
+    const res = await fetch('/api/freellm/calls?limit=' + FREELLM_CALLS_LIMIT)
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const data = await res.json()
+    const calls = Array.isArray(data.calls) ? data.calls : []
+
+    freellmRenderCountsRow('freellmCounts24h', data.counts_24h)
+    freellmRenderCountsRow('freellmCounts7d', data.counts_7d)
+    if (countsEl) countsEl.hidden = false
+
+    if (calls.length === 0) {
+      freellmSetCallsEmpty(true)
+      if (tableWrap) tableWrap.hidden = true
+    } else {
+      freellmRenderCallsTable(calls)
+      if (tableWrap) tableWrap.hidden = false
+    }
+  } catch (e) {
+    freellmSetCallsError(t('freellm.calls.load_error'))
+    if (countsEl) countsEl.hidden = true
+    if (tableWrap) tableWrap.hidden = true
+  } finally {
+    freellmSetCallsLoading(false)
+  }
+}
+
+function freellmSetupCalls() {
+  const refreshBtn = document.getElementById('freellmCallsRefreshBtn')
+  if (refreshBtn && !_freellmCallsRefreshBound) {
+    _freellmCallsRefreshBound = true
+    refreshBtn.addEventListener('click', () => freellmLoadCalls())
+  }
+  freellmLoadCalls()
+}
+
 function freellmSetup() {
   const toggle = document.getElementById('freellmToggle')
   if (toggle && !_freellmToggleBound) {
@@ -129,7 +312,8 @@ function freellmSetup() {
 async function loadFreellm() {
   freellmSetup()
   freellmSetupKeys()
-  // Live refresh of status while the page is open (5s poll like local-llm)
+  freellmSetupCalls()
+  // Live refresh of status + calls while the page is open (5s poll like local-llm)
   if (_freellmStatusPollTimer) clearInterval(_freellmStatusPollTimer)
   _freellmStatusPollTimer = setInterval(() => {
     if (document.getElementById('freellmPage') && document.getElementById('freellmPage').hidden) {
@@ -137,6 +321,7 @@ async function loadFreellm() {
       return
     }
     freellmLoadStatus()
+    freellmLoadCalls()
   }, 5000)
 }
 

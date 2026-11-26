@@ -29,6 +29,12 @@ set -uo pipefail
 
 UMASK_VALUE="${FLEET_UMASK:-0077}"
 UNIT_DIR="${SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+# Card 54765aa6: a selftest pointing SYSTEMD_USER_DIR at a throwaway dir still ran the daemon-reload
+# below against the REAL systemd --user instance -- SYSTEMD_USER_DIR only redirected the unit-file
+# writes, never this call. Every fleet-test.sh run (by every concurrent agent) re-triggered a real
+# `systemctl --user daemon-reload` 3+ times via the selftest's own idempotence/drift/override cases.
+# SYSTEMCTL_BIN gives the selftest the same override point the unit directory already had.
+SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
 # The units that either write fleet files themselves or can start the shared tmux server.
 UNITS=(mikrob-channels.service mikrob-dashboard.service)
 
@@ -60,7 +66,7 @@ UMask=$UMASK_VALUE
 done
 
 if [ "$changed" -gt 0 ]; then
-  systemctl --user daemon-reload 2>/dev/null \
+  "$SYSTEMCTL_BIN" --user daemon-reload 2>/dev/null \
     && echo "  umask-dropin: daemon-reload done" \
     || echo "  umask-dropin: daemon-reload FAILED -- run it by hand before the next restart"
 fi

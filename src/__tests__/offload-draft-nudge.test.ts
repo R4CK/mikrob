@@ -366,13 +366,16 @@ describe('emit_card_nudges actually runs, and actually sends (card 240ee54d N1/N
 describe('the freellm production call sites are pinned, not only the --test-capacity-route simulator (card 392d7104)', () => {
   it('mutant B target: the try_leaf-exhausted site still gates try_freellm_for_leaf on is_freellm_blocked', () => {
     expect(SRC).toMatch(
-      /is_freellm_blocked "\$leaf_project" "\$leaf_tags" "\$leaf_title" "\$leaf_desc" \|\|\s*\n\s*\{ try_freellm_for_leaf "\$leaf_id" "\$leaf_title" "\$task" "\$post_id" "\$synthetic" && return 0; \}/,
+      /is_freellm_blocked "\$leaf_project" "\$leaf_tags" "\$leaf_title" "\$leaf_desc" \|\|\s*\n\s*\{ try_freellm_for_leaf "\$leaf_id" "\$leaf_title" "\$task" "\$post_id" "\$synthetic" "\$assignee" && return 0; \}/,
     )
   })
 
-  it('mutant A target: the CAPACITY_HOLD site still gates try_freellm_for_leaf on lveto OR is_freellm_blocked', () => {
+  it('mutant A target: the CAPACITY_HOLD site still gates try_freellm_for_leaf on is_freellm_blocked (lveto skip removed, card 6d8ef952)', () => {
+    // Card 6d8ef952 deliberately removed the lveto early-return: a security-veto no longer stops a
+    // draft attempt. The is_freellm_blocked gate (project allowlist, BLOKKOLT-* tag, gemini-ok
+    // marker) is the remaining gatekeeper and must not be removed from this site.
     expect(SRC).toMatch(
-      /if \[\[ "\$lveto" == "true" \]\] \|\| is_freellm_blocked "\$lproject" "\$ltags" "\$ltitle" "\$ldesc"; then\s*\n\s*attempts_op categorical-online "\$lid" >\/dev\/null/,
+      /if is_freellm_blocked "\$lproject" "\$ltags" "\$ltitle" "\$ldesc"; then\s*\n\s*attempts_op categorical-online "\$lid" >\/dev\/null/,
     )
   })
 })

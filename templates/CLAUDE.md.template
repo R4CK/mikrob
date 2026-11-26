@@ -153,8 +153,11 @@ printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H
 ```bash
 printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:{{WEB_PORT}}/api/kanban \
   -H "Content-Type: application/json" \
-  -d '{"title":"CÍM","status":"planned","assignee":"{{MAIN_AGENT_ID}}","priority":"normal"}'
+  -d '{"title":"CÍM","status":"planned","assignee":"SZEREP_UGYNOK","priority":"normal"}'
 ```
+Az `assignee` mindig egy FELELŐS SZEREP-ÜGYNÖK (pl. `backend`, `qa`), SOHA nem {{BOT_NAME}} saját neve
+({{MAIN_AGENT_ID}}) -- {{BOT_NAME}} kioszt, nem tulajdonol kártyát (6a. szabály), és ezt a kanban
+API a write-határon elutasítja.
 
 Kártya mozgatása:
 ```bash

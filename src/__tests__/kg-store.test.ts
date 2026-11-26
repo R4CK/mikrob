@@ -7,6 +7,7 @@ import {
   migrate, openKgDb, rebuild, upsertNode, upsertEdge, setNodeStatus, getNode, KgSecretError,
   KgValidationError, upsertAnchor, getAnchorsForPath, setAnchorState, sanitizeKgText,
   findKgLocalSecretShape, redactKgLocalPii, kgLocalSecretShapeCounts, findKgLocalKvSecret,
+  redactKgLocalSecretsForLog,
 } from '../kg/store.js'
 
 const dirs: string[] = []
@@ -265,6 +266,39 @@ describe('kg store CRUD', () => {
       const counts = kgLocalSecretShapeCounts(`commit sha: ${hex64}, mail a@b.com`)
       expect(counts['bare-64-hex']).toBe(1)
       expect(counts.email).toBe(1)
+    })
+
+    // Card a1d57d99: a search query that LOOKS secret-shaped must still have been executed
+    // (this function only touches the text that gets STORED for the activity log, never the
+    // query the search itself ran on) -- redact, don't throw.
+    it('redactKgLocalSecretsForLog redacts a kv-secret shape without throwing', () => {
+      expect(redactKgLocalSecretsForLog('api_key=sk-abcdef1234567890')).toBe(
+        'api_key=[redacted:secret]',
+      )
+      expect(redactKgLocalSecretsForLog('password: "my long pass phrase"')).toContain(
+        '[redacted:secret]',
+      )
+    })
+
+    it('redactKgLocalSecretsForLog redacts a key-context 64-hex/base64 blob, leaves a bare hash alone', () => {
+      const hex64 = 'a1b2c3d4'.repeat(8)
+      expect(redactKgLocalSecretsForLog(`api key: ${hex64}`)).toBe('api key: [redacted:hex64]')
+      expect(redactKgLocalSecretsForLog(`commit sha: ${hex64}`)).toBe(`commit sha: ${hex64}`)
+    })
+
+    it('redactKgLocalSecretsForLog passes through null/undefined/plain text unchanged', () => {
+      expect(redactKgLocalSecretsForLog(null)).toBeNull()
+      expect(redactKgLocalSecretsForLog(undefined)).toBeUndefined()
+      expect(redactKgLocalSecretsForLog('how does the hybrid search ranking work')).toBe(
+        'how does the hybrid search ranking work',
+      )
+    })
+
+    it('redactKgLocalSecretsForLog: 200 KB adversarial input stays fast (same ReDoS budget as F1)', () => {
+      const adversarial = 'a.'.repeat(100_000)
+      const start = Date.now()
+      expect(() => redactKgLocalSecretsForLog(adversarial)).not.toThrow()
+      expect(Date.now() - start).toBeLessThan(1000)
     })
   })
 

@@ -38,9 +38,9 @@ import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
-import { geminiGenerate, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
-import { reserveGhostCallSlot, releaseGhostCallSlot } from './gemini-ghost-budget.js'
-import { getSecret } from './web/vault.js'
+import { geminiGenerate, DEFAULT_GEMINI_MODEL, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
+import { reserveGhostCallSlot, releaseGhostCallSlot, recordGhostCallDetail, randomHivasId } from './gemini-ghost-budget.js'
+import { callLocalLlmForGhost, alwaysAvailableSlot, recordLocalGhostCallDetail, GHOST_LOCAL_MODEL } from './gemini-ghost-local.js'
 import { initDatabase, listKanbanCards, getLabelsForAllCards } from './db.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -275,8 +275,18 @@ export async function decideGeminiOrder(
   cards: readonly OrchestratorCard[],
   apiKey: string | null,
   callGemini: (opts: GeminiCallOptions) => Promise<GeminiResult> = geminiGenerate,
-  reserveSlot: (cardId: string) => boolean = reserveGhostCallSlot,
+  reserveSlot: (cardId: string, status?: 'ok' | 'error', segedHivoPath?: string, hivasId?: string) => boolean = reserveGhostCallSlot,
   releaseSlot: (cardId: string) => boolean = releaseGhostCallSlot,
+  // Card cbeeba61: logs model/duration/outcome/tokens for the reservation row reserveSlot above
+  // just wrote (same hivas_id, see recordGhostCallDetail's own header) -- diagnostic only, never
+  // changes the decision below. modelName must match whichever backend the injected callGemini
+  // actually talks to (card 0291283d: runGeminiOrchestratorSweep passes GHOST_LOCAL_MODEL or
+  // DEFAULT_GEMINI_MODEL accordingly); this function has no way to know that on its own, since
+  // callGemini is opaque.
+  recordDetail: (hivasId: string, cardId: string, detail: {
+    model: string; durationMs: number; outcome: 'ok' | 'error' | 'blocked'; totalTokens?: number; taskType: string
+  }, segedHivoPath?: string) => boolean = recordGhostCallDetail,
+  modelName: string = DEFAULT_GEMINI_MODEL,
 ): Promise<OrchestratorDecision> {
   const eligible = cards.filter(
     (c) => (c.status === 'planned' || c.status === 'in_progress') && isEligibleForGeminiOrdering(c),
@@ -285,20 +295,33 @@ export async function decideGeminiOrder(
 
   // WhiteHat2 H1 (card 612058c2 NO-GO @c5e5ec28): same shared fleet-wide hourly budget as the
   // draft-review call below, spent right before the real network call, not once per tick.
-  if (!reserveSlot(ORDERING_BUDGET_CARD_ID)) return { ok: false, reason: 'hourly_cap_reached' }
+  const hivasId = randomHivasId()
+  if (!reserveSlot(ORDERING_BUDGET_CARD_ID, 'ok', undefined, hivasId)) return { ok: false, reason: 'hourly_cap_reached' }
 
   const metadata = buildOrderingMetadata(eligible)
   const prompt = buildOrderingPrompt(metadata)
 
+  const startMs = Date.now()
   const result = await callGemini({ apiKey, prompt })
+  const durationMs = Date.now() - startMs
   if (!result.ok || !result.text) {
     // Card 5cb861e6: a 503 (provider overloaded) did not come from anything the fleet's own
     // usage caused -- un-spend the slot reserved above so it does not count against the hourly
     // cap. Every other failure reason (auth/quota/model_missing/bad_response) keeps the spend:
     // those reflect a real, attributable call outcome.
-    if (result.httpStatus === 503) releaseSlot(ORDERING_BUDGET_CARD_ID)
+    const released = result.httpStatus === 503
+    if (released) releaseSlot(ORDERING_BUDGET_CARD_ID)
+    // Cybersec2 NO-GO (card cbeeba61, Gate-SHA ab107c21c): recording 'error' here re-spends the
+    // slot just released above, since calls_of()/dedupeCalls take the LAST row per hivas_id.
+    // 'blocked' marks the row without undoing the release.
+    recordDetail(hivasId, ORDERING_BUDGET_CARD_ID, {
+      model: modelName, durationMs, outcome: released ? 'blocked' : 'error', taskType: 'ghost-rank',
+    })
     return { ok: false, reason: result.reason ?? 'no_response' }
   }
+  recordDetail(hivasId, ORDERING_BUDGET_CARD_ID, {
+    model: modelName, durationMs, outcome: 'ok', totalTokens: result.totalTokens, taskType: 'ghost-rank',
+  })
 
   const order = parseOrderingResponse(result.text, eligible.map((c) => c.id))
   if (!order) return { ok: false, reason: 'invalid_response_schema' }
@@ -325,12 +348,17 @@ export function readFallbackRoute(): 'claude' | 'gemini' {
  * order to a queue file -- it never touches a kanban card, never closes anything. On any
  * fail-closed outcome it writes nothing and leaves whatever queue file already exists untouched
  * (a failed run must never look like a stale success, nor erase a still-valid prior one).
+ *
+ * Card 0291283d: Ghost's own ranking call goes through the LOCAL model, never Gemini -- no agy
+ * path, no REST path, no Gemini API key read. reserveSlot/releaseSlot/recordDetail default to the
+ * local, budget-free versions (gemini-ghost-local.ts) accordingly; an injected callGemini (tests)
+ * still works exactly as before, since decideGeminiOrder's own shape is unchanged.
  */
 export async function runGeminiOrchestratorSweep(
   loadCards: () => readonly OrchestratorCard[],
-  callGemini: (opts: GeminiCallOptions) => Promise<GeminiResult> = geminiGenerate,
-  reserveSlot: (cardId: string) => boolean = reserveGhostCallSlot,
-  releaseSlot: (cardId: string) => boolean = releaseGhostCallSlot,
+  callGemini: (opts: GeminiCallOptions) => Promise<GeminiResult> = callLocalLlmForGhost,
+  reserveSlot: (cardId: string) => boolean = alwaysAvailableSlot,
+  releaseSlot: (cardId: string) => boolean = alwaysAvailableSlot,
 ): Promise<void> {
   if (!isGeminiOrchestratorEnabled()) {
     console.log('[gemini-orchestrator] kill switch is OFF -- no-op.')
@@ -342,26 +370,10 @@ export async function runGeminiOrchestratorSweep(
   }
 
   const cards = loadCards()
+  const recordDetail = callGemini === callLocalLlmForGhost ? recordLocalGhostCallDetail : recordGhostCallDetail
+  const modelName = callGemini === callLocalLlmForGhost ? GHOST_LOCAL_MODEL : DEFAULT_GEMINI_MODEL
 
-  // Agy path: default when REST fallback toggle is absent. REST path when toggle is present.
-  // An injected callGemini (e.g. from tests) bypasses this routing and is used as-is.
-  let effectiveCallGemini = callGemini
-  let apiKey: string | null = null
-  if (callGemini === geminiGenerate && !isRestFallbackEnabled()) {
-    const firstEligible = cards.find(
-      (c) => (c.status === 'planned' || c.status === 'in_progress') && isEligibleForGeminiOrdering(c),
-    )
-    if (firstEligible) {
-      const ayCardId = firstEligible.id
-      effectiveCallGemini = (opts: GeminiCallOptions) => callGeminiViaAgy(opts.prompt, ayCardId)
-    }
-    // no eligible cards: effectiveCallGemini stays as geminiGenerate but decideGeminiOrder
-    // will return no_eligible_cards before making any call, so apiKey stays null (never used)
-  } else {
-    apiKey = getSecret(GEMINI_VAULT_KEY_ID) ?? null
-  }
-
-  const decision = await decideGeminiOrder(cards, apiKey, effectiveCallGemini, reserveSlot, releaseSlot)
+  const decision = await decideGeminiOrder(cards, null, callGemini, reserveSlot, releaseSlot, recordDetail, modelName)
 
   if (!decision.ok) {
     console.log(`[gemini-orchestrator] fail-closed, no action (reason=${decision.reason ?? 'unknown'}).`)

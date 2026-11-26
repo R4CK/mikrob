@@ -59,10 +59,11 @@ function slice(src: string, from: string, to: string): string {
   return src.slice(a, b)
 }
 
-describe('Local LLM page layout (card e5fc1fb4)', () => {
-  // The LLM monitor page sits BEFORE this one in index.html, so the slice ends inside the last
-  // section of the Local LLM page (the recommendations block), not at the next page.
-  const page = slice(HTML, 'id="localLlmPage"', 'id="llmRecsStaleBanner"')
+describe('Local LLM page layout (card e5fc1fb4; relocated into Providers tab by card f1e33cfb)', () => {
+  // Card f1e33cfb merges localLlmPage into providersPage's Local-model tab, with a nested
+  // Állapot/Katalógus sub-tab split -- the recommendations block now lives in the Katalógus
+  // sub-panel, physically AFTER the Állapot one, so the slice still ends there.
+  const page = slice(HTML, 'id="providersPage"', 'id="llmRecsStaleBanner"')
   const order = ['localLlm.status.title', 'localLlm.models.title', 'localLlm.offload.title', 'localLlm.routing.title', 'localLlm.usage.title', 'localLlm.rec.title']
 
   it('sections come in the order Status, Models, Offload, Routing, Usage, Recommended', () => {
@@ -85,7 +86,15 @@ describe('Local LLM page layout (card e5fc1fb4)', () => {
     expect(page).toContain('id="llmOffloadSlider"')
     expect(page).toContain('id="llmOffloadOptimalBtn"')
     expect(page).toContain('id="llmOffloadRamp"')
-    expect(page).toContain('id="llmOffloadDifficulty"')
+  })
+
+  // Card f1e33cfb (comment 34749): the difficulty dropdown is confirmed dead -- codingDifficultyThreshold
+  // only matters when a caller passes --difficulty to local-llm-rag.sh, and the phase audit (36dc9240)
+  // found none does. Removed from the page AND the frontend wiring that read/wrote it.
+  it('the difficulty dropdown is gone -- confirmed no runtime caller', () => {
+    expect(HTML).not.toContain('id="llmOffloadDifficulty"')
+    expect(JS).not.toContain("getElementById('llmOffloadDifficulty')")
+    expect(JS).not.toContain('function llmPostDifficulty')
   })
 
   it('(1) the models block carries a summary line and keeps the pull row', () => {
@@ -229,7 +238,7 @@ describe('(4) Overview swimlane (d6ecb003) hooks, no parallel swimlane', () => {
     expect(OVW).toContain("body.querySelectorAll('.ovw-llmdist-lane-link').forEach((b) => b.addEventListener('click', () => ovwLlmDistOpenModel(b.dataset.model)))")
     const open = slice(OVW, 'function ovwLlmDistOpenModel(name) {', 'function ovwLlmDistColorFor(')
     expect(open).toContain('window._llmHighlightModel = name')
-    expect(open).toContain('.sb-link[data-page="localLlm"]')
+    expect(open).toContain('.sb-link[data-page="providers"]')
   })
 
   it('the tooltip gains a routing row only when the routing answer is present', () => {

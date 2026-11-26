@@ -1,7 +1,7 @@
 ---
 name: skill-management
 description: List, inspect, patch, or delete skills from ~/.claude/skills/. Use when the user asks about available skills, wants to modify an existing skill, or when a retrospective proposes skill changes. Trigger on "/skills" command or skill-related retrospective actions.
-version: "1.0.0"
+version: "1.0.1"
 related_skills: [github-pr-rebase-merge, retrospective]
 ---
 
@@ -124,15 +124,18 @@ Rules:
 
 1. Show the skill content first
 2. Ask for confirmation: "Delete skill '{name}'? This removes the entire directory."
-3. On confirmation:
+3. Validate NAME against `^[a-z0-9][a-z0-9-]*$` before the delete -- reject anything else (a
+   name with `..`, `/`, or a leading `-` could walk `rm -rf` outside the skills folder)
+4. On confirmation:
 ```bash
 rm -rf "${HOME}/.claude/skills/${NAME}"
 ```
-4. Update `.skill-index.md` if it exists
+5. Update `.skill-index.md` if it exists
 
 Rules:
 - Never delete without showing content first
 - Never delete without explicit user confirmation
+- Never delete a NAME that fails the format check above
 - If the skill is referenced by other skills, warn before deleting
 
 ### action=audit

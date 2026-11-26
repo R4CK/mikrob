@@ -45,6 +45,12 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$HERE/freellm-call.sh"
 CATEGORY_CHECK="$HERE/gemini-agy-category-check.py"
+# F8 (card 2746165b): every call below leaves FREELLM_TASK_LABEL unset, so freellm-call.sh's own
+# default ("offload", not in the pack map) always falls back to the "default" pack, which it
+# prepends to PROMPT before sending. The F1 payload-round-trip tests below must strip this KNOWN,
+# legitimate prefix before comparing the sent content byte-for-byte -- they prove the PAYLOAD is
+# not mangled/executed, not that nothing was ever prepended to it.
+DEFAULT_PACK_PREFIX="$(cat "$HERE/llm-skill-packs/default.txt")"$'\n\n---\n\n'
 TMPDIR_TEST="$(mktemp -d)"
 MOCK_LOGDIR="$TMPDIR_TEST/mock-reqs"
 mkdir -p "$MOCK_LOGDIR"
@@ -439,7 +445,9 @@ body = json.loads(json.load(open('$MOCK_LOGDIR/req-0.json'))['body'])
 print(body['messages'][0]['content'], end='')
 " 2>/dev/null)"
   # The herestring in freellm-call.sh appends exactly one trailing newline to the prompt;
-  # strip exactly one to compare against the original payload byte-for-byte.
+  # strip exactly one to compare against the original payload byte-for-byte. Strip the known
+  # pack prefix first (see DEFAULT_PACK_PREFIX above).
+  SENT_CONTENT="${SENT_CONTENT#"$DEFAULT_PACK_PREFIX"}"
   SENT_CONTENT="${SENT_CONTENT%$'\n'}"
   assert_true "F1: payload reached the mock as an exact, unexecuted string" \
     "$([[ "$SENT_CONTENT" == "$RCE_PAYLOAD" ]] && echo 1 || echo 0)"
@@ -472,6 +480,7 @@ import json
 body = json.loads(json.load(open('$MOCK_LOGDIR/req-0.json'))['body'])
 print(body['messages'][0]['content'], end='')
 " 2>/dev/null)"
+  GOT="${GOT#"$DEFAULT_PACK_PREFIX"}"
   GOT="${GOT%$'\n'}"
   if [[ "$GOT" != "$p" ]]; then
     ORD_OK=0

@@ -120,7 +120,11 @@ origin and reports `LANDED <branch> -> origin/develop (<sha>)`. **That reported 
 Gate-SHA.** A refusal (conflict, seam loss, or a failing fleet-test) means nothing was pushed and
 your branch/worktree are untouched -- fix it and re-run, never force past it. You do not need to
 `git push` your own branch separately; `marveen-land.sh` pushes the MERGE to develop, not your
-branch. Your own worktree is NOT auto-reset after landing (same as CleanCore's landing script) --
+branch. **Do not poll a backgrounded land run (card c4590365, Peti 13835).** If a serialized-queue
+wait makes you start this in the background instead of foreground, don't `tail`/`sleep`/re-check its
+status in a loop -- the script posts exactly one inter-agent message to you (verdict + summary line
++ log path) when it finishes; wait for that message instead. Your own worktree is NOT auto-reset
+after landing (same as CleanCore's landing script) --
 sync it yourself when you want to (`git fetch origin develop && git merge --ff-only origin/develop`
 inside your worktree), there is no requirement to before starting your next card.
 

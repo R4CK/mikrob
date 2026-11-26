@@ -1,0 +1,8 @@
+{
+  "_comment": "Card c69a8da2: per-agent EXTRA servers to keep from the global ~/.claude.json set (code-review-graph/context7 are always kept, never listed here; a server already in an agent's own .mcp.json is also always kept, never listed here). Measured from full transcript scans of mcp__<server>__ tool_use calls (store/mcp-agent-usage-measure.py), window: full available history per agent as of 2026-11-23. Widening this list later is a one-line edit, not a code change.",
+  "backend2": ["playwright"],
+  "cybered": ["playwright"],
+  "fron-ted": ["playwright"],
+  "qa": ["playwright"],
+  "qa2": ["playwright"]
+}

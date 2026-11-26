@@ -1,0 +1,1854 @@
+=== PAGE 1 ===
+Részletes modulterv – munkaidő- és beosztáskezelő SaaS
+2026-09-17 (újragenerálva 2026-09-27) · Laravel 12 · Angular 20 · MySQL 8 · Célországok: Svájc →  Magyarország (DE/AT
+előkészítve)
+Hatókör: saját bérszámfejtés nincs; a payroll modul kizárólag export a svájci és magyar bérszámfejtő
+programokba. MyTraceability-integráció ebben a fázisban nincs.
+Mit tartalmaz ez a dokumentum
+Rész Tartalom
+IV/1 core, time_tracking, time_accounts, work_rules, absences, reports
+IV/2 terminals, geo, projects, surcharges, shift_planning, shift_auto, labor_cost, qualifications
+IV/3 hr_records, expenses, tasks_forms, communication, api_webhooks, sso, ai_assist, superadmin, számlázás, fázisterv,
+modul-szerződések
+V payroll – bérexport: architektúra, kanonikus bérelemek, leképezés, CH és HU célrendszerek, mezők, szabályok, ellenőrzés
+Minden modul azonos sablon szerint: cél · funkciók · adatmodell · állapotgép · beállítások · jogosultságok · API ·
+események · képernyők · élhelyzetek · elfogadási kritériumok · fázis.
+F-azonosító: TT-01 = time_tracking 1. funkció; a teszt- és jegyhivatkozás erre épül.
+Elfogadási kritérium (EK): „adott–amikor–akkor" formában, közvetlenül tesztté alakítható.
+Minden tábla tartalmaz: id, tenant_id, created_at, updated_at, created_by, updated_by; a mozgásadat nem
+törölhető (soft delete csak törzsadaton).
+Minden írási végpont auditált; a clock_events és audit_logs csak beszúrható.
+Forrás-megjegyzés: a bérexport-fejezet gyártói dokumentációkból és hatósági forrásokból származó kutatáson
+alapul; a bizonytalan pontok jelölve. A munkajogi hivatkozásokat élesítés előtt jogásszal kell validáltatni.
+
+=== PAGE 2 ===
+1. core – Mag (kötelező)
+1.1 Cél
+Egy cég (tenant) teljes szervezeti és személyi alapja: telephelyek országgal, csapatok, dolgozók szerződés-verziókkal,
+felhasználók, szerepkörök, audit, értesítés, beállítás-varázsló. Minden más modul erre épül.
+1.2 Funkciók
+# Funkció Leírás
+CO-
+01
+Tenant-
+regisztráció
+Cégnév, ország (CH/HU/DE/AT), pénznem, nyelv, időzóna; próbaidőszak indítása
+CO-
+02
+Beállítás-varázsló 6 lépés: ország és telephely →  iparág-sablon →  munkaidőmodell →  modulválasztás →  dolgozó-import →  első
+meghívók; bármikor félbehagyható, állapota mentett
+CO-
+03
+Telephely-kezelés Név, cím, ország + régió (kanton / megye / Bundesland), időzóna, ünnepnaptár, költséghely, geofence (ha geo
+aktív)
+CO-
+04
+Szervezet Részleg-fa, csapatok telephelyhez, csapatvezető kijelölése
+CO-
+05
+Dolgozó-
+törzsadat
+Személyes adatok, belépés/kilépés, országspeciﬁkus mezők (CH: AHV 756.xxxx.xxxx.xx, kanton, forrásadó-
+jelölés; HU: TAJ, adóazonosító jel, FEOR, jogviszony-típus)
+CO-
+06
+Szerződés-
+verziók
+Érvényességi dátummal: heti óraszám, munkanapok, célidő-modell, szabadságkeret, bérforma (havi/órabér),
+bérkategória, KSZ-proﬁl, jogviszony sorszám (HU, 2026-tól kötelező azonosító), pótlék-jogosultsági proﬁl (HU:
+vasárnapi és műszakpótlék jogcíme; CH: GAV), pótlékátalány-jelölés (mérni igen, exportálni nem)
+CO-
+07
+Felhasználó ≠
+dolgozó
+Dolgozó lehet login nélkül (csak terminál); felhasználóhoz szerep és hatókör tartozik
+CO-
+08
+Meghívás E-mail vagy SMS meghívó, QR-kódos app-párosítás, meghívó újraküldés és visszavonás
+CO-
+09
+Import CSV/XLSX dolgozó-import: oszlop-leképezés, próbafuttatás (dry run) hibalistával, ismételhető, kulcs: személyi
+szám vagy e-mail
+CO-
+10
+Audit log Minden írás naplózva, hash-lánccal; kereshető, exportálható
+CO-
+11
+Értesítési
+központ
+E-mail, push, in-app, opcionális SMS; felhasználónként és eseménytípusonként kapcsolható; napi összefoglaló
+CO-
+12
+Többnyelvűség DE, FR, IT, HU, EN felület, e-mail és PDF; tenant-alapértelmezés + felhasználói felülírás
+CO-
+13
+Adatexport /
+törlés
+Tenant-szintű teljes export (ZIP: CSV+PDF); dolgozó anonimizálása megőrzési idő lejárta után
+CO-
+14
+Munkaszüneti
+naptárak
+Ország+régió ünnepnapok a country packből, céges extra napok, CH kantonális ﬁzetettség-jelölő
+1.3 Adatmodell (kivonat)
+tenants(id, uuid, name, legal_name, country_code, currency, locale, timezone,
+        subscription_status, plan_id, data_region, settings JSON, created_at)
+locations(id, tenant_id, name, country_code, region_code, timezone, address JSON,
+          cost_center_id, holiday_calendar_id, is_active)
+departments(id, tenant_id, parent_id, name)
+teams(id, tenant_id, location_id, department_id, name, lead_employee_id)
+employees(id, uuid, tenant_id, employee_number, first_name, last_name, birth_date,
+          work_country_code, primary_location_id, entry_date, exit_date,
+          is_minor_until DATE NULL, pin_hash, badge_uid_hash,
+          status ENUM('active','inactive','left'), country_fields_enc JSON, user_id NULL,
+          UNIQUE(tenant_id, employee_number))
+
+=== PAGE 3 ===
+employee_contracts(id, tenant_id, employee_id, valid_from, valid_to NULL,
+          weekly_hours DECIMAL(5,2), work_days JSON, target_model_id,
+          wage_form ENUM('monthly','hourly'), hourly_rate, monthly_salary, currency,
+          annual_leave_days DECIMAL(4,1), collective_agreement_id NULL,
+          employment_pct DECIMAL(5,2), relationship_seq SMALLINT NULL,
+          premium_profile JSON, premium_flat_rate BOOL, payroll_export_id VARCHAR(50) NULL)
+users(id, tenant_id, employee_id NULL, email, password, locale, two_factor_secret, is_active)
+role_scopes(id, tenant_id, user_id, role_id,
+          scope_type ENUM('tenant','location','department','team'), scope_id)
+audit_logs(id, tenant_id, actor_type, actor_id, impersonator_id, action, subject_type,
+          subject_id, before JSON, after JSON, ip, prev_hash CHAR(64), hash CHAR(64), created_at)
+import_runs(id, tenant_id, kind, file_path, mapping JSON, dry_run BOOL, stats JSON,
+          errors JSON, status, created_by)
+employee_contracts szabálya: átfedő érvényesség tilos (alkalmazás-validáció + ellenőrző lekérdezés); a valid_to NULL
+= nyitott végű.
+1.4 Állapotgép – dolgozó
+draft ──(meghívó kiküldve)──► invited ──(regisztrált / terminálra kötve)──► active
+  │                                                                   │
+  └──(import, login nélkül)──────────────────────────────────────────┘
+active ──(kilépés dátuma elérve)──► left ──(megőrzés lejár)──► anonymized
+active ──(felfüggesztés)──► inactive ──► active
+1.5 Beállítások (tenant)
+week_start, date_format, first_day_of_fiscal_year, employee_number_strategy, default_location,
+notification_defaults, works_council_mode, data_retention_profile (a country packből örökölt, szigorítható).
+1.6 Jogosultságok
+employees.view|create|edit|delete, employees.view_wage, employees.view_sensitive (TAJ/AHV, egészségügyi),
+locations.manage, teams.manage, users.manage, roles.manage, audit.view, settings.manage, import.run,
+export.tenant.
+1.7 API (kivonat)
+GET    /api/me/context                → user, tenant, modulok, jogosultságok, hatókörök, ország-metaadat
+GET    /api/employees?location=&team=&status=&q=
+POST   /api/employees
+GET|PATCH /api/employees/{uuid}
+POST   /api/employees/{uuid}/contracts          {valid_from, weekly_hours, ...}
+POST   /api/employees/{uuid}/invite
+POST   /api/imports/employees                   {file, mapping, dry_run}
+GET    /api/imports/{id}
+GET|POST|PATCH /api/locations
+GET    /api/audit?subject_type=&from=&to=&actor=
+POST   /api/tenant/export                       → ZIP (aszinkron)
+1.8 Események
+Kibocsát: EmployeeCreated, EmployeeContractChanged ( →  újraszámolás), EmployeeLeft, LocationCreated,
+TenantSettingsChanged, ImportCompleted.
+
+=== PAGE 4 ===
+1.9 Audit hash-lánc
+hash = SHA256(prev_hash || canonical_json(record)) tenantonként; napi „horgony" a platform-naplóba; php artisan
+audit:verify {tenant} {from} {to} parancs + riport PDF a munkaügyi ellenőrzéshez.
+1.10 Képernyők
+Onboarding-varázsló · Dolgozólista (szűrők, tömeges műveletek) · Dolgozó-lap (törzsadat / szerződések / dokumentumok
+/ idő / távollét fülek) · Telephelyek · Csapatok · Felhasználók és szerepek · Import-varázsló · Audit-kereső · Beállítások.
+1.11 Élhelyzetek
+Visszamenőleges szerződésmódosítás →  EmployeeContractChanged →  az érintett időszak újraszámolása; zárt
+periódusba nem ír, hanem korrekciós tételt tesz a nyitottba.
+Kilépés utáni korrekció: kilépett dolgozó adatai szerkeszthetők a periódus zárásáig.
+Újra belépő dolgozó: új szerződés-verzió, ugyanaz a dolgozó-rekord, arányosított szabadságkeret.
+Import ismétlése: kulcs alapján frissít, nem duplikál; a dry run ugyanazt a diﬀet mutatja, mint az éles futás.
+1.12 Elfogadási kritériumok
+EK-CO-1: Adott 50 soros CSV 3 hibás sorral; amikor dry run fut, akkor 47 érvényes és 3 hibás sor jelenik meg
+soronkénti hibaokkal, és egyetlen rekord sem jön létre.
+EK-CO-2: Adott két átfedő szerződés-verzió; mentéskor 422-es hiba az átfedő időszak megjelölésével.
+EK-CO-3: Minden írási művelet után keletkezik audit-sor, amelynek prev_hash-e az előző sor hash-e, és az
+audit:verify zöld.
+EK-CO-4: Kilépett dolgozó + lejárt megőrzés esetén a megőrzési job anonimizálja a személyes mezőket, de az
+összesített munkaidő-statisztika megmarad.
+Fázis: F0–F1.
+
+=== PAGE 5 ===
+2. time_tracking – Munkaidő-rögzítés
+2.1 Cél
+A tényleges munkaidő hiteles rögzítése minden csatornán (web, app, terminál, kézi), a nyers események megőrzésével,
+valamint a korrekció és jóváhagyás munkafolyamata.
+2.2 Funkciók
+# Funkció Leírás
+TT-
+01
+Blokkolás clock_in / break_start / break_end / clock_out egy gombbal; aktuális állapot kijelzése
+TT-
+02
+Tevékenységváltás Blokkolás közben projekt/tevékenység váltása (ha projects aktív) – új szakasz nyílik, nincs kilépés
+TT-
+03
+Kézi bevitel Utólagos rögzítés jogosultsággal vagy kérelemként; kötelező indoklás konﬁgurálható
+TT-
+04
+Szünetkezelés Valós idejű, ﬁx automatikus levonás, vagy szabály szerinti automatikus levonás (country pack küszöbök)
+TT-
+05
+Kerekítés Tenant/telephely szintű szabály (5/10/15 perc; fel/le/matematikai; dolgozó javára); az eredeti időpont mindig
+megmarad
+TT-
+06
+Napi szakaszképzés Eseményekből time_entries; éjszakai műszak a kezdőnaphoz rendelve (konﬁgurálható vágáspont)
+TT-
+07
+Korrekciós kérelem Dolgozó javaslatot tesz →  vezető elfogad/elutasít →  verziózott módosítás
+TT-
+08
+Időlap-folyamat Heti/havi benyújtás →  jóváhagyás →  zárolás; többlépcsős opció
+TT-
+09
+Időlap-aláírás Dolgozói elektronikus visszaigazolás (név, időbélyeg, hash) – CH/HU jogvitákban bizonyíték
+TT-
+10
+Élő nézet Ki dolgozik, ki van szünetben, ki késik a beosztáshoz képest, ki hiányzik
+TT-
+11
+Emlékeztetők Elfelejtett kiblokkolás (N óra), beosztott műszak kezdete nem indult, szünet túllépés
+TT-
+12
+Auto-kiblokkolás Max. időtartam után automatikus zárás auto_closed jelöléssel, vezetői feladatlistára
+TT-
+13
+Kivételek listája Hiányzó ki/be, nyitva felejtett szakasz, ütköző esemény, jóvá nem hagyott korrekció
+TT-
+14
+Oﬄine szinkron Kliens-UUID, idempotens köteg, ütközés-feloldó lista
+TT-
+15
+Rögzítési mód Dolgozónként full / duration_only (AT AZG §26(3), CH ArGV 1 Art. 73b) / waived (CH Art. 73a) a jogi
+előfeltétel-bizonyítékkal
+TT-
+16
+Szegmens-alapú
+nap
+Egy munkanap több szakaszból állhat (osztott munkaidő: HU-ban napi 2 részlet, köztük min. 2 óra pihenő) – a
+nap nem egyetlen intervallum
+TT-
+17
+Naptípus Minden naphoz explicit naptípus (munkanap / pihenőnap / munkaszüneti) tárolva, nem levezetve – a bérexport
+tipikus hibaforrása
+2.3 Adatmodell
+clock_events(id, uuid, tenant_id, employee_id,
+  type ENUM('in','break_start','break_end','out','switch'),
+  occurred_at DATETIME(3), device_occurred_at DATETIME(3) NULL, clock_offset_ms INT NULL,
+  source ENUM('web','app','terminal','manual','import','auto','api'),
+
+=== PAGE 6 ===
+  device_id NULL, location_id NULL, activity_id NULL, project_id NULL,
+  lat DECIMAL(9,6) NULL, lng DECIMAL(9,6) NULL, accuracy_m INT NULL,
+  geofence_result ENUM('inside','outside','unknown') NULL,
+  photo_path NULL, note VARCHAR(255) NULL, created_by, prev_hash, hash, created_at,
+  UNIQUE(tenant_id, uuid), INDEX(tenant_id, employee_id, occurred_at))
+time_entries(id, tenant_id, employee_id, work_date DATE, started_at, ended_at NULL,
+  break_seconds INT, gross_seconds INT, net_seconds INT,
+  rounded_started_at, rounded_ended_at, rounded_net_seconds,
+  day_type ENUM('workday','rest_day','public_holiday'),
+  project_id NULL, activity_id NULL, cost_center_id NULL, shift_id NULL,
+  status ENUM('open','closed','submitted','approved','locked','auto_closed'),
+  rule_pack_version_id, recalc_version INT, source_summary JSON,
+  INDEX(tenant_id, work_date, employee_id))
+time_entry_versions(id, tenant_id, time_entry_id, version, payload JSON, reason,
+  changed_by, changed_at)        -- soha nem felülírás, mindig új verzió
+time_entry_corrections(id, tenant_id, time_entry_id NULL, employee_id, work_date,
+  proposed JSON, reason, status ENUM('pending','approved','rejected'),
+  decided_by, decided_at, decision_note)
+timesheets(id, tenant_id, employee_id, period_start, period_end,
+  status ENUM('open','submitted','approved','locked'), submitted_at,
+  approved_by, approved_at, signed_at, signature_hash, pdf_path)
+2.4 Állapotgép – time_entry
+open ──(clock_out / auto_close)──► closed ──(időlap benyújtás)──► submitted
+                                      │                               │
+                                      │                        (jóváhagyás)
+                                      ▼                               ▼
+                               (korrekció)                        approved ──(periódus-zárás)──► locked
+                                      │                               ▲
+                                      └───────(korrekció jóváhagyva)──┘
+locked ──(zárás visszanyitása, 2. jóváhagyóval)──► approved
+2.5 Beállítások
+rounding: {unit_minutes, mode, favor}, auto_break: {source: fixed|rule, table}, day_cut_off (pl. 04:00),
+auto_close_after_hours, manual_entry_policy: {who, retro_days, reason_required}, reminder_rules[],
+timesheet_period: weekly|monthly, signature_required, approval_steps: 1|2.
+2.6 Jogosultságok
+time.clock_self, time.view_own, time.view_scope, time.edit_scope, time.approve, time.lock, time.export,
+time.clock_others (brigád-mód).
+2.7 API
+POST /api/clock                 {type, occurred_at?, project_id?, note?}   → aktuális állapot
+GET  /api/clock/state                                                     → nyitott szakasz, mai összeg
+POST /api/sync/events           {events:[{uuid,type,occurred_at,...}]}     (Idempotency-Key)
+GET  /api/time-entries          ?employee=&from=&to=&status=
+POST /api/time-entries          (kézi bevitel jogosultsággal)
+PATCH /api/time-entries/{id}    (verziót hoz létre, indoklással)
+POST /api/time-entries/{id}/corrections
+POST /api/corrections/{id}/approve | /reject
+GET  /api/exceptions            ?location=&from=&to=
+GET  /api/live-board            ?location=
+
+=== PAGE 7 ===
+POST /api/timesheets/{id}/submit | /approve | /sign
+GET  /api/timesheets/{id}/pdf
+2.8 Események
+Kibocsát: ClockEventRecorded, TimeEntryClosed, TimeEntryChanged, CorrectionApproved, TimesheetApproved,
+TimesheetSigned. Fogyaszt: ShiftPublished, AbsenceApproved, EmployeeContractChanged.
+2.9 Képernyők
+Dolgozói blokkoló (web és app) · Napi/heti saját időlap · Vezetői napi rács (dolgozó × nap, színkódolt kivételekkel) ·
+Kivétel-lista · Korrekciós kérelmek · Élő tábla · Időlap-részletek PDF-előnézettel.
+2.10 Élhelyzetek
+Kettős be-blokkolás (terminál + app): a második esemény conflict jelzéssel tárolódik, nem vész el; feloldó lista a
+vezetőnek.
+Éjfélen átnyúló műszak: egy szakasz marad, a work_date a kezdőnap; a day_cut_off előtti kiblokkolás az előző
+naphoz tartozik.
+Óraátállítás: tárolás UTC-ben, megjelenítés a telephely időzónájával; a 23 órás nap nem generál hamis eltérést.
+Elállított telefonóra: device_occurred_at és clock_offset_ms tárolva; X percnél nagyobb eltérésnél a bejegyzés
+jelölt.
+Zárt periódusba érkező késői oﬄine esemény: „utólagos beérkezés" lista, korrekciós tétel a nyitott periódusba.
+duration_only mód: a felület csak napi időtartamot kér; a szabálymotor csak a napi/heti korlátokat ellenőrzi.
+2.11 Elfogadási kritériumok
+EK-TT-1: 08:00 be, 12:00 szünet, 12:30 vissza, 17:00 ki →  net_seconds = 8×3600, break_seconds = 1800.
+EK-TT-2: 5 perces kerekítés a dolgozó javára, 07:58 be és 17:03 ki →  kerekített szakasz 08:00–17:05, az eredeti
+időpontok változatlanul olvashatók.
+EK-TT-3: Ugyanaz az esemény-UUID kétszer szinkronizálva →  egy rekord, mindkét válasz 200.
+EK-TT-4: Zárolt időlap szerkesztési kísérlete →  409 period_locked, a felület a visszanyitási folyamatot ajánlja.
+EK-TT-5: auto_close_after_hours = 14 →  a 14 órája nyitott szakasz auto_closed státusszal lezárul, a dolgozó és
+a vezető értesítést kap.
+Fázis: F1 (alap), F2 (aláírás, rögzítési módok), F3 (oﬄine, terminál-források).
+
+=== PAGE 8 ===
+3. time_accounts – Időszámla, túlóra, zárás
+3.1 Cél
+Napi szintű cél–tény összevetés főkönyvszerű tételekben (ledger), túlóra- és szabadság-egyenleg, periódus-zárás, amely
+a bérexport alapja.
+3.2 Funkciók
+# Funkció Leírás
+TA-
+01
+Célidő-modellek Fix heti; napi eltérő; havi/heti keret; éves keret; beosztás szerinti; bizalmi (egyenleg nélkül); részmunkaidő %-kal
+TA-
+02
+Napi ledger Minden napra target, actual, diff és jóváírás-tételek, forrás-hivatkozással
+TA-
+03
+Jóváírások Ünnepnap, szabadság, betegség, képzés célidő-jóváírása a country pack szabálya szerint
+TA-
+04
+Túlóra-
+szabályok
+Küszöb, plafon, lejárat, kiﬁzetés/csúsztatás; CH: Überstunden és Überzeit külön számla (170/140 óra/év); HU:
+éves keret 250/300/+150 forrásonként
+TA-
+05
+Csúsztatás A absences modulból igényelve, az egyenlegből levonva
+TA-
+06
+Kezdő egyenleg Induláskor és utólag, naplózott korrekcióként
+TA-
+07
+Periódus-zárás Ellenőrzőlista →  zárolás →  pillanatkép; visszanyitás második jóváhagyóval
+TA-
+08
+Újraszámolás Determinisztikus újraszámolás dolgozó × időszakra; zárt periódust nem módosít
+TA-
+09
+Dolgozói nézet Egyenleg, napi bontás, „miért ennyi?" magyarázat
+TA-
+10
+Egyenleg-
+riasztás
+Túlóra-plafon közeli/átlépett, negatív egyenleg, lejáró túlóra
+3.3 Adatmodell
+target_time_models(id, tenant_id, name,
+  type ENUM('fixed_week','daily','period_budget','annual_budget','from_schedule','trust'),
+  config JSON)
+account_ledger(id, tenant_id, employee_id, date,
+  kind ENUM('target','actual','holiday_credit','absence_credit','overtime_payout',
+            'lieu_taken','manual','carry_over','expiry','correction'),
+  bucket ENUM('balance','overtime_ch_ueberstunden','overtime_ch_ueberzeit','overtime_hu','lieu'),
+  seconds INT, source_type, source_id, period_id, note, created_by,
+  INDEX(tenant_id, employee_id, date), INDEX(tenant_id, period_id))
+account_periods(id, tenant_id, period_start, period_end,
+  status ENUM('open','closing','closed'), checklist JSON,
+  closed_by, closed_at, reopened_by, reopened_at, reopen_reason)
+account_balances(tenant_id, employee_id, period_id, bucket, opening_seconds, closing_seconds,
+  PRIMARY KEY(tenant_id, employee_id, period_id, bucket))
+overtime_rules(id, tenant_id, scope_type, scope_id, threshold_kind, threshold_seconds,
+  cap_seconds NULL, expiry_months NULL, payout_allowed BOOL,
+  premium_pct DECIMAL(5,2) NULL, valid_from, valid_to)
+
+=== PAGE 9 ===
+3.4 Számítási folyamat
+Napi job (éjszaka) + eseményvezérelt újraszámolás
+   1. célidő meghatározása (szerződés + modell + naptár + beosztás)
+   2. tény összegzése (time_entries, kerekítve, ha a szabály úgy szól)
+   3. jóváírások (ünnep, távollét)
+   4. túlóra-bucket besorolás (CH kettős számla, HU éves keret)
+   5. ledger-tételek idempotens upsert (source_type + source_id kulcson)
+   6. riasztás-ellenőrzés (plafon, negatív egyenleg, lejárat)
+3.5 Beállítások
+period_length, closing_checklist[], reopen_requires_second_approver, overtime_expiry, negative_balance_limit,
+credit_rules (ünnep/távollét jóváírás módja: tervezett vs. átlagos nap).
+3.6 Jogosultságok
+accounts.view_own, accounts.view_scope, accounts.adjust, accounts.close_period, accounts.reopen_period.
+3.7 API
+GET  /api/employees/{uuid}/balance?date=&bucket=
+GET  /api/employees/{uuid}/ledger?from=&to=
+POST /api/employees/{uuid}/ledger          {kind:'manual', seconds, note}
+GET  /api/periods?status=
+POST /api/periods/{id}/close               → ellenőrzőlista-eredmény + zárás
+POST /api/periods/{id}/reopen              {reason, second_approver}
+POST /api/recalculate                      {employee_ids[], from, to}   (aszinkron)
+3.8 Események
+Fogyaszt: TimeEntryClosed, AbsenceApproved/Revoked, HolidayCalendarChanged, EmployeeContractChanged,
+ShiftPublished. Kibocsát: LedgerRecalculated, PeriodClosed, PeriodReopened, OvertimeCapApproaching.
+3.9 Élhelyzetek
+Visszamenőleges ünnepnap-változás (pl. utólag felvett kantonális nap) →  érintett napok újraszámolása; zárt
+periódusnál korrekciós tétel.
+Év eleji túlóra-lejárat: expiry tétel a ledgerben, magyarázó szöveggel.
+Év közbeni részmunkaidő-váltás: a célidő a szerződés-verzió szerint napra pontosan vált.
+Kilépés: záró egyenleg, kiﬁzetendő túlóra és maradék szabadság jelentése a bérexportnak.
+3.10 Elfogadási kritériumok
+EK-TA-1: 42 órás CH-szerződés, 47 ledolgozott óra egy héten →  a 45 óráig terjedő rész Überstunden, a 45 feletti
+Überzeit; a két bucket külön jelenik meg.
+EK-TA-2: Zárt periódusra érkező korrekció →  a zárt periódus összege nem változik, a következő nyitott
+periódusban keletkezik correction tétel a forrásra hivatkozva.
+EK-TA-3: Kétszer futtatott újraszámolás →  azonos sorszám és összeg (idempotencia).
+EK-TA-4: HU dolgozó 250 órás kerettel a 225. óránál →  riasztás a vezetőnek, és a beosztás-tervező ﬁgyelmeztet.
+Fázis: F1 (ﬁx modell, ledger), F2 (CH/HU bucketek, zárás), F5 (kiﬁzetés-export).
+
+=== PAGE 10 ===
+4. work_rules – Munkajogi szabálymotor
+4.1 Cél
+Ország- és szerződésfüggő munkajogi korlátok automatikus ellenőrzése rögzítéskor, tervezéskor és záráskor; a sértések
+dokumentálása és indoklása.
+4.2 Szabálykatalógus (paraméterezett)
+Kulcs Ellenőrzés Paraméterek (country packből)
+max_daily_hours Napi max. munkaidő normál / kivételes óraszám, kivétel feltétele
+max_weekly_hours Heti max. óraszám, referenciaidő
+avg_weekly_hours Átlagolás átlag, ablak (DE 24 hét, AT 17 hét, HU keret max. 36 hónap)
+break_required Szünet küszöb →  kötelező perc, több lépcsőben (CH 5,5/7/9 óra)
+daily_rest Napi pihenő óraszám, csökkenthetőség, kompenzáció
+weekly_rest Heti pihenő óraszám, vasárnap-szabály, EUB: 24+11 óra
+night_work Éjszakai munka időablak, max. időtartam, orvosi vizsgálat jelzése
+sunday_holiday_work Vasárnap/ünnep tiltás, engedély-jelölés, helyettesítő pihenőnap határideje
+consecutive_days Egymást követő munkanapok max. nap
+minor_rules Fiatalkorú napi max., éjszakai tilalom, szünet, pihenő, túlóra-tilalom
+maternity_rules Várandós/szoptató opcionális jelölés alapján
+overtime_cap Túlóra-plafon éves/heti korlát, forrás (törvény/KSZ/egyéni)
+4.3 Adatmodell
+rule_overrides(id, tenant_id, scope_type ENUM('tenant','location','team','employee','agreement'),
+  scope_id, rule_key, params JSON, valid_from, valid_to, note, created_by)
+collective_agreements(id, tenant_id NULL, country_code, name, code, rules JSON, valid_from, valid_to)
+recording_modes(id, tenant_id, employee_id, mode ENUM('full','duration_only','waived'),
+  legal_basis VARCHAR(40), evidence_document_id NULL, income_threshold_ok BOOL,
+  annual_review_at DATE NULL, valid_from, valid_to)
+rule_violations(id, tenant_id, employee_id, rule_key, severity ENUM('info','warning','violation'),
+  context ENUM('clock','plan','close','batch'), context_type, context_id, occurred_on DATE,
+  details JSON, status ENUM('open','justified','resolved'), justified_by, justification, resolved_at,
+  INDEX(tenant_id, occurred_on), INDEX(tenant_id, employee_id, rule_key))
+4.4 Futtatási pontok
+Pont Mikor Viselkedés
+clock Blokkoláskor, valós időben Figyelmeztetés a dolgozónak („14 perc múlva kötelező szüneted van"); block módban
+megtagadja a rögzítést
+plan Beosztás mentésekor és publikálás
+előtt
+A tervező listát kap a sértésekről; a publikálás blokkolható
+close Periódus-zárás ellenőrzőlistában Nyitott sértés = ﬁgyelmeztetés vagy zárás-blokk
+batch Éjszakai job Visszamenőleges kiértékelés, riport
+
+=== PAGE 11 ===
+4.5 Feloldási lánc
+country pack (dátumra érvényes verzió) →  régió →  kollektív szerződés-profil →  tenant/telephely felülírás
+(csak szigorítás) →  dolgozói profil (fiatalkorú, várandós, rögzítési mód). Minden eredmény tartalmazza a
+forrás megjelölését („AZG §11 alapján", „ZH kantonális KSZ").
+4.6 API
+POST /api/rules/evaluate        {employee_id, date_from, date_to, context}   → sértéslista
+GET  /api/rule-violations       ?status=&severity=&from=&to=&employee=
+POST /api/rule-violations/{id}/justify   {justification}
+GET  /api/rules/effective       ?employee=&date=     → érvényes paraméterek + forrás
+4.7 Élhelyzetek
+duration_only mód: pihenőidő- és éjszakai szabály nem értékelhető →  info szintű megjegyzés, nem hamis
+violation.
+Átlagolási ablak zárt periódusra nyúlik: az ablak a zárt adatból is dolgozik, de a sértés a nyitott időszakban
+keletkezik.
+Kantonális vagy KSZ-eltérés év közben: verziózott pack →  a régi napok a régi szabállyal maradnak értékelve.
+Blokkoló mód és sürgős munka: vezetői „egyszeri feloldás" kötelező indoklással →  naplózva, riportban
+megjelenik.
+4.8 Elfogadási kritériumok
+EK-WR-1: CH-dolgozó 9,5 órás munkanap szünet nélkül →  break_required sértés „60 perc" elvárással (ArG Art.
+15).
+EK-WR-2: HU ﬁatalkorú 22:30-as műszakkal →  violation, a publikálás blokkolt.
+EK-WR-3: 2026-06-01-i szabályváltozás mellett májusi nap értékelésekor a régi pack-verzió paraméterei
+érvényesek, és ez a sértés részleteiben szerepel.
+EK-WR-4: Indoklás után az indoklás, a szerző és az időbélyeg naplózott; a sértés justified marad (nem
+törölhető).
+Fázis: F2 (CH+HU pack), F4 (tervezési kontroll), F6 (DE/AT pack).
+
+=== PAGE 12 ===
+5. absences – Távollét és szabadság
+5.1 Cél
+Minden nem-munkaidő kezelése: szabadság, betegség, csúsztatás, képzés, egyéb; keretszámítás országszabály szerint,
+igénylés és jóváhagyás, kapcsolat a beosztással és a bérexporttal.
+5.2 Funkciók
+# Funkció Leírás
+AB-
+01
+Távolléttípus-
+katalógus
+Kulcs, név (i18n), ﬁzetett-e, célidő-jóváírás módja, igazolás kell-e, önállóan igényelhető-e, egység (nap/félnap/
+óra), szín, bérelem-leképezés
+AB-
+02
+Keretszámítás CH 4 hét (20 év alatt 5); HU 20 nap + életkor (25 → 21 … 45 → 30) + gyermek (+2/4/7) + fogyatékosság (+5);
+arányosítás belépés/kilépés/részmunkaidő szerint
+AB-
+03
+Igénylés Időszak, félnap/óra, indoklás, csatolmány; ütközés- és minimumlétszám-ellenőrzés
+AB-
+04
+Jóváhagyási lánc 1–N lépés, helyettes jóváhagyó, eszkaláció határidővel
+AB-
+05
+Betegség Bejelentés appból, igazolás feltöltés (titkosítva), határidő-emlékeztető; HU betegszabadság 15 nap 70% →
+utána táppénz-jelölés
+AB-
+06
+Csapatnaptár Havi/éves nézet, szűrés csapatra/telephelyre, iCal-feed token-védetten
+AB-
+07
+Zárolt időszak Szezon, leltár: igénylés tiltva vagy csak felső jóváhagyással
+AB-
+08
+Tömeges kiosztás Céges leállás, kötelező szabadság több dolgozóra
+AB-
+09
+Áthozatal és lejárat Előző évi maradék, lejárati dátum, automatikus lejárat-tétel
+AB-
+10
+Korrekció Manuális keretmódosítás naplózva
+AB-
+11
+Visszavonás Jóváhagyott távollét visszavonása →  ledger és beosztás frissítése
+5.3 Adatmodell
+absence_types(id, tenant_id, key, name_i18n JSON, paid BOOL,
+  credit_mode ENUM('planned','average','none'), unit ENUM('day','half_day','hour'),
+  requires_document BOOL, self_service BOOL, affects_entitlement_type_id NULL,
+  wage_component_key VARCHAR(40) NULL, color, sort, is_active)
+absence_entitlements(id, tenant_id, employee_id, absence_type_id, year,
+  base_days DECIMAL(5,2), extra_days DECIMAL(5,2), carried_over DECIMAL(5,2),
+  carry_expires_on DATE NULL, adjustments DECIMAL(5,2), used_days DECIMAL(5,2),
+  planned_days DECIMAL(5,2), calc_trace JSON,
+  UNIQUE(tenant_id, employee_id, absence_type_id, year))
+absence_requests(id, uuid, tenant_id, employee_id, absence_type_id, starts_on, ends_on,
+  start_half ENUM('full','am','pm'), end_half ENUM('full','am','pm'), hours DECIMAL(5,2) NULL,
+  days_calculated DECIMAL(5,2), day_index_from SMALLINT NULL,
+  status ENUM('draft','pending','approved','rejected','cancelled'),
+  note, document_id NULL, created_by, decided_at, INDEX(tenant_id, starts_on, ends_on))
+approval_steps(id, tenant_id, approvable_type, approvable_id, step_no, approver_user_id,
+  deputy_user_id NULL, status, decided_at, comment, due_at)
+
+=== PAGE 13 ===
+blackout_periods(id, tenant_id, scope_type, scope_id, starts_on, ends_on,
+  mode ENUM('block','escalate'), reason)
+min_staffing_rules(id, tenant_id, scope_type, scope_id, weekday NULL, min_present INT)
+A day_index_from a sorszámozott napú távollétekhez kell (HU apasági szabadság: 1–5. nap 100%, 6–10. nap 40%).
+5.4 Állapotgép – kérelem
+draft ──► pending ──(minden lépés jóváhagyta)──► approved ──(visszavonás)──► cancelled
+             │                                        │
+             └──(elutasítás)──► rejected              └──(zárt periódus)──► locked jelölés
+5.5 Keretszámítás (HU példa, calc_trace tartalommal)
+alap 20 nap
++ életkor (38 év → 26 nap; a tárgyév januárjában betöltött kor szerint)
++ gyermek (2 gyermek 16 év alatt → +4)
++ fogyatékosság (+5, ha jelölt)
+× arányosítás (belépés 03-15 → 10/12 hónap)
++ áthozatal (előző évi 3 nap, lejárat 03-31)
+− felhasznált − tervezett
+= elérhető
+Minden lépés a calc_trace JSON-ban, és a felületen „Hogyan jött ki?" nézetben megjelenik.
+5.6 Jogosultságok
+absences.request_own, absences.view_own, absences.view_scope, absences.approve, absences.manage_types,
+absences.adjust_entitlement, absences.view_documents (egészségügyi adat).
+5.7 API
+GET|POST|PATCH /api/absence-types
+GET  /api/absence-requests ?employee=&status=&from=&to=
+POST /api/absence-requests           {type, starts_on, ends_on, halves, note, document}
+POST /api/absence-requests/{id}/decide   {decision, comment}
+POST /api/absence-requests/{id}/cancel
+GET  /api/absence-calendar ?scope=&month=
+GET  /api/employees/{uuid}/entitlements?year=
+POST /api/employees/{uuid}/entitlements/adjust  {days, reason}
+POST /api/absences/bulk               {employee_ids[], type, range}
+GET  /api/absence-feed/{token}.ics
+5.8 Élhelyzetek
+Igénylés ünnepnapra vagy hétvégére: nem számít bele a napokba; a calc_trace mutatja a kihagyott napokat.
+Beosztott műszakra eső jóváhagyott szabadság: a műszak felszabadul „nyitott műszakként", értesítéssel.
+Visszamenőleges betegség: jóváhagyott szabadság betegségre cserélhető (a keret visszaíródik), naplózva.
+Év végi átfordulás: december 28 – január 3 kérelem két évre bontva számol keretet.
+HU betegszabadság kimerülése: a 15. nap után automatikusan táppénz altípusra vált, jelölve a bérexportnak.
+
+=== PAGE 14 ===
+5.9 Elfogadási kritériumok
+EK-AB-1: 38 éves HU dolgozó két 16 év alatti gyermekkel, teljes év →  keret 26 + 4 = 30 nap, a calc_trace mind a
+négy lépést tartalmazza.
+EK-AB-2: Minimumlétszám 3 fő hétfőre, már 2 jóváhagyott távollét →  a harmadik kérelemnél ﬁgyelmeztetés a
+jóváhagyónak (konﬁgurálhatóan blokkolás).
+EK-AB-3: Jóváhagyott szabadság visszavonásakor a keret, a ledger és a beosztás ugyanabban a tranzakcióban
+frissül.
+EK-AB-4: 15 nap betegszabadság után a 16. beteg nap sick_pay (táppénz) típusú, és a bérexportban külön
+bérelemként jelenik meg.
+Fázis: F1 (alap), F2 (országos keretszabályok), F4 (beosztás-kapcsolat), F6 (dokumentumok).
+
+=== PAGE 15 ===
+6. reports – Riportok és dashboard
+6.1 Cél
+Egyetlen, ellenőrzött számítási forrásból (ledger + time_entries) készülő, exportálható és ütemezhető kimutatások. A
+konkurenciánál visszatérő panasz a pontatlan riport – itt a helyesség a fő követelmény.
+6.2 Standard riportok
+Kulcs Tartalom Felhasználó
+attendance_daily Napi jelenlét, kezdés/vég, szünet, nettó vezető
+timesheet_monthly Havi időlap dolgozónként (PDF, aláírás-mezővel) bérszámfejtő, dolgozó
+balance_overview Egyenlegek, túlóra bucketenként vezető, tulajdonos
+overtime_detail Túlóra napi bontásban, forrás és jogcím bérszámfejtő
+absence_overview Távollétek típusonként, keret és felhasználás HR
+absence_calendar_export Naptár-export XLSX HR
+surcharge_summary Pótlékok jogcímenként bérszámfejtő
+violations Munkajogi sértések, státusz, indoklás tulajdonos, jogi
+late_early Késések, korai távozások ( ⚠  üzemi tanácsi módban korlátozott) vezető
+project_hours Projekt/ügyfél szerinti óra és költség projektvezető
+schedule_coverage Terv vs. tény, lefedetlen műszakok tervező
+labour_cost Bérköltség terv/tény, forgalom-arány tulajdonos
+device_health Terminálok állapota, oﬄine idő admin
+audit_trail Audit-kivonat időszakra, hash-ellenőrzés eredménye tulajdonos, ellenőrzés
+6.3 Funkciók
+# Funkció Leírás
+RP-01 Szűrők Időszak, telephely, csapat, dolgozó, költséghely, típus; mentett nézetek
+RP-02 Export XLSX, CSV, PDF (fejléc, logó, aláírás-mező, oldalszám)
+RP-03 Ütemezés Napi/heti/havi e-mail adott címzetteknek, szűrőkkel; futásnapló
+RP-04 Dashboard Ma bent, kivételek, jóváhagyásra vár, túlóra-plafon közeli, szabadság-igények, sértések
+RP-05 Riportépítő (v2) Mezőválasztás, csoportosítás, összesítés, pivot; megosztás szerepnek
+RP-06 Hatókör-szűrés Csak a felhasználó hatókörébe eső dolgozók; mező-szintű maszkolás (bér)
+RP-07 Reprodukálhatóság A fejléc tartalmazza: generálás ideje, szűrők, adat-verzió, pack-verzió
+6.4 Adatmodell
+report_views(id, tenant_id, user_id NULL, report_key, name, filters JSON, is_shared, shared_role_id)
+report_schedules(id, tenant_id, report_key, filters JSON, cron, format, recipients JSON,
+                 last_run_at, last_status, is_active)
+report_runs(id, tenant_id, report_key, filters JSON, format, row_count, file_path,
+            duration_ms, requested_by, created_at)
+
+=== PAGE 16 ===
+6.5 Technikai megoldás
+Minden riport egy ReportDefinition osztály: key, permission, requiredModules, filtersSchema, query(),
+columns(), formatters().
+A lekérdezés kizárólag a ledgerből és a time_entries-ből dolgozik →  a felület és a riport nem térhet el.
+Nagy exportok háttérfeladatként, letöltési linkkel; sorlimit felett kötelezően aszinkron.
+Regressziós tesztkészlet: fagyasztott dolgozói hónapok elvárt összegekkel; bármely számítási változtatás
+ezeken fut.
+6.6 Elfogadási kritériumok
+EK-RP-1: A timesheet_monthly összege percre azonos a felületen látható havi összeggel és az overtime_detail
+összegével.
+EK-RP-2: Csapatvezető hatókörrel futtatott balance_overview csak a saját csapatot mutatja, a bérmezők
+maszkoltak.
+EK-RP-3: Hibás ütemezett küldésnél hibás státusz a futásnaplóban, újrapróbálkozás, admin-értesítés.
+EK-RP-4: A riport PDF fejléce tartalmazza a szűrőket, a generálás idejét és a szabálycsomag-verziót.
+Fázis: F1 (5 standard riport), F2 (sértés- és audit-riport), F5 (pótlék, bér), F7 (riportépítő).
+
+=== PAGE 17 ===
+7. terminals – Terminálok és eszközök
+7.1 Cél
+Közös, telepített eszköz (tablet) blokkolóállomássá alakítása külön hardver nélkül, több azonosítási móddal és oﬄine
+működéssel.
+7.2 Funkciók
+# Funkció Leírás
+TE-
+01
+Eszköz-párosítás Admin generál 6 jegyű párosítókódot (10 perc érvényes) →  az eszköz eszköztokent kap, telephelyhez kötve
+TE-
+02
+Azonosítási
+módok
+Névlista koppintás, PIN (4–6 jegy), dolgozói QR (forgó kód az appban vagy nyomtatott kártya), NFC/RFID
+kártya
+TE-
+03
+Elrendezések Basic (1 gomb), PIN-pad, három oszlop (be / szünet / ki), brigád-mód
+TE-
+04
+Fotó blokkoláskor Opcionális, tenant-szinten kapcsolható; nem arcfelismerés, megőrzési idővel
+TE-
+05
+Adatvédelmi mód A dolgozó csak a saját adatait látja; nincs listás egyenleg-kijelzés
+TE-
+06
+Oﬄine működés Helyi dolgozó-gyorsítótár (név, PIN-hash, badge-hash), esemény-puﬀer, automatikus szinkron
+TE-
+07
+Eszköz-egészség Utolsó kapcsolat, app-verzió, akkumulátor, puﬀer-méret, óra-eltérés; riasztás X perc oﬄine után
+TE-
+08
+Kioszk-mód Android Lock Task / iPadOS Guided Access; automatikus visszatérés 10 mp után
+TE-
+09
+Visszavonás Eszköztoken azonnali visszavonása, távoli adattörlés a helyi puﬀerből
+TE-
+10
+Kártya-kezelés Badge-UID hozzárendelése, elvesztett kártya letiltása
+7.3 Adatmodell
+devices(id, uuid, tenant_id, location_id, name, kind ENUM('tablet','kiosk','reader'),
+  token_hash, auth_modes JSON, layout ENUM('basic','pin','three_column','crew'),
+  photo_enabled BOOL, privacy_mode BOOL, app_version, battery_pct, buffer_count,
+  clock_offset_ms, last_seen_at, paired_at, paired_by, revoked_at)
+device_pairings(id, tenant_id, code_hash, expires_at, used_at, device_id NULL, created_by)
+employee_badges(id, tenant_id, employee_id, uid_hash, label, issued_at, revoked_at)
+device_logs(id, tenant_id, device_id, level, message, meta JSON, created_at)
+7.4 Biztonság
+Az eszköztoken csak a /api/terminal/* végpontokat éri el, telephelyre szűkítve.
+PIN: hash; eszközön csak hash; 5 hibás próbálkozás →  60 mp zárolás (oﬄine is).
+QR: 30 mp-enként forgó kód az appban; nyomtatott kártyánál statikus, de letiltható.
+Nyers badge_uid nem tárolódik, csak hash.
+
+=== PAGE 18 ===
+7.5 API
+POST /api/devices/pairing-code            (admin)        → {code, expires_at}
+POST /api/terminal/pair                   {code, device_info}  → {token, config}
+GET  /api/terminal/bootstrap              (eszköztoken)  → dolgozók, beállítások
+POST /api/terminal/identify               {method, payload}    → {employee, state}
+POST /api/terminal/clock                  {employee_uuid, type, occurred_at, photo?}
+POST /api/terminal/sync                   {events[]}     (idempotens)
+POST /api/terminal/heartbeat              {battery, version, buffer, clock_offset}
+DELETE /api/devices/{id}                  (visszavonás)
+7.6 Élhelyzetek
+Hálózat nélküli nyitás: a bootstrap-gyorsítótár max. 7 napig érvényes; utána csak rögzít, nevet nem listáz (PIN-
+nel még azonosít).
+Új dolgozó oﬄine időszakban: nem tud blokkolni →  a vezető kézi bejegyzést visz fel.
+Kártya elvesztése: letiltás után a régi UID-hash nem azonosít; a korábbi események érvényesek maradnak.
+Két terminál egy telephelyen: önálló puﬀerek, az események UUID alapján egyesülnek.
+7.7 Elfogadási kritériumok
+EK-TE-1: Oﬄine terminálon keletkezett 40 esemény a hálózat visszatértével pontosan egyszer jelenik meg, eredeti
+időbélyeggel.
+EK-TE-2: Visszavont eszköz szinkronizálási kísérlete 401; a helyi puﬀer feltöltése után törli az adatait.
+EK-TE-3: Adatvédelmi módban blokkoláskor 3 másodpercig csak a saját név és állapot látszik.
+Fázis: F3.
+
+=== PAGE 19 ===
+8. geo – GPS és geofence
+8.1 Cél
+Helyhez kötött igazolás terepi munkánál, a lehető legkevesebb személyes adattal, svájci és DACH adatvédelmi
+elvárásokkal.
+8.2 Funkciók
+# Funkció Leírás
+GE-
+01
+Esemény-pozíció Koordináta csak be/ki/szünet eseménykor; folyamatos követés nincs
+GE-
+02
+Geofence-deﬁníció Telephelyhez, projekthez vagy ügyfélhez: kör vagy poligon
+GE-
+03
+Mód flag / warn / block
+GE-
+04
+Hamis helyadat
+felismerés
+Mock location jelzés, gyanús pontosság, ismétlődő azonos koordináta
+GE-
+05
+Térképnézet Vezetői nézet az esemény pontjaival (OpenStreetMap, külső követés nélkül)
+GE-
+06
+Adatvédelmi kapcsolók Tenant-szintű be/ki; dolgozói tájékoztató elfogadás naplózva; megőrzés után koordináta-törlés, csak a
+geofence_result marad
+GE-
+07
+Célmegjelölés CH ArGV 3 Art. 26 miatt kötelező mező: miért használjuk (biztonság / munkaszervezés)
+8.3 Adatmodell
+geofences(id, tenant_id, owner_type ENUM('location','project','client'), owner_id,
+  shape ENUM('circle','polygon'), center_lat, center_lng, radius_m, polygon JSON,
+  mode ENUM('flag','warn','block'), is_active)
+geo_settings(tenant_id, enabled BOOL, purpose TEXT, retention_days INT DEFAULT 90,
+  notice_version, notice_accepted_required BOOL)
+geo_consents(id, tenant_id, employee_id, notice_version, accepted_at, ip)
+8.4 Élhelyzetek
+Helymeghatározás megtagadva: a blokkolás nem hiúsulhat meg; geofence_result = unknown, jelölve.
+Beltéri pontatlanság: konﬁgurálható tűréshatár; blokkoló módban is csak ﬁgyelmeztet, ha a pontosság rosszabb
+a tűrésnél.
+Üzemi tanácsi mód: térképnézet és helyalapú riport csak külön jogosultsággal, naplózott hozzáféréssel.
+8.5 Elfogadási kritériumok
+EK-GE-1: Kikapcsolt geo modulnál egyetlen API-válasz és export sem tartalmaz koordinátát, és az app nem kér
+helyjogosultságot.
+EK-GE-2: 90 napos megőrzésnél a job után a régebbi események lat/lng mezője NULL, a geofence_result
+változatlan.
+EK-GE-3: block módban a geofence-en kívüli rögzítés megtagadva, magyarázattal és „kérés a vezetőhöz"
+gombbal.
+Fázis: F3.
+
+=== PAGE 20 ===
+9. projects – Projekt- és ügyfélidő
+9.1 Cél
+Munkaidő hozzárendelése ügyfélhez, projekthez, tevékenységhez és költséghelyhez; kiértékelés és számlázás-
+előkészítés.
+9.2 Funkciók
+# Funkció Leírás
+PR-01 Hierarchia Ügyfél →  projekt →  alprojekt →  tevékenység; állapot, felelős, időszak
+PR-02 Hozzárendelés Blokkoláskor vagy utólagos napi elosztással; kötelezővé tehető
+PR-03 Keretek Óra- és összegkeret, riasztás X%-nál, túllépés-jelzés
+PR-04 Óradíjak Dolgozó / szerep / projekt / tevékenység szinten, érvényességgel; belső költség és külső ár külön
+PR-05 Számlázhatóság Számlázható jelölés, jóváhagyási lépés a számlázás előtt
+PR-06 Kiértékelés Projekt-, ügyfél- és dolgozó-riport; terv/tény; fedezet
+PR-07 Munkaigazolás PDF ügyfél-aláírással (a tasks_forms modullal űrlappal kiegészítve)
+PR-08 Export CSV, XLSX; számlázó-integráció (v2: Bexio, Lexware Oﬃce, Számlázz.hu)
+9.3 Adatmodell
+clients(id, tenant_id, name, external_ref, is_active)
+projects(id, tenant_id, client_id NULL, parent_id NULL, code, name, status,
+  starts_on, ends_on, budget_hours, budget_amount, currency, cost_center_id,
+  manager_id, billable_default BOOL)
+activities(id, tenant_id, code, name, billable_default BOOL, wage_relevant BOOL)
+project_members(tenant_id, project_id, employee_id, role)
+rates(id, tenant_id, scope_type ENUM('employee','role','project','activity','project_employee'),
+  scope_id, kind ENUM('cost','price'), amount, currency, valid_from, valid_to)
+A ledolgozott projektidő a time_entries.project_id / activity_id mezőin él (nincs duplikált tábla).
+9.4 Élhelyzetek
+Projekt lezárása nyitott időbejegyzéssel: a zárás ﬁgyelmeztet és átsorolást kér.
+Visszamenőleges óradíj-változás: a rates érvényesség szerint; a lezárt projekt-riport pillanatképe megmarad.
+Kötelező projektválasztás terminálon: a brigád-mód egy projektre blokkol mindenkit.
+9.5 Elfogadási kritériumok
+EK-PR-1: 100 órás keretből 85 óra rögzítve →  riasztás a projektfelelősnek (85% küszöb), sárga jelzés a listában.
+EK-PR-2: 10:00-s tevékenységváltásnál két szakasz keletkezik, a napi nettó összeg változatlan.
+Fázis: F6 (alap projekt-hozzárendelés már F1-ben).
+
+=== PAGE 21 ===
+10. surcharges – Pótlékok
+10.1 Cél
+Törvényi, kollektív szerződéses és céges pótlékok automatikus számítása a rögzített időből, bérelem-bontásban, a
+bérexport számára.
+10.2 Funkciók
+# Funkció Leírás
+SU-01 Szabály-deﬁníció Időablak, naptípus, feltétel (min. időtartam), mérték (% / ﬁx összeg óránként / időjóváírás)
+SU-02 Halmozódás sum / max / prioritás-lista
+SU-03 Szabálykészletek Törvényi (country pack), KSZ-sablon (CH L-GAV Gastro, HU ágazati), céges egyedi; öröklés és felülírás
+SU-04 Túlóra-prémium A time_accounts bucketjeiből: CH 25%, HU 50/100%, DE/AT KSZ szerint
+SU-05 Adó-jelölés DE §3b adómentes határok, CH/HU jelölések; külön bérelem a mentes és adóköteles részre
+SU-06 Részidő-bontás Időablakon átlógó műszak percre pontos bontása (21:00–02:00 →  2 óra normál + 3 óra éjszakai)
+SU-07 Kiértékelés Napi és havi pótlék-riport jogcímenként, exportálható
+SU-08 Szimuláció „Mi lenne, ha" nézet a KSZ-váltás hatásáról egy hónapra
+10.3 Adatmodell
+surcharge_rule_sets(id, tenant_id NULL, country_code NULL, name,
+  source ENUM('law','cba','company'), parent_id NULL, valid_from, valid_to)
+surcharge_rules(id, rule_set_id, key,
+  day_type SET('weekday','saturday','sunday','holiday','special'),
+  time_from TIME NULL, time_to TIME NULL, min_seconds INT NULL,
+  applies_to ENUM('worked','overtime'),
+  rate_type ENUM('percent','amount_per_hour','time_credit'), rate DECIMAL(8,4),
+  stacking ENUM('sum','max'), priority INT, tax_flag VARCHAR(20) NULL,
+  wage_component_key VARCHAR(40))
+surcharge_results(id, tenant_id, employee_id, work_date, time_entry_id NULL, rule_id,
+  seconds INT, amount DECIMAL(10,2) NULL, currency, period_id,
+  INDEX(tenant_id, employee_id, work_date))
+10.4 Számítási sorrend
+1. A nap szakaszainak összegyűjtése (kerekített idő, ha a szabály úgy szól).
+2. Naptípus meghatározása (naptár + kantonális/regionális ünnep).
+3. Szabályok illesztése időablakra, percre bontva.
+4. Halmozódás feloldása (sum / max / prioritás).
+5. Túlóra-prémium hozzáadása a bucketekből.
+6. surcharge_results idempotens upsert (kulcs: dolgozó + nap + szabály).
+10.5 Élhelyzetek
+Éjfélen átnyúló vasárnapi műszak: a vasárnapi pótlék csak a vasárnapra eső percekre jár.
+Kantonális ünnep egy telephelyen: a pótlék csak az adott telephely dolgozóira jár.
+KSZ év közepén változik: verziózott szabálykészlet; a régi napok a régi mértékkel maradnak.
+Órabéres vs. havibéres: az órát és a jogcímet mi szállítjuk, a kiﬁzetést a bérprogram végzi.
+
+=== PAGE 22 ===
+10.6 Elfogadási kritériumok
+EK-SU-1: CH-szabály 23:00–06:00 25%-kal és 21:00–02:00 műszak →  3 óra kap éjszakai pótlékot, 2 óra nem.
+EK-SU-2: Vasárnapi és éjszakai szabály sum halmozódással →  a vasárnap éjjeli óra mindkét jogcímen, külön
+sorokban.
+EK-SU-3: Kétszer futtatott pótlékszámítás nem hoz létre duplikált eredménysort.
+Fázis: F5.
+
+=== PAGE 23 ===
+11. shift_planning – Beosztás
+11.1 Cél
+Műszaktervezés a tényleges kapacitás, a munkajogi korlátok és a távollétek ﬁgyelembevételével, a dolgozók
+bevonásával.
+11.2 Funkciók
+# Funkció Leírás
+SP-
+01
+Nézetek Hét/hónap; dolgozó szerint; pozíció/munkaterület szerint; telephely szerint; nyomtatható
+SP-
+02
+Műszak létrehozás Drag & drop, gyors-sablon, ismétlés, tömeges másolás előző hétről
+SP-
+03
+Sablonok Műszak-sablon (kezdés, vég, szünet, pozíció), heti minta, rotációs minta
+SP-
+04
+Elérhetőség Dolgozói megadás (elérhető / nem elérhető / preferált), ismétlődő és egyedi
+SP-
+05
+Nyitott műszak Publikálás jelentkezésre; jóváhagyással vagy „első jelentkező" módban
+SP-
+06
+Csere és átadás Dolgozó →  dolgozó; a fogadó elfogadja →  vezető jóváhagyja (konﬁgurálható), szabály- és képzettség-
+ellenőrzéssel
+SP-
+07
+Szabálykontroll work_rules a vázlaton: pihenőidő, max. óra, ﬁatalkorú, túlóra-plafon, távollét-ütközés
+SP-
+08
+Publikálás Vázlat →  publikált; diﬀ-alapú értesítés csak az érintetteknek; dolgozói visszaigazolás
+SP-
+09
+Terv vs. tény Késés, korai távozás, hiányzó blokkolás, többletóra a beosztáshoz mérve
+SP-
+10
+Célóra-követés Heti/havi célóra vs. betervezett óra, élő számláló a tervezőben
+SP-
+11
+Naptár-export iCal-feed dolgozónként, PDF nyomtatás csapatra
+SP-
+12
+Címkék és
+megjegyzés
+Műszak-megjegyzés, kötelező eszköz/jármű, helyszín
+SP-
+13
+Publikálási
+bizonyíték
+Minden publikálás és módosítás verziózva, időbélyeggel és értesítés-naplóval – a HU közlési határidők (168/96
+óra) betartásának bizonyítéka
+11.3 Adatmodell
+positions(id, tenant_id, location_id, name, color, required_qualification_ids JSON,
+  default_break_seconds)
+shift_templates(id, tenant_id, location_id NULL, name, start_time, end_time,
+  break_seconds, position_id)
+rotation_patterns(id, tenant_id, name, cycle_days INT, pattern JSON)
+schedules(id, tenant_id, location_id, period_start, period_end,
+  status ENUM('draft','published'), published_at, published_by, version INT)
+shifts(id, uuid, tenant_id, schedule_id, employee_id NULL, position_id, starts_at, ends_at,
+  break_seconds, is_open BOOL, state ENUM('planned','confirmed','cancelled'),
+  note, required_qualification_ids JSON, planned_cost DECIMAL(10,2),
+  INDEX(tenant_id, starts_at), INDEX(tenant_id, employee_id, starts_at))
+shift_applications(id, tenant_id, shift_id, employee_id, status, created_at, decided_by)
+shift_swaps(id, tenant_id, shift_id, from_employee_id, to_employee_id NULL,
+  type ENUM('swap','giveaway'),
+
+=== PAGE 24 ===
+  status ENUM('pending_peer','pending_manager','approved','rejected','cancelled'),
+  counter_shift_id NULL, decided_by, decided_at)
+availabilities(id, tenant_id, employee_id, weekday TINYINT NULL, date DATE NULL,
+  time_from, time_to, kind ENUM('available','unavailable','preferred'), note)
+shift_acknowledgements(tenant_id, shift_id, employee_id, acknowledged_at)
+11.4 Állapotgép – csere
+pending_peer ──(kolléga elfogad)──► pending_manager ──(jóváhagy)──► approved
+     │                                    │
+     └──(elutasít / lejár)──► rejected    └──(elutasít)──► rejected
+Ha a tenant kikapcsolja a vezetői jóváhagyást: pending_peer → approved.
+11.5 Beállítások
+publish_notice_days (HU: legalább 7 nap / 168 óra, módosítás legkésőbb 96 órával a kezdés előtt – a country packből,
+ﬁgyelmeztetéssel vagy blokkolással), swap_requires_manager, open_shift_mode (apply / first_come), visibility,
+conflict_policy (warn / block), auto_confirm_on_publish.
+11.6 API
+GET  /api/schedules?location=&from=&to=
+POST /api/schedules                      {location_id, period}
+POST /api/schedules/{id}/validate        → szabálysértések, ütközések, célóra-eltérés
+POST /api/schedules/{id}/publish         → diff + értesítések
+GET|POST|PATCH|DELETE /api/shifts
+POST /api/shifts/{id}/apply
+POST /api/shifts/{id}/swap               {to_employee_id?, type}
+POST /api/swaps/{id}/decide              {decision}
+POST /api/shifts/{id}/acknowledge
+GET|POST /api/availabilities
+GET  /api/schedules/{id}/pdf | /api/shift-feed/{token}.ics
+11.7 Események
+Kibocsát: ShiftPublished, ShiftAssigned, ShiftSwapApproved, ShiftCancelled. Fogyaszt: AbsenceApproved,
+QualificationExpired, RuleViolationDetected.
+11.8 Élhelyzetek
+Publikálás után jóváhagyott szabadság: a műszak automatikusan nyitottá válik (konﬁgurálható), a tervező
+értesítést kap.
+Éjszakai műszak időszámítás-váltáskor: a tényleges hossz 23 vagy 25 óra lehet; a tervezett hossz a valós helyi
+időt követi.
+Törölt műszak, amelyre már blokkoltak: a tény megmarad, a terv törlődik, a riport eltérést mutat.
+Hó közbeni kilépés: a jövőbeli műszakok nyitottá válnak a kilépés napjától.
+11.9 Elfogadási kritériumok
+EK-SP-1: 22:00–06:00 műszak után másnap 08:00-s műszak →  daily_rest sértés (11 óra); a mentés a beállítás
+szerint blokkolva vagy megjelölve.
+EK-SP-2: Publikált beosztásban 3 műszak változásakor csak a 3 érintett dolgozó kap értesítést, a változás előtti
+és utáni időponttal.
+
+=== PAGE 25 ===
+EK-SP-3: Jóváhagyott cserénél a két műszak tulajdonosa felcserélődik, mindkét célóra-számláló frissül, az
+esemény auditált.
+Fázis: F4.
+
+=== PAGE 26 ===
+12. shift_auto – Automatikus beosztás (prémium)
+12.1 Cél
+Igényvezérelt műszak-kiosztás javaslata, amit a tervező elfogad vagy módosít. Sosem publikál automatikusan.
+12.2 Funkciók
+# Funkció Leírás
+SA-
+01
+Igény-deﬁníció Pozíciónként, időintervallumonként létszámigény (sablonozható)
+SA-
+02
+Igény-előrejelzés Történeti forgalom/óra (POS- vagy CSV-import) + hét napja + ünnep + szezon →  javasolt igénygörbe
+SA-
+03
+Kiosztó motor Kemény korlátok: jogszabály, távollét, elérhetőség, képzettség, max. óra, kilépés. Puha: preferencia, egyenletes
+terhelés, célóra, költség
+SA-
+04
+Futtatás Háttérfeladat időkorláttal; több változat („olcsóbb" / „kiegyensúlyozottabb")
+SA-
+05
+Magyarázat Kiosztásonként: miért ő, mely szabályok zárták ki a többieket
+SA-
+06
+Emberi
+jóváhagyás
+Az eredmény vázlat; publikálni csak ember tud
+SA-
+07
+AI Act-
+megfelelés
+Futásnapló (bemenet, paraméterek, kimenet), felülvizsgálat, dolgozói tájékoztató, kikapcsolhatóság
+12.3 Adatmodell
+staffing_demands(id, tenant_id, location_id, position_id, starts_at, ends_at,
+  required_count INT, source ENUM('manual','template','forecast'), forecast_run_id NULL)
+revenue_inputs(id, tenant_id, location_id, date, hour TINYINT NULL, amount, currency, source)
+forecast_runs(id, tenant_id, location_id, period, model ENUM('seasonal_avg','regression'),
+  params JSON, output JSON, created_at)
+auto_schedule_runs(id, tenant_id, schedule_id, params JSON,
+  status ENUM('queued','running','done','failed'), score JSON, explanation JSON,
+  result_shifts JSON, started_at, finished_at, created_by)
+12.4 Algoritmus (v1)
+1. Igény →  műszak-slotok generálása.
+2. Jelöltszűrés slotonként (kemény korlátok).
+3. Greedy kiosztás a legkevesebb jelölttel rendelkező slottól.
+4. Helyi keresés (csere, áthelyezés) a puha pontszám javítására, időkorláttal.
+5. Pontszám és magyarázat mentése; vázlat létrehozása.
+v2: külső megoldó (OR-Tools) ugyanazon a JSON-szerződésen.
+12.5 Elfogadási kritériumok
+EK-SA-1: Előző nap 22:00-ig dolgozó munkatársat a motor nem oszt be másnap 06:00-ra; a magyarázatban
+daily_rest indok szerepel.
+EK-SA-2: A futás befejeztével a beosztás draft marad; publikálás csak emberi művelettel.
+EK-SA-3: Minden futásról naplóbejegyzés készül a bemenettel és paraméterekkel, 12 hónapig visszakereshetően.
+
+=== PAGE 27 ===
+Fázis: F7.
+
+=== PAGE 28 ===
+13. labor_cost – Bérköltség-tervezés
+13.1 Cél
+A beosztás pénzügyi következményének azonnali láttatása: tervezett bérköltség, bérköltség-arány a forgalomhoz,
+terv/tény eltérés.
+13.2 Funkciók
+# Funkció Leírás
+LC-01 Költségalap Óradíj vagy havi bérből számított óradíj; munkáltatói járulék-szorzó országonként – becslés, nem bérszámfejtés
+LC-02 Tervezett költség Műszakonként, naponként, pozíciónként, telephelyenként; pótlékokkal, ha a surcharges aktív
+LC-03 Forgalom-bevitel Kézi napi/órás forgalom vagy import (CSV, később POS-connector)
+LC-04 Bérköltség-arány Terv és tény %-ban, célérték és közlekedési lámpa telephelyenként
+LC-05 Keret Heti/havi bérköltség-keret, túllépés-ﬁgyelmeztetés a tervezőben
+LC-06 Riport Terv/tény költség, órabér-összetétel, pozíció szerinti megoszlás
+13.3 Adatmodell
+cost_factors(id, tenant_id, country_code, name, employer_cost_pct DECIMAL(5,2),
+  valid_from, valid_to)
+labour_budgets(id, tenant_id, location_id, period_start, period_end, amount, target_ratio_pct)
+13.4 Elfogadási kritériumok
+EK-LC-1: 20 000 CHF tervezett heti forgalom és 6 000 CHF tervezett bérköltség →  30,0% arány; 28%-os célérték
+mellett sárga (tűrés ±2%), 35%-nál piros.
+EK-LC-2: Drágább dolgozóra áthúzott műszaknál a tervezett költség és az arány azonnal frissül (mentés előtt is).
+Fázis: F4–F5.
+
+=== PAGE 29 ===
+14. qualifications – Képzettségek és lejáratok
+14.1 Cél
+Ki mit végezhet: képesítések, kötelező oktatások és lejáratuk kezelése, beosztási feltételként.
+14.2 Funkciók
+# Funkció Leírás
+QU-01 Katalógus Képesítés (név, leírás, érvényesség hossza, kötelező ismétlés, kiállító)
+QU-02 Hozzárendelés Dolgozóhoz: megszerzés dátuma, lejárat, dokumentum-csatolmány
+QU-03 Lejárat-ﬁgyelés Emlékeztető 90/30/7 nap előtt, lejárt állapot jelzése
+QU-04 Pozíció-követelmény A pozíció megköveteli X képesítést →  a beosztás ﬁgyelmeztet vagy tilt
+QU-05 Riport Mátrix: dolgozó × képesítés, lejáró tételek, hiányok
+QU-06 Oktatás-igazolás Ellenőrzőlista/aláírás (ha tasks_forms aktív)
+14.3 Adatmodell
+qualifications(id, tenant_id, key, name, validity_months NULL, requires_renewal BOOL, issuer)
+employee_qualifications(id, tenant_id, employee_id, qualification_id, obtained_on,
+  expires_on NULL, document_id NULL, status ENUM('valid','expiring','expired','revoked'))
+14.4 Elfogadási kritériumok
+EK-QU-1: Lejárt képesítést megkövetelő pozícióra osztásnál ﬁgyelmeztetés (vagy tiltás) a lejárat dátumával.
+EK-QU-2: 30 nappal a lejárat előtt a dolgozó és a vezető is értesítést kap; a képesítés expiring állapotba kerül.
+Fázis: F4.
+
+=== PAGE 30 ===
+15. hr_records – Személyi akta
+15.1 Cél
+A dolgozói dokumentumok egy helyen, lejárat-ﬁgyeléssel, szigorú jogosultsággal és országonkénti megőrzési szabállyal.
+(Nem HR-suite: nincs toborzás és teljesítményértékelés a v1-ben.)
+15.2 Funkciók
+# Funkció Leírás
+HR-
+01
+Dokumentumtár Kategóriák (szerződés, bérdokumentum, igazolás, képzés, egészségügyi, egyéb) kategóriánkénti
+jogosultsággal
+HR-
+02
+Lejárat-ﬁgyelés Engedélyek, orvosi alkalmassági, jogosítvány, képesítés
+HR-
+03
+Sablon →  PDF Változókkal; szerződés-, igazolás- és ﬁgyelmeztetés-sablonok
+HR-
+04
+E-aláírás Egyszerű elektronikus aláírás (azonosítás, IP, időbélyeg, hash, PDF-be ágyazott bizonyíték); több aláíró
+sorrendben; minősített aláírás v2
+HR-
+05
+On/oﬀboarding Ellenőrzőlista sablonból, felelős és határidő
+HR-
+06
+Történet Szerződés-, pozíció- és bérváltozás idővonalon
+HR-
+07
+Megőrzés Országonkénti proﬁl (CH: munkaidő-adat 5 év; HU: 3–8 év), törlésre jelölés jóváhagyással
+HR-
+08
+Dolgozói
+önkiszolgálás
+Saját dokumentumok megtekintése, letöltése, feltöltése
+15.3 Adatmodell
+documents(id, uuid, tenant_id, owner_type ENUM('employee','tenant','location'), owner_id,
+  category, name, path, mime, size, encrypted BOOL, checksum,
+  visibility ENUM('employee','manager','hr','owner'), valid_from, expires_on NULL,
+  retention_until DATE NULL, uploaded_by, created_at)
+document_templates(id, tenant_id, key, name, locale, body_html, variables JSON, category)
+signature_requests(id, tenant_id, document_id, signer_type ENUM('employee','manager','external'),
+  signer_id, signer_email, order_no, status ENUM('pending','signed','declined','expired'),
+  token_hash, signed_at, ip, evidence JSON)
+onboarding_checklists(id, tenant_id, employee_id, template_id, status)
+onboarding_items(id, checklist_id, title, assignee_user_id, due_on, done_at, done_by)
+15.4 Biztonság
+Egészségügyi dokumentum külön kategória, csak absences.view_documents vagy hr.view_health joggal; minden
+megtekintés naplózva.
+Fájlok titkosítva; letöltés rövid életű aláírt URL-lel.
+Vírusellenőrzés feltöltéskor, típus- és méretkorlát.
+15.5 Elfogadási kritériumok
+EK-HR-1: 30 nap múlva lejáró munkavállalási engedélynél a HR és a vezető emlékeztetőt kap, a dolgozólistán
+jelölés jelenik meg.
+
+=== PAGE 31 ===
+EK-HR-2: Két aláírós szerződésnél az első aláírás után a második értesítést kap; a PDF mindkét aláírás bizonyíték-
+adatait tartalmazza.
+EK-HR-3: Egészségügyi dokumentum megnyitása csapatvezetőként 403, és a kísérlet naplózva.
+Fázis: F6.
+
+=== PAGE 32 ===
+16. expenses – Költségtérítés
+16.1 Cél
+Kiküldetés, napidíj, kilométer és tételes költség rögzítése a munkaidő mellé, jóváhagyással, a bérexport számára külön
+bérelemként.
+16.2 Funkciók
+# Funkció Leírás
+EX-01 Kiküldetés Kezdés/vég, cél (ország, város), projekt/ügyfél; a munkaidőből is származtatható
+EX-02 Napidíj Országos ráta-tábla (country pack, évenként); CH: gyakran céges átalány vagy tényleges költség
+EX-03 Kilométer Jármű-típusonkénti ráta, indulás–érkezés, opcionális térképes távolság
+EX-04 Tételes költség Kategória, összeg, pénznem, ÁFA, bizonylatfotó; devizaváltás a nap árfolyamán
+EX-05 Jóváhagyás Vezetői és pénzügyi lépés; visszaküldés javításra
+EX-06 Export Bérexport (adómentes/adóköteles bontásban) és könyvelési export
+16.3 Adatmodell
+trips(id, tenant_id, employee_id, starts_at, ends_at, country_code, destination,
+  project_id NULL, purpose, status, per_diem_amount, currency)
+expense_items(id, tenant_id, employee_id, trip_id NULL, date, category,
+  amount, currency, vat_amount, exchange_rate, amount_base, receipt_document_id,
+  km DECIMAL(7,1) NULL, vehicle_type NULL, status, approved_by, approved_at,
+  wage_component_key NULL, taxable BOOL)
+per_diem_rates(id, country_code, year, destination_country_code, full_day, partial_day,
+  overnight, currency)
+mileage_rates(id, tenant_id NULL, country_code, vehicle_type, rate, currency, valid_from)
+16.4 Elfogadási kritériumok
+EK-EX-1: 2 napos külföldi kiküldetésnél a napidíj a country pack rátáiból automatikusan számítódik, a számítás
+lépései láthatók.
+EK-EX-2: EUR-ban rögzített költség CHF-es tenantnál eredeti devizában és átváltva is látszik, az árfolyam
+forrásával.
+Fázis: F6.
+
+=== PAGE 33 ===
+17. tasks_forms – Feladatok, ellenőrzőlisták, űrlapok
+17.1 Cél
+A munkavégzés dokumentálása: műszakhoz kötött feladatok, fotós és aláírásos ellenőrzőlisták, munkalapok. (Ez a modul
+a későbbi MyTraceability-kapcsolódás természetes helye, de most nincs integráció.)
+17.2 Funkciók
+# Funkció Leírás
+TF-
+01
+Feladat Cím, leírás, felelős, határidő, ismétlődés, prioritás, csatolmány
+TF-
+02
+Műszakhoz
+kötés
+A műszak kezdetén megjelenő feladatlista; elvégzés jelölése terminálon vagy appban
+TF-
+03
+Űrlapépítő Mezőtípusok: szöveg, szám, érték + mértékegység (pl. hőmérséklet), igen/nem, választó, dátum, fotó/videó,
+aláírás, ügyfél-aláírás
+TF-
+04
+Feltételes logika Mező megjelenítése előző válasz alapján; kötelező mezők; határérték-ellenőrzés
+TF-
+05
+Verziózás Az űrlap verziózott; a kitöltés a verzióhoz kötött
+TF-
+06
+Oﬄine kitöltés Mobilon oﬄine, fotókkal; szinkron visszatéréskor
+TF-
+07
+Kimenet PDF (kitöltés + fotók + aláírás), XLSX-export, riport
+TF-
+08
+Eltérés-kezelés Határértéken kívüli érték →  jelölt kitöltés, értesítés, kötelező megjegyzés
+17.3 Adatmodell
+tasks(id, tenant_id, title, description, assignee_type, assignee_id, location_id NULL,
+  shift_id NULL, due_at, recurrence JSON, priority, status, completed_at, completed_by)
+forms(id, tenant_id, key, name, category, is_active)
+form_versions(id, form_id, version, schema JSON, published_at, published_by)
+form_submissions(id, uuid, tenant_id, form_version_id, employee_id, shift_id NULL, location_id,
+  data JSON, attachments JSON, signature_paths JSON, submitted_at, device_id NULL,
+  status ENUM('ok','flagged'), flags JSON, pdf_path)
+17.4 Elfogadási kritériumok
+EK-TF-1: 0–8 °C határértékű hőmérséklet-mezőnél 11 °C esetén a kitöltés flagged, kötelező megjegyzés, a felelős
+értesítést kap.
+EK-TF-2: Oﬄine kitöltés 3 fotóval a hálózat visszatértével egyszer töltődik fel, a PDF tartalmazza mindet.
+Fázis: F6.
+
+=== PAGE 34 ===
+18. communication – Kommunikáció
+18.1 Cél
+Célzott tájékoztatás a dolgozóknak, olvasási visszaigazolással; a v2-ben chat.
+18.2 Funkciók
+# Funkció Leírás
+CM-01 Bejegyzés (broadcast) Célzás: cég, telephely, csapat, pozíció, egyedi lista; ütemezett közzététel, lejárat
+CM-02 Olvasási visszaigazolás Kötelező elolvasás jelölés, ki olvasta / ki nem – riport
+CM-03 Csatolmány PDF, kép; letöltés naplózva, ha érzékeny
+CM-04 Push és e-mail Csatorna-preferencia szerint; csendes idő beállítható (nincs push 20:00–07:00 között, kivéve sürgős)
+CM-05 Chat (v2) 1:1 és csoport, csapat- és műszak-alapú csoportok; moderálás, megőrzési idő
+CM-06 Sablonok Visszatérő közlemények
+18.3 Adatmodell
+posts(id, tenant_id, author_user_id, title, body, audience JSON, requires_ack BOOL,
+  publish_at, expires_at, attachments JSON, status)
+post_reads(tenant_id, post_id, employee_id, read_at, acknowledged_at)
+conversations(id, tenant_id, kind ENUM('direct','group','shift'), subject, created_by)
+messages(id, tenant_id, conversation_id, sender_employee_id, body, attachments JSON,
+  sent_at, edited_at)
+18.4 Elfogadási kritériumok
+EK-CM-1: Kötelező elolvasásra jelölt, „konyha" pozícióra célzott bejegyzést csak az érintettek kapják; a riport
+mutatja, ki nem igazolta vissza 48 óra után.
+EK-CM-2: 20:00–07:00 csendes idő mellett a 21:00-kor közzétett bejegyzés pushja reggel 07:00-kor kézbesül
+(kivéve „sürgős" jelölés).
+Fázis: F6 (broadcast), F7 (chat).
+
+=== PAGE 35 ===
+19. api_webhooks – Publikus API és webhookok
+19.1 Cél
+A tenant saját rendszereinek és partnereinek integrációja: adatolvasás és -írás, eseményértesítés.
+19.2 Funkciók
+# Funkció Leírás
+AP-01 OAuth2 kliens Tenantonként; client_credentials; hatókörök modulonként és műveletenként
+AP-02 REST v1 Verziózott, OpenAPI-dokumentált; lapozás, szűrés, mezőválasztás; rate limit tervenként
+AP-03 Webhook Előﬁzetés eseménytípusra; HMAC-SHA256 aláírás; újrapróbálkozás; kézbesítési napló
+AP-04 Idempotencia Idempotency-Key minden írási végponton
+AP-05 Sandbox Külön teszt-tenant, generált mintaadattal
+AP-06 MCP-szerver A publikus API fölött Model Context Protocol végpont a tenant AI-ágenseinek, hatókör-korlátozottan
+AP-07 Naplózás API-hívás-statisztika, hibaarány, lassú végpontok
+19.3 Adatmodell
+api_clients(id, tenant_id, name, client_id, client_secret_hash, scopes JSON, is_active, created_by)
+api_tokens(id, tenant_id, client_id, token_hash, scopes JSON, expires_at, last_used_at)
+webhook_subscriptions(id, tenant_id, url, events JSON, secret_hash, is_active, failure_count)
+webhook_deliveries(id, tenant_id, subscription_id, event, payload JSON, status_code,
+  attempt, next_retry_at, delivered_at, response_excerpt)
+api_request_logs(id, tenant_id, client_id, method, path, status, duration_ms, created_at)
+19.4 Eseménykatalógus (v1)
+employee.created|updated|left, time_entry.closed|changed, absence.requested|approved|rejected,
+shift.published|assigned|swapped, period.closed, payroll_run.completed, rule_violation.detected,
+device.offline.
+19.5 Elfogadási kritériumok
+EK-AP-1: Lejárt token →  401 token_expired, tenant-adat szivárgása nélkül.
+EK-AP-2: Háromszor 500-at adó webhook-végpontnál újrapróbálkozás 1/5/30 perc után, majd failure_count
+növelés és admin-értesítés.
+EK-AP-3: time:read hatókörű token távollét-lekérdezésre 403 insufficient_scope.
+Fázis: F7 (belső API már F5-ben).
+
+=== PAGE 36 ===
+20. sso – SSO és felhasználó-provisioning (enterprise)
+# Funkció Leírás
+SS-01 SAML 2.0 / OIDC Azure Entra ID, Google Workspace, generikus IdP; tenantonkénti konﬁguráció, teszt-bejelentkezés
+SS-02 JIT provisioning Első belépéskor felhasználó létrehozás szerep-leképezéssel (IdP-csoport →  szerep)
+SS-03 SCIM 2.0 Felhasználó és csoport szinkron (létrehozás, módosítás, deaktiválás)
+SS-04 Kényszerített SSO Jelszavas belépés tiltása, kivéve a megjelölt vészhelyzeti ﬁókot
+SS-05 Naplózás Belépések, provisioning-események auditban
+Adatmodell: sso_configs(tenant_id, protocol, metadata, certificate, attribute_map JSON, enforce BOOL,
+break_glass_user_id), scim_tokens(...).
+EK-SS-1: Kényszerített SSO mellett a jelszavas belépés az IdP-hez irányít; a vészhelyzeti ﬁók belépése riasztást generál.
+Fázis: F7.
+
+=== PAGE 37 ===
+21. ai_assist – AI-asszisztens (prémium)
+21.1 Cél
+Idő- és kockázat-megtakarítás anomália-jelzéssel, javaslatokkal és természetes nyelvű lekérdezéssel – szigorú
+adatvédelmi és EU AI Act-korlátok között.
+21.2 Funkciók
+# Funkció Leírás
+AI-
+01
+Anomália-jelzés Szokatlan blokkolási minta, gyanús korrekció-sorozat, kiugró túlóra, ismétlődő hiányzó kiblokkolás
+AI-
+02
+Természetes nyelvű riport A riport-motor futtatása kérdésből; nem szabad szöveges generálás számokra
+AI-
+03
+Beosztás-javaslat
+magyarázattal
+A shift_auto kiegészítése szöveges indoklással
+AI-
+04
+Dokumentum-összefoglaló Szabályzatok, KSZ-kivonatok összefoglalása forrás-hivatkozással
+AI-
+05
+Korlátok Csak tenant-hatókörön belül; nincs viselkedés- vagy érzelemelemzés; a teljesítményértékelés tiltott
+felhasználás
+AI-
+06
+AI Act-megfelelés Naplózás, emberi felülvizsgálat, dolgozói tájékoztató, kikapcsolhatóság
+AI-
+07
+Futtatási hely EU/CH régióban futó vagy helyi modell; a tenant látja, melyik
+Adatmodell: ai_runs(id, tenant_id, feature, input_summary, model, version, output_summary, reviewed_by,
+created_at), ai_settings(tenant_id, enabled_features JSON, region, notice_version).
+EK-AI-1: Számot tartalmazó válasz a riport-motor eredményéből származik, és tartalmazza a futtatott riport nevét és
+szűrőit. EK-AI-2: Kikapcsolt ai_assist mellett semmilyen tenant-adat nem kerül modell-hívásba, és ez naplóból
+igazolható.
+Fázis: F7.
+
+=== PAGE 38 ===
+22. Platform-modulok (superadmin, számlázás)
+22.1 platform_admin – Superadmin
+# Funkció Leírás
+PA-
+01
+Tenant-kezelés Létrehozás, felfüggesztés, próbaidő-hosszabbítás, csomag- és modul-felülírás, törlés/anonimizálás, export
+PA-
+02
+Országkezelés Ország aktiválása, country pack-verziók, ünnepnap-import, árlista, jogi dokumentumok
+PA-
+03
+Modul-vezérlés Globális ki/be (vészkapcsoló), béta-modul allowlist, használati statisztika
+PA-
+04
+Megszemélyesítés Indoklás + időkorlát (30 perc); tenant-beállítás: kell-e előzetes engedély; kettős audit; érzékeny mezők
+maszkolva
+PA-
+05
+Számlázás-
+áttekintés
+Előﬁzetések, számlák, sikertelen ﬁzetések, dunning, MRR országonként
+PA-
+06
+Rendszer-egészség Queue-késés, hibaarány, terminál-ﬂotta, mobil-verzió eloszlás, karbantartási mód
+PA-
+07
+Megfelelés Audit-keresés, adatvédelmi kérelmek, alfeldolgozói lista, megőrzési futások
+PA-
+08
+Support-eszközök Tenant-napló, hibajegy-hivatkozás, jogosultság-magyarázó diagnosztika
+Biztonság: külön platform_users tábla és guard, kötelező 2FA, opcionális IP-allowlist, rövid munkamenet, teljes
+naplózás. Platform-szerepek: owner, support, billing, compliance, read_only.
+EK-PA-1: Megszemélyesítés alatt állandó ﬁgyelmeztető sáv, a tenant auditjában „X nevében Y" bejegyzés, a bér- és
+egészségügyi mezők maszkolva. EK-PA-2: Globálisan kikapcsolt modulnál minden érintett tenantnál 403
+module_disabled, a menüpont eltűnik – adatvesztés nélkül.
+22.2 billing – Előﬁzetés és számlázás
+# Funkció Leírás
+BI-
+01
+Csomagok és add-
+onok
+Csomag-modul mátrix, add-on árazás, országonkénti árlista (CHF/HUF/EUR)
+BI-
+02
+Számlázási egység Hónapban aktív dolgozó; minimumdíj (pl. 5 fő)
+BI-
+03
+Életciklus trial → active → renewal_pending → payment_failed → grace_period → expired →
+archived
+BI-
+04
+Lejárat-viselkedés Írásvédett mód, de a blokkolás továbbra is működik (jogi kötelezettség); új dolgozó, beosztás-publikálás,
+beállítás-módosítás tiltott
+BI-
+05
+Fizetés PaymentProvider interfész: CH →  Datatrans (TWINT, kártya) + QR-számla; HU/EU →  Stripe + átutalás
+BI-
+06
+Számla Országos ÁFA (CH MWST 8,1%, HU 27%, EU B2B fordított adózás), PDF, sorszámozás
+BI-
+07
+Pro-rata Modul- és csomagváltás arányos elszámolása
+BI-
+08
+Önkiszolgáló Csomagváltás, add-on ki/be, számlatörténet, ﬁzetési mód csere, lemondás
+EK-BI-1: 12 aktív dolgozó és 5 fős minimum mellett a számla 12 főre szól. EK-BI-2: Lejárt előﬁzetésnél a dolgozói
+blokkolás sikeres; új dolgozó felvétele 402 subscription_required. EK-BI-3: Hó közbeni modul-bekapcsolás arányos
+tételként jelenik meg a következő számlán.
+
+=== PAGE 39 ===
+Fázis: F1 (trial), F2 (ﬁzetős CH), F5 (HU árlista).
+
+=== PAGE 40 ===
+23. Modulok és fázisok összefoglalása
+Fázis Modulok Kimenet
+F0 platform-váz, core alapok, ModuleRegistry, tenancy, superadmin-váz, country pack loader
+(CH)
+Izolált, moduláris alap
+F1 core, time_tracking, time_accounts (ﬁx modell), absences (alap), reports (5
+riport), billing (trial)
+Használható MVP egy CH pilot-
+ügyfélnek
+F2 work_rules (CH+HU), hash-lánc, időlap-aláírás, periódus-zárás, megőrzés, ﬁzetős indulás Megfelelés = fő diﬀerenciátor
+F3 terminals, geo, Capacitor dolgozói app, oﬄine szinkron Terepi és üzemi használat
+F4 shift_planning, qualifications, labor_cost (alap) Vendéglátás/kiskereskedelem-kész
+F5 surcharges, payroll (CH exportok, majd HU), riport-bővítés Könyvelői munkafolyamat zárva
+F6 projects, hr_records, expenses, tasks_forms, communication „Business" csomag
+F7 shift_auto, api_webhooks, sso, ai_assist, riportépítő „Enterprise" csomag
+
+=== PAGE 41 ===
+24. Modulok közötti szerződések
+Interfész Szolgáltató Fogyasztó Null-
+implementáció
+AbsenceCalendar::isAbsent(employee, date) absences shift_planning, time_accounts,
+work_rules
+mindig false
+HolidayCalendar::isHoliday(location, date) core minden számítás csak országos
+naptár
+RuleEngine::evaluate(context) work_rules time_tracking, shift_planning,
+time_accounts
+üres sértéslista
+SurchargeCalculator::forDay(employee, date) surcharges payroll, reports üres eredmény
+ScheduleProvider::plannedShifts(employee, range) shift_planning time_tracking, time_accounts üres lista
+QualificationChecker::has(employee, qualification,
+date)
+qualiﬁcations shift_planning mindig true
+CostCalculator::plannedCost(shift) labor_cost shift_planning null
+LedgerReader::balance(employee, date, bucket) time_accounts reports, payroll, absences 0
+PayrollExporter::export(period, profile) payroll billing, reports nem elérhető
+
+=== PAGE 42 ===
+25. payroll – Bérexport (CH + HU)
+Alapelv: saját bérszámfejtést nem építünk. A modul feladata, hogy a hónap zárása után a bérszámfejtő program
+vagy a könyvelőiroda hibátlanul beolvasható állományt kapjon. A bérszámítás, a levonások és a bevallások a
+bérprogramé.
+25.1 Cél és hatókör
+Bent van: havi zárás és ellenőrzés, kanonikus bérelem-adathalmaz előállítása, leképezés az ügyfél bérprogramjának
+kódjaira, exportálók, szállítás, korrekciós export, naplózás.
+Nincs bent: bruttó-nettó számítás, levonások, járulékok, bérjegyzék, hatósági bevallás (CH: ELM/Swissdec-küldés; HU:
+havi bevallás), utalás.
+25.2 Két kulcsfontosságú kutatási megállapítás
+1. Svájcban nincs szabvány a munkaidő-adat bérprogramba importálására. A Swissdec három szabványa (ELM
+bérbejelentés a hatóságoknak és biztosítóknak, KLE kárügyintézés, SUA hitelesítés) mind kimenő irányú, a
+bérszámfejtés után. Nem szabad „Swissdec XML exportot" építeni – a mi adatirányunkra nem létezik. Amiért
+mégis fontos: a Swissdec tanúsított gyártói lista adja a célrendszerek listáját, és a bérelem-attribútumok
+(AHV/ALV/UVG/BVG/QSt kötelezettség, Lohnausweis-pozíció, LSE-statisztika) adják a szemantikát.
+2. Nincs kötelező országos bérelem-számozás sem CH-ban, sem HU-ban. Minden bérprogramnak és ügyfélnek
+saját kódrendszere van. Ezért a modul magja egy ügyfelenként konﬁgurálható leképezési tábla, és a nem
+leképezett tétel kemény hiba, nem csendes elnyelés (a csendes elnyelés a gyakorlatban a pótlékok eltűnését
+okozza).
+25.3 Architektúra
+account_periods (zárt hónap)
+        │
+        ▼
+┌─────────────────────────────┐
+│ 1. PayrollDataset builder   │  kanonikus, gyártó-független adathalmaz
+│    - dolgozó törzs          │  (header + movement lines + absences + balances)
+│    - mozgás (óra/nap/összeg)│
+│    - távollét, pótlék       │
+└─────────────┬───────────────┘
+              ▼
+┌─────────────────────────────┐
+│ 2. MappingEngine            │  belső bérelem-kulcs → ügyfél jogcímkód
+│    - hiányzó leképezés = HIBA
+└─────────────┬───────────────┘
+              ▼
+┌─────────────────────────────┐
+│ 3. Exporter (gyártónként)   │  CSV / XLSX / TXT / XML / REST
+└─────────────┬───────────────┘
+              ▼
+┌─────────────────────────────┐
+│ 4. Delivery                 │  letöltés · e-mail a könyvelőnek · SFTP · API-push
+└─────────────┬───────────────┘
+              ▼
+   payroll_runs napló + ellenőrző összegek + újraexportálhatóság
+
+=== PAGE 43 ===
+25.4 Kanonikus bérelem-katalógus
+Idő-alapú (mennyiség = óra, kivéve jelölve):
+Kulcs Tartalom CH HU
+work.normal Rendes munkaóra órabéresnél a bér alapja órabéresnél a bér alapja
+work.overtime_100 Túlóra prémium nélkül Überstunden, ha a 25% írásban kizárva –
+work.overtime_125 Túlóra 25% prémiummal Überstunden –
+work.excess_125 Törvényi maximum feletti
+óra
+Überzeit, kötelező 25%, nem kizárható –
+work.overtime_50 Rendkívüli munkaidő 50% – Mt.
+work.overtime_100_restday Pihenőnapi munka 100% – Mt.
+prem.night_25 Éjszakai pótlékos óra
+(alkalmi)
+<25 éjszaka/év →  25% pénz –
+prem.night_time_10 Éjszakai időjóváírás ≥25 éjszaka/év →  10% idő –
+prem.night_15 Éjszakai pótlék – 15% (ha nincs műszakpótlék)
+prem.shift_30 Műszakpótlék – 30%
+prem.sunday_50 Vasárnapi pótlékos óra + pihenőidő/pótnap 50%
+prem.holiday Ünnepnapi pótlékos óra csak a vasárnappal egyenértékű kantonális
+napra
+100%
+standby.on_call Készenlét GAV szerint 20%
+standby.on_duty Ügyelet GAV szerint 40% (50%, ha nem mérhető)
+idle.employer Állásidő – alapbér, munkáltatói ok
+absence.vacation Szabadság (nap/óra)
+absence.sick_paid Betegség, munkáltató
+ﬁzeti
+OR 324a skála, szolgálati év betegszabadság 15 nap 70%
+absence.sick_insurer Betegség, biztosító ﬁzet KTG várakozási idő után táppénz
+absence.accident_bu Üzemi baleset UVG, karencia –
+absence.accident_nbu Nem üzemi baleset UVG NBU –
+absence.military_eo Katonai/polgári szolgálat EO –
+absence.maternity Szülési MSE CSED/GYED jelölés
+absence.paternity Apasági (sorszámozott
+nap)
+VSE 1–5. nap 100%, 6–10. nap
+40%
+absence.parental Szülői szabadság – 44 munkanap, csökkentett
+díjazás
+absence.unpaid Fizetés nélküli
+absence.unexcused Igazolatlan
+absence.training Képzés / szakiskola
+absence.lieu Csúsztatás időszámlából
+Százalék-alapú (CH, órabéresnél kötelezően külön soron):
+Kulcs Tipikus % Megjegyzés
+comp.vacation_pct 4 hét: 8,33% · 5 hét: 10,64% · 6 hét:
+13,04%
+képlet: nap / (260 − nap); 20 év alatt 5 hét kötelező →
+dolgozónkénti érték
+comp.holiday_pct ~3,17% / 3,45% (8 ünnep) két számítási konvenció él →  szerződésenként konﬁgurálandó
+comp.13th_pct 8,33% nem törvényi, szerződés/GAV
+Egyenlegek (kilépéskor kötelező): balance.vacation_days, balance.overtime_hours,
+balance.night_time_credit_hours.
+
+=== PAGE 44 ===
+25.5 Adatmodell
+wage_components(id, tenant_id NULL, country_code, key, name_i18n JSON,
+  unit ENUM('hours','days','amount','percent'), category, is_system BOOL)
+payroll_profiles(id, tenant_id, name, exporter_key, wage_form ENUM('hourly','monthly','both'),
+  settings JSON, delivery JSON, is_default)
+payroll_mappings(id, tenant_id, profile_id, wage_component_key, target_code VARCHAR(40),
+  target_text VARCHAR(100), factor DECIMAL(8,4) DEFAULT 1,
+  rounding ENUM('none','2dec','quarter_hour'), is_active,
+  UNIQUE(tenant_id, profile_id, wage_component_key))
+payroll_runs(id, tenant_id, period_id, profile_id, kind ENUM('final','correction','test'),
+  status ENUM('queued','building','validation_failed','ready','delivered','failed'),
+  stats JSON, checksums JSON, file_path, delivered_to, delivered_at,
+  created_by, created_at, superseded_by_run_id NULL)
+payroll_run_lines(id, tenant_id, run_id, employee_id, wage_component_key, target_code,
+  quantity DECIMAL(10,3), unit, amount DECIMAL(12,2) NULL, currency, cost_center_id NULL,
+  performance_month CHAR(7), day_index SMALLINT NULL, reference JSON)
+payroll_validations(id, run_id, severity ENUM('error','warning','info'), code,
+  employee_id NULL, message, context JSON)
+employee_payroll_identities(id, tenant_id, employee_id, profile_id,
+  external_personnel_no VARCHAR(40), valid_from,
+  UNIQUE(tenant_id, profile_id, external_personnel_no))
+25.6 Ellenőrzési lista (zárás előtt és exportkor)
+Kód Súly Ellenőrzés
+open_entries hiba Nyitva maradt munkaidő-szakasz
+pending_corrections hiba Jóvá nem hagyott korrekciós kérelem
+pending_absences hiba Elbírálatlan távollét-kérelem
+unmapped_component hiba Van adat olyan bérelemre, amelyhez nincs leképezés
+missing_external_id hiba Hiányzik a bérprogram-beli személyi szám
+invalid_ahv hiba (CH) AHVN13 ellenőrző számjegy hibás
+missing_taj_tax_id hiba (HU) Hiányzó TAJ vagy adóazonosító jel
+open_violations ﬁgyelmeztetés Nyitott munkajogi sértés
+negative_balance ﬁgyelmeztetés Jelentős negatív egyenleg
+zero_hours_active ﬁgyelmeztetés Aktív dolgozó 0 órával
+contract_gap hiba A hónap egy részére nincs érvényes szerződés-verzió
+overtime_cap ﬁgyelmeztetés Éves túlóra-plafon közeli/átlépett (CH 170/140, HU 250/300/400)
+A hiba súlyú tételek megakadályozzák az exportot; a felület dolgozónként listázza és linkeli a javítás helyét.
+25.7 Export-proﬁlok bérforma szerint
+Órabéres (a bérprogram tőlünk kapja a bér alapját): minden work.*, prem.*, ﬁzetett és nem ﬁzetett absence.* óra,
+comp.*_pct alapok, heti óraszám, foglalkoztatási fok.
+Havibéres (eltérés-alapú): csak a kiﬁzetendő túlóra és pótlék, a le- vagy visszavonandó távollét, a biztosítói ellátásra
+jogosító időszakok, a belépés/kilépés/foglalkoztatás-változás, kilépéskor az egyenlegek.
+
+=== PAGE 45 ===
+25.8 Svájc – célrendszerek és integrációs sorrend
+A teljes célrendszer-listát a Swissdec tanúsított gyártói regiszter adja – az implementációs backlog gyakorlatilag ez
+a lista.
+Prioritás Rendszer Integrációs felület Megjegyzés
+1 SwissSalary
+(Dynamics 365 BC)
+„Oﬀene Schnittstelle" – publikus PDF-speciﬁkáció; tetszőleges fájl
+vagy Excel beolvasása, bérelemenként külön sor; formális
+partnerprogram
+A legjobban dokumentált belépő;
+saját időmodulja (EasyRapport)
+versenytárs
+2 Abacus AbaConnect XML (+ legacy ASCII), parancssorból futtatható;
+„Vorerfassungsschnittstelle" 001-es rekordtípus – az idő bérelemhez
+rendelve
+Legnagyobb telepített bázis
+3 bexio Óra-szinkron csak órabéres dolgozókra, havonta egy hónap, kulcs: e-
+mail cím
+Kis cégek, gyors nyereség,
+korlátos
+4 Crésus Salaires Pontosvesszős szövegfájl, első sor átugorva, kötelező személyi
+szám; felhasználó által deﬁniálható import-modellek „rubrique"-
+leképezéssel; blokkolt óra-import modell
+A francia Svájc belépője
+5 SelectLine Lohn „Zeiterfassungsimport": külső időrendszer export-fájlja, pótlékokat is
+képez; v22.1-től csak „Platinum" szinttől
+DE-CH és IT-CH is
+6 Proﬃx Px5 REST API (Swagger, kézikönyv, Postman); saját Zeitverwaltung modulja
+bérbe tölt
+Erős API, beépített versenytárs-
+modul
+7 Infoniqa ONE 50 /
+ONE 200
+ONE 50: dokumentált ASCII import törzs- és „Vorerfassungsdaten"
+részre, HCM-interfész; ONE 200: „Connect" kétirányú interfész
+Meglévő idő-integráció:
+TimeStatement
+8 Mirus LOHN /
+miruSocial
+mirusConnect, trans-info, GastroSocial-kapcsolat; a gyártó számít
+külső beosztó/időrendszerre
+Vendéglátás-vertikum
+9 KLARA Publikus REST API; ⚠  a bér-interfész csak tanúsított
+bérpartnereknek; nincs sandbox
+Partneri egyeztetés kell
+10 Planet HR
+(PROGEL, Ticino)
+Gyártói állítás: külső jelenlét-rendszerből importál (rendes óra, túlóra,
+éjszakai)
+Olasz Svájc, gyenge verseny
+11 WinBIZ Dokumentált CSV-bérimport (oszlopspec nem volt kiolvasható) Romandie/Valais
+12 Topal Payroll Swissdec-tanúsított, Treuhand-fókusz; import-spec nem igazolt Sok könyvelőiroda
+∞ Általános
+CSV/XLSX proﬁl-
+építő
+Oszlop-térkép, kódolás, elválasztó, tizedes, dátumformátum, fejléc Minden egyéb rendszerre
+Bizonytalanságok: a legtöbb gyártónál a konkrét oszlop-speciﬁkáció nem volt nyilvánosan kiolvasható; a Sage CH /
+Infoniqa termékvonal állapota; a KLARA partner-kapuzás; a myfactory ELM-tanúsítása (a látható tanúsítvány lejárt).
+25.9 Svájc – kötelező mezők és számítási sajátosságok
+Mező / szabály Miért kell Megvalósítás
+AHVN13 756.xxxx.xxxx.xx A bérprogram elutasítja hibásan Normalizált tárolás, mod-10 (EAN-13)
+ellenőrző számjegy validáció bevitelkor
+Munkahely kantonja + lakóhely
+kantonja/községe (BFS-szám)
+Ünnepnaptár, heti maximum kategória,
+forrásadó
+Két külön mező; BFS községkód 1–4 jegyű,
+historizált listával
+Foglalkoztatási fok (%) Forrásadó, BVG koordinációs levonás
+arányosítás
+Szerződés-verzióban, hó közbeni váltás
+dátummal
+Havi ledolgozott óra Forrásadó: órabéresnél 180 órára átszámítás Kötelező mező QSt-köteles órabéresnél
+Összesített foglalkoztatási fok Ha nem nyilatkozik →  100%-ra számítanak Dolgozói nyilatkozat-mező
+Heti óraszám NBU-fedezet 8 óra/hét küszöb – itt az
+időadat közvetlenül levonást változtat
+Heti bontás alacsony óraszámú órabéreseknél
+
+=== PAGE 46 ===
+Mező / szabály Miért kell Megvalósítás
+Betriebsteil / Berufscode Suva BU/NBU prémium-besorolás Dolgozó- és költséghely-szintű mező, óra-
+megosztással
+Határmenti ingázó napok DE/FR/IT szabályok Napi munkavégzési hely jelölés
+Éjszakai munkanapok éves száma <25 éjszaka →  25% pénz; ≥25 →  10%
+időjóváírás
+Éves éjszaka-számláló és visszamenőleges
+átsorolás
+Überzeit éves számláló 170 h / 140 h plafon YTD bucket a time_accounts-ban
+Munkaképtelenség %-a A bérprogram részleges keresőképtelenséget
+számol
+Távollét-soron kötelező incapacity_pct
+Baleset dátuma, BU/NBU UVG karencia Baleset-távollét külön mezőkkel
+Szolgálati év + skála
+(Bern/Zürich/Basel)
+OR 324a bérfolytatás tartama Szerződésből számolt, exportban jelölve
+25.10 Magyarország – célrendszerek, mezők és szabályok
+25.10.1 Piackép és integrációs minta
+A magyar piac nem koncentrált, és fájl-alapú: a kutatás egyetlen magyar bérprogramnál sem talált nyilvános REST
+API-t jelenléti adat betöltésére. A bevett minta a CSV/XLSX állomány, gyakran megosztott könyvtáron át. A
+döntéshozó jellemzően a könyvelő- vagy bérszámfejtő iroda, amely az összes ügyfelére ugyanazt a bérprogramot
+használja.
+Prioritás Bérprogram Import-felület Megjegyzés
+1 Novitax BÉR Pontosvesszős CSV, fejléc nélkül, csak az aktuális hónap, egy nap = egy sor;
+kulcs: adóazonosító jel + jogviszony sorszám; soron belül ismétlődő
+szegmensek; „munkaidő jellege" kódszótár (1 munkavégzés, 2/3 ebédidő, 4
+megváltott pihenő, 5 pihenő, 6 igazolt ﬁzetett távollét, 7 ügyelet, 8 állásidő, 9
+készenlét, 0 jelenlétbe nem számító)
+A legjobban
+dokumentált magyar cél
+2 Kulcs-Bér Kizárólag Excel, felhasználó által kialakított sablonnal; kódmegfeleltetés jelenlét-,
+jövedelem-jogcímre és műszaktípusra; „vízszintes" és „függőleges" elrendezés
+Nyilvános API csak a
+Kulcs-Üzlethez
+3 NEXONbér CSV + CSG vezérlőfájl, „Általános importáló"; normál / diﬀerenciál /
+visszamenőleges feladás; megosztott könyvtár
+A NEXONtime saját
+modul →  cél a más
+jelenlét-rendszert futtató
+ügyfél
+4 BaBér CSV, felhasználó által deﬁniálható mezőkkel; meglévő integráció: e-Jelenlét Erős a bérirodai
+szegmensben
+5 infotéka
+Bér.NET
+A bérprogram generál egy Excel jelenléti ívet, azt kell kitöltve visszaadni A legolcsóbb integráció:
+a gyártói sablon round-
+trip kitöltése
+6 Forint-Soft
+Bérprogram
+WIN
+Kész integráció külső munkaidő-rendszerrel (óraszám, távollét, pótlékok) Könyvelőirodai
+elterjedtség
+7 Abacus BÉR
+(VT-Soft)
+Sablon-alapú import; beléptetőhöz kötve automatikus jelenléti ív Nagyvállalati
+8 PIRAMIS (L-
+Soft)
+Egyedi interfész beléptető rendszerekhez 250+ fős szegmens
+∞ Általános
+CSV/XLSX
+proﬁl-építő
+Oszlop-térkép, elválasztó, kódolás, dátum- és tizedesformátum Kötelező a többi
+programhoz és az irodai
+sablonokhoz
+25.10.2 Magyar törzsadat és azonosítók
+Mező Követelmény
+Adóazonosító jel (10 jegy) Elsődleges párosítási kulcs; ellenőrző számjegy validálása bevitelkor
+
+=== PAGE 47 ===
+Mező Követelmény
+Jogviszony sorszám (max. 4 jegy) ⚠  2026-tól a NAV-bejelentésben is kötelező, és a Novitax import már ma kéri. A dolgozó +
+munkáltató + kezdőnap nem egyedi kulcs – a jogviszony önálló entitás saját sorszámmal
+TAJ (9 jegy) CDV-ellenőrzés bevitelkor
+FEOR-08 (4 jegy) Él 2026-ban; több jogviszonykódnál a FEOR és a heti óraszám kötelező bejelentési adat
+Jogviszonykód (4 jegy, pl. 1101
+munkaviszony)
+Törzsadat; a pótlék-jogosultságot is befolyásolja
+Bérforma, munkarend, készenléti
+jellegű munkakör jelölés
+Az export-proﬁl és a szabályok kiválasztásához
+Bejelentési környezet (nem a mi feladatunk, de a határidőt adja): a havi bevallás határideje a tárgyhót követő hó 12.,
+ez határozza meg visszafelé a havi zárási határidőnket. A jogviszony-bejelentés 2026-tól a 08E űrlapon (a korábbi T1041
+megszűnt) – a mi rendszerünk eseményt ad a belépésről, űrlapot nem állít elő. Az ÁNYK 2026 végén kivezetésre kerül,
+ezért ÁNYK-állományra építeni nem szabad.
+25.10.3 Magyar pótlék-logika
+Jogcím Mérték A motor feltétele
+Vasárnapi pótlék 50% ⚠  Nem naptár-alapú: csak meghatározott beosztási jogcímeknél jár →
+dolgozónkénti pótlék-jogosultsági proﬁl
+Munkaszüneti napi 100% Vasárnapra eső munkaszüneti napon csak a 100% jár
+Műszakpótlék 30% (a) a napi munkaidő kezdete rendszeresen változik (munkanapok
+legalább harmadában eltér, min. 4 óra szórás) és (b) 18:00–06:00 közé eső
+munkavégzés
+Éjszakai pótlék 15% 22:00–06:00, ha tartama meghaladja az 1 órát, és nem jár műszakpótlék
+Rendkívüli munkaidő 50% vagy szabadidő Beosztástól eltérő, kereten felüli, ügyelet tartama
+Rendkívüli
+pihenő-/munkaszüneti napon
+100% (vagy 50% +
+pótpihenőnap)
+Készenlét 20%
+Ügyelet 40%, ill. 50%, ha a
+munkavégzés tartama nem
+mérhető
+Tényleges munkavégzésnél alapbér + rendkívüli díjazás
+Állásidő alapbér Munkáltatói ok
+Pótlékátalány / alapbérbe
+foglalt pótlék
+szerződéses ⚠  Mérni igen, exportálni nem – különben dupla ﬁzetés
+Két külön idősáv: műszakpótlék 18–06, éjszakai 22–06 →  külön mezőként mérendő.
+25.10.4 Magyar távollét-logika
+Jogcím Kezelés
+Szabadság (alap 20 nap + életkor + gyermek +
+fogyatékosság)
+A keret az absences modulból
+Apasági szabadság (10 munkanap) ⚠  Sorszámozott nap: 1–5. nap 100%, 6–10. nap 40% →  a napokat sorszámmal
+kell exportálni
+Szülői szabadság (44 munkanap) Külön jogcím, csökkentett díjazás
+Betegszabadság Évi 15 munkanap, 70%, munkáltató ﬁzeti, belépésnél időarányos
+Táppénz A 15 nap kimerülése után; automatikus jogcímváltás
+Igazolatlan távollét ⚠  Munkaidőkeretnél kétféle módszer →  tenant-beállítás
+Fizetés nélküli szabadság Biztosítás szünetelése jelölendő
+25.10.5 Munkaidőkeret-tudatos zárás
+A magyar rendkívüli munkaidőnek két fajtája van, eltérő keletkezési idővel:
+
+=== PAGE 48 ===
+1. Beosztástól eltérő →  már a hónapban keletkezik, a havi exportban szerepel;
+2. Munkaidőkereten felüli →  csak a keret lezárásakor derül ki, és a keret utolsó hónapjának bérével számolandó
+el.
+Ezért a modul kétféle futást ismer magyar tenantnál: monthly és frame_close (a keret teljes időszakára számol túlórát).
+25.10.6 Magyar-speciﬁkus tervezési szabályok
+1. A rendszer nem számol forintot. Kimenet: óraszám / napszám + jogcím + teljesítési hónap.
+2. Teljesítési hónap ≠ kiﬁzetési hónap – minden soron a teljesítés időszaka.
+3. Naptípus explicit mező minden napra – a gyártó által is dokumentált tipikus importhiba.
+4. Szegmens-alapú nap: osztott munkaidő miatt a nap nem egyetlen intervallum.
+5. Beosztás-verziózás jogszerűségi bizonyíték (168/96 órás közlési szabály).
+6. Biometria nem alapértelmezett: a magyar adatvédelmi hatóság szerint az ujjlenyomatos munkaidő-nyilvántartás
+nem arányos →  kártya, PIN, mobil.
+7. Audit-nyom minden utólagos módosításon – ellenőrzéskor bizonyítási előny.
+25.11 Szállítás, korrekció, naplózás
+Szállítási módok: letöltés (XLSX/CSV/TXT/XML), e-mail a könyvelőnek (jelszóval védett ZIP), SFTP, REST-push.
+Korrekciós futás: zárt hónapra kind = correction, amely csak a különbözetet vagy a teljes hónapot szállítja; az
+előző futás superseded_by_run_id mezővel jelölve.
+Ellenőrző összegek: dolgozószám, összes óra, összes nap, bérelemenkénti összeg – fejlécben és külön lapon.
+Reprodukálhatóság: ugyanaz a futás ugyanabból a zárt adatból bitre azonos fájlt ad.
+Megőrzés: a futások fájljai a country pack megőrzési ideje szerint (CH: min. 5 év).
+25.12 Élhelyzetek
+Hó közbeni belépés vagy kilépés: arányos célidő; kilépőnél záró egyenlegek és maradék szabadság.
+Hó közbeni bérforma-váltás: a hónap két proﬁl szerint bomlik.
+Utólag érkező betegigazolás zárt hónapra: korrekciós futás a különbözettel.
+Két bérprogram egy tenantnál: több payroll_profile, telephely-szűréssel.
+A könyvelő más személyi számokat használ: employee_payroll_identities proﬁlonként, CSV-import.
+Nem leképezett új bérelem: az export leáll, a felület felajánlja a leképezés pótlását – ez szándékos.
+25.13 Elfogadási kritériumok
+EK-PY-1: Hiányzó leképezésnél a futás validation_failed, a hibalista megnevezi a bérelemet és az érintett
+dolgozókat, és nem keletkezik fájl.
+EK-PY-2: CH órabéres, QSt-köteles dolgozónál az export tartalmazza a havi ledolgozott órát, a foglalkoztatási
+fokot, és külön soron a Ferien- és Feiertagsentschädigung alapját.
+EK-PY-3: A 25. éjszakai műszaknál az éjszakai pótlék 10% időjóváírásra vált, a korábbi hónapok különbözete
+korrekciós tételként jelenik meg, indoklással.
+EK-PY-4: 9,5 órás vasárnapi műszaknál a vasárnappal egyenértékű kantonális ünnepen a 50% pótlék és a
+pótpihenőnap-igény is megjelenik; nem egyenértékű ünnepnél nem.
+EK-PY-5: Ugyanazon zárt hónap kétszeri exportja bájtra azonos fájlt ad; a payroll_runs mindkettőt naplózza.
+EK-PY-6: HU dolgozónál 15 nap betegszabadság után a 16. naptól a sorok absence.sick_insurer bérelemre
+kerülnek.
+EK-PY-7: Hibás AHVN13 esetén azonnali hibaüzenet felvitelkor, és az export invalid_ahv hibával áll le.
+25.14 Implementáció előtt tisztázandó
+Svájc: az egyes gyártók pontos oszlop-speciﬁkációi (Crésus kivételével sehol nem volt nyilvánosan kiolvasható); a 45
+órás csoport évi 60 órás küszöbe; az éves Überzeit-plafonok; a nyolcórás NBU-küszöb; KTG-gyakorlat; EO napi
+maximum; a forrásadó havi/éves modellt használó kantonok listája; a határmenti ingázók 2026-os változásai.
+
+=== PAGE 49 ===
+Magyarország: a havi bevallás munkaidőből származtatott mezőinek pontos listája; a BaBér CSV mezőlistája és a
+Novitax „nap kód" kódszótára (gyártói spec kérendő); a készenléti jellegű munkakör szabályváltozásai; néhány kisebb
+bérprogram létezése 2026-ban nem igazolt.
+Mindkettőnél: a végleges formátumokat gyártói dokumentációból vagy partneri egyeztetésből kell megerősíteni, és
+minden exportálóhoz valós tesztfájl-ellenőrzés kell (a bérprogram beolvassa-e), mielőtt élesbe kerül.
+25.15 Fázisozás
+Lépés Tartalom
+F5.1 Kanonikus adathalmaz + leképezés-motor + ellenőrzőlista + általános CSV/XLSX proﬁl-építő
+F5.2 CH: SwissSalary Open Interface, Abacus AbaConnect (001), bexio
+F5.3 CH: Crésus, SelectLine, Infoniqa; szállítás SFTP/e-mail; korrekciós futás
+F5.4 HU: Novitax, Kulcs-Bér, NEXONbér (a prioritás szerint)
+F6 CH: Proﬃx REST, KLARA (partnerség), Mirus, Planet HR, WinBIZ, Topal; HU: BaBér, infotéka, Forint-Soft
+F7 Kétirányú visszacsatolás, ahol a gyártó enged (pl. bérjegyzék visszatöltés a személyi aktába)

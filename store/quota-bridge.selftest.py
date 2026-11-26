@@ -178,6 +178,188 @@ def main() -> int:
         # (mutation-verified). The guard stays for honest arithmetic; this suite does not claim to
         # prove it, because a case that passes either way proves nothing.
 
+        # --- card 7c2f9564: weekly-limit banner-derived deadline (no countdown file at all) -----
+        #
+        # ROOT CAUSE (Peti 12486, measured 2026-10-27 20:40): quota-check.sh writes the countdown
+        # file as a SCHEDULED TASK running INSIDE mikrob-channels -- the very session a weekly
+        # limit freezes -- so for a weekly stop it never gets the chance to write one. The "no file
+        # -> probe every pass" branch above is exactly the flapping Peti saw. Fix: when the file is
+        # absent, parse the deadline straight off the live banner text this process can always read
+        # itself, instead of probing blind.
+        #
+        # Real captured forms (MikroB's cross-session message, grepped from Claude Code transcripts,
+        # not a paraphrase -- separator is U+00B7, not a hyphen):
+        if cd.exists():
+            cd.unlink()
+
+        import datetime
+        from zoneinfo import ZoneInfo
+
+        BP = ZoneInfo("Europe/Budapest")
+        UTC = ZoneInfo("UTC")
+
+        # Form: "resets <Mon D>, <time> (<tz>)" -- date with no year, same year as now.
+        now_a = datetime.datetime(2026, 11, 11, 10, 0, 0, tzinfo=BP).timestamp()
+        text_a = "You've hit your weekly limit · resets Nov 15, 3pm (Europe/Budapest)"
+        expect_a = datetime.datetime(2026, 11, 15, 15, 0, 0, tzinfo=BP).timestamp()
+        got_a = m.parse_banner_reset_epoch(text_a, now=now_a)
+        if got_a == expect_a:
+            ok("parse_banner_reset_epoch: 'Mon D, Npm (Zone)' form, no year")
+        else:
+            bad("parse_banner_reset_epoch: dated form", f"expected {expect_a}, got {got_a}")
+
+        # Form: "resets <time> (<tz>)" -- no date at all (reset is later today).
+        text_b = "You've hit your weekly limit · resets 3pm (Europe/Budapest)"
+        expect_b = datetime.datetime(2026, 11, 11, 15, 0, 0, tzinfo=BP).timestamp()
+        got_b = m.parse_banner_reset_epoch(text_b, now=now_a)
+        if got_b == expect_b:
+            ok("parse_banner_reset_epoch: no-date form resolves to later today")
+        else:
+            bad("parse_banner_reset_epoch: no-date form", f"expected {expect_b}, got {got_b}")
+
+        # Same no-date form, but the stated time has ALREADY passed today -> stays today, in the
+        # past (Cybersec MEDIUM-1, 7c2f9564: rolling a just-passed no-date time to "tomorrow" made
+        # recovery_probe_due treat a deadline that just passed as ~24h away, silencing the probe
+        # exactly when it matters most. This is the sole caller's only use of the no-date form, so
+        # "stays in the past" (never rolls forward) is correct, not merely less wrong).
+        text_b2 = "You've hit your weekly limit · resets 9am (Europe/Budapest)"
+        expect_b2 = datetime.datetime(2026, 11, 11, 9, 0, 0, tzinfo=BP).timestamp()
+        got_b2 = m.parse_banner_reset_epoch(text_b2, now=now_a)
+        if got_b2 == expect_b2:
+            ok("parse_banner_reset_epoch: no-date form already past today stays today (no rollover)")
+        else:
+            bad("parse_banner_reset_epoch: no-date already-past form", f"expected {expect_b2}, got {got_b2}")
+
+        # Form: tz is UTC, not only a named zone -- and crosses the UTC/Budapest offset. Picked
+        # still-ahead-in-UTC so this exercises tz handling only, independent of the no-date
+        # past/future branch covered separately by text_b/text_b2 above.
+        text_c = "You've hit your session limit · resets 11pm (UTC)"
+        expect_c = datetime.datetime(2026, 11, 11, 23, 0, 0, tzinfo=UTC).timestamp()
+        got_c = m.parse_banner_reset_epoch(text_c, now=now_a)
+        if got_c == expect_c:
+            ok("parse_banner_reset_epoch: 'resets 12am (UTC)' form, tz is UTC")
+        else:
+            bad("parse_banner_reset_epoch: UTC form", f"expected {expect_c}, got {got_c}")
+
+        text_d = "You've hit your session limit · resets 10pm (Europe/Budapest)"
+        expect_d = datetime.datetime(2026, 11, 11, 22, 0, 0, tzinfo=BP).timestamp()
+        got_d = m.parse_banner_reset_epoch(text_d, now=now_a)
+        if got_d == expect_d:
+            ok("parse_banner_reset_epoch: 'resets 10pm (Zone)' form")
+        else:
+            bad("parse_banner_reset_epoch: 10pm form", f"expected {expect_d}, got {got_d}")
+
+        # Year rollover: no year in the banner, and the stated month/day is already far behind
+        # "now" this year -> must roll into next year (Dec -> Jan), not silently land 11 months ago.
+        now_year = datetime.datetime(2026, 12, 28, 10, 0, 0, tzinfo=BP).timestamp()
+        text_year = "You've hit your weekly limit · resets Jan 2, 3pm (Europe/Budapest)"
+        expect_year = datetime.datetime(2027, 1, 2, 15, 0, 0, tzinfo=BP).timestamp()
+        got_year = m.parse_banner_reset_epoch(text_year, now=now_year)
+        if got_year == expect_year:
+            ok("parse_banner_reset_epoch: Dec -> Jan year rollover (no year in banner)")
+        else:
+            bad("parse_banner_reset_epoch: year rollover", f"expected {expect_year}, got {got_year}")
+
+        # Forms with NO reset clause at all -- a known limit with nothing to wait for. Must return
+        # None (same fail-safe direction as "unparseable": every caller probes on None), and must
+        # NOT be confused with a parseable-but-already-past deadline.
+        text_e = "You've reached your weekly limit for Opus."
+        if m.parse_banner_reset_epoch(text_e, now=now_a) is None:
+            ok("parse_banner_reset_epoch: model-scoped limit (no reset clause) -> None")
+        else:
+            bad("parse_banner_reset_epoch: model-scoped limit should be None",
+                m.parse_banner_reset_epoch(text_e, now=now_a))
+
+        text_f = ("You've hit your monthly spend limit · raise it at "
+                   "https://claude.ai/settings/usage?from=cc_cli_limit_message")
+        if m.parse_banner_reset_epoch(text_f, now=now_a) is None:
+            ok("parse_banner_reset_epoch: monthly spend limit (no reset clause) -> None")
+        else:
+            bad("parse_banner_reset_epoch: monthly spend limit should be None",
+                m.parse_banner_reset_epoch(text_f, now=now_a))
+
+        # Genuinely unparseable: a reset clause whose timezone is not a real zone.
+        text_g = "resets 3pm (Mars/OlympusMons)"
+        if m.parse_banner_reset_epoch(text_g, now=now_a) is None:
+            ok("parse_banner_reset_epoch: unrecognised timezone -> None (fail-safe)")
+        else:
+            bad("parse_banner_reset_epoch: bad tz should be None",
+                m.parse_banner_reset_epoch(text_g, now=now_a))
+
+        # --- recovery_probe_due(): the no-file branch now falls back to the banner, with a
+        # minimum-gap throttle (acceptance #2: >= 2h between probes while a weekly deadline is
+        # known but far off; acceptance #3: unparseable/no-reset-clause still probes every pass).
+        weekly_state = {}
+        if m.recovery_probe_due(now_a, state=weekly_state, pane_text=text_a) is True:
+            ok("recovery_probe_due: first call with a known far-off weekly deadline PROBES once")
+        else:
+            bad("recovery_probe_due: first weekly-deadline call should probe", weekly_state)
+
+        soon_after = now_a + 60
+        if m.recovery_probe_due(soon_after, state=weekly_state, pane_text=text_a) is False:
+            ok("recovery_probe_due: a second call 60s later is SUPPRESSED (no flapping)")
+        else:
+            bad("recovery_probe_due: 60s-later call should be suppressed", weekly_state)
+
+        gap = weekly_state.get("banner_probe_at")
+        if m.WEEKLY_PROBE_INTERVAL_SEC >= 2 * 3600 and gap == now_a:
+            ok("recovery_probe_due: the throttle interval is >= 2h (acceptance #2)")
+        else:
+            bad("recovery_probe_due: throttle interval/state", (m.WEEKLY_PROBE_INTERVAL_SEC, gap))
+
+        far_later = now_a + m.WEEKLY_PROBE_INTERVAL_SEC + 1
+        if m.recovery_probe_due(far_later, state=weekly_state, pane_text=text_a) is True:
+            ok("recovery_probe_due: a call >= the throttle interval later PROBES again")
+        else:
+            bad("recovery_probe_due: call past the interval should probe", weekly_state)
+
+        if m.recovery_probe_due(now_a, state={}, pane_text=text_e) is True:
+            ok("recovery_probe_due: no reset clause in the banner -> probe (acceptance #3)")
+        else:
+            bad("recovery_probe_due: no reset clause should probe")
+
+        if m.recovery_probe_due(now_a, state={}, pane_text=text_g) is True:
+            ok("recovery_probe_due: unparseable banner tz -> probe (acceptance #3)")
+        else:
+            bad("recovery_probe_due: unparseable banner should probe")
+
+        if m.recovery_probe_due(now_a, state=None, pane_text=text_a) is True:
+            ok("recovery_probe_due: no state to throttle with -> fail-safe probe")
+        else:
+            bad("recovery_probe_due: missing state should fail-safe to probe")
+
+        # The near-deadline edge still wins over the throttle: once within RECOVERY_PROBE_WINDOW_SEC
+        # of the banner-derived deadline, probe every pass regardless of the last-probed timestamp.
+        near_deadline_now = expect_a - m.RECOVERY_PROBE_WINDOW_SEC
+        near_state = {"banner_probe_at": near_deadline_now}
+        if m.recovery_probe_due(near_deadline_now, state=near_state, pane_text=text_a) is True:
+            ok("recovery_probe_due: within the near-deadline window overrides the throttle")
+        else:
+            bad("recovery_probe_due: near-deadline window should override the throttle")
+
+        # Cybersec MEDIUM-1 (7c2f9564, gate comment 37865): a no-date deadline that just passed
+        # must probe immediately, not go quiet for up to WEEKLY_PROBE_INTERVAL_SEC right when the
+        # reset is the thing we are waiting for. Regression spec from the gate verdict verbatim:
+        # no-date banner, now = deadline + 60s, last banner_probe_at = now - 30s -> expect True.
+        text_just_passed = "You've hit your weekly limit · resets 9am (Europe/Budapest)"
+        deadline_just_passed = datetime.datetime(2026, 11, 11, 9, 0, 0, tzinfo=BP).timestamp()
+        now_just_after = deadline_just_passed + 60
+        recent_probe_state = {"banner_probe_at": now_just_after - 30}
+        if m.recovery_probe_due(now_just_after, state=recent_probe_state,
+                                 pane_text=text_just_passed) is True:
+            ok("recovery_probe_due: a no-date deadline that JUST passed probes immediately, "
+               "even with a recent banner_probe_at (Cybersec MEDIUM-1)")
+        else:
+            bad("recovery_probe_due: a just-passed no-date deadline must not be throttled",
+                recent_probe_state)
+
+        # Acceptance #4: "Now using usage credits" must never be read as a limit banner in the
+        # first place -- LIMIT_RE requires the word "limit", which this phrase does not contain.
+        if not m.LIMIT_RE.search("Now using usage credits"):
+            ok("'Now using usage credits' is not matched by LIMIT_RE (no Ghost takeover, acc. #4)")
+        else:
+            bad("'Now using usage credits' must not match LIMIT_RE")
+
     # --- _telegram_state_dir: TELEGRAM_STATE_DIR is trusted only under the marveen checkout
     # (card 01dea2f0, Cybersec: this dir also gates access.json, the pairing allowlist) ------
     with tempfile.TemporaryDirectory() as fake_marveen_parent:
@@ -438,7 +620,7 @@ def main() -> int:
             # exactly once on the return path) stays isolated from that hysteresis behaviour.
             old_confirm_a = m.quota_switchback.confirm_switchback
             m.quota_switchback.confirm_switchback = lambda *a, **kw: True
-            m.recovery_probe_due = lambda now=None: True
+            m.recovery_probe_due = lambda now=None, **kw: True
             m.mikrob_down = lambda: False
             try:
                 m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
@@ -454,7 +636,7 @@ def main() -> int:
             # OTHER exit path, which nothing exercised before this case.
             calls["start"] = calls["stop"] = calls["clear"] = 0
 
-            def _boom(now=None):
+            def _boom(now=None, **kw):
                 raise RuntimeError("boom")
 
             m.recovery_probe_due = _boom
@@ -499,7 +681,7 @@ def main() -> int:
     m.clear_session_outage = lambda: None
     m.send = lambda token, chat_id, text: None
     m.save_state = lambda s: None
-    m.recovery_probe_due = lambda now=None: True
+    m.recovery_probe_due = lambda now=None, **kw: True
     m.tg_api = lambda *a, **kw: {"ok": True, "result": []}
 
     def _mikrob_down_once_then_recovered():
@@ -555,7 +737,7 @@ def main() -> int:
     m.clear_session_outage = lambda: None
     m.send = lambda token, chat_id, text: None
     m.save_state = lambda s: None
-    m.recovery_probe_due = lambda now=None: True
+    m.recovery_probe_due = lambda now=None, **kw: True
     m.tg_api = lambda *a, **kw: {"ok": False, "error_code": 409}
     m.kill_pid_holder = lambda: None
 
@@ -621,7 +803,7 @@ def main() -> int:
     m.clear_session_outage = lambda: None
     m.send = lambda token, chat_id, text: None
     m.save_state = lambda s: None
-    m.recovery_probe_due = lambda now=None: True
+    m.recovery_probe_due = lambda now=None, **kw: True
     m.mikrob_down = lambda: False
     m.tg_api = _tg_api4
     try:
@@ -657,7 +839,7 @@ def main() -> int:
     m.clear_session_outage = lambda: None
     m.send = lambda token, chat_id, text: None
     m.save_state = lambda s: None
-    m.recovery_probe_due = lambda now=None: True
+    m.recovery_probe_due = lambda now=None, **kw: True
     m.mikrob_down = lambda: False
     m.request_ghost_stop = lambda: calls5.__setitem__("request", calls5["request"] + 1)
     m.stop_ghost_runner = lambda proc: calls5.__setitem__("kill", calls5["kill"] + 1)
@@ -858,7 +1040,7 @@ def main() -> int:
     m.clear_session_outage = lambda: None
     m.send = lambda token, chat_id, text: None
     m.save_state = lambda s: None
-    m.recovery_probe_due = lambda now=None: True
+    m.recovery_probe_due = lambda now=None, **kw: True
     m.mikrob_down = lambda: False
     m.quota_switchback.confirm_switchback = lambda *a, **kw: True  # force the recovery branch
     try:

@@ -86,6 +86,7 @@ async function loadKgPage() {
   }
 
   void kgLoadStats()
+  if (typeof kgNebulaWireToolbar === 'function') kgNebulaWireToolbar()
 }
 
 function kgCurrentQuery() {

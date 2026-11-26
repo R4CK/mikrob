@@ -23,6 +23,9 @@
 
 set -euo pipefail
 
+# Card 8ab5eef3: override point for selftests, same seam as store/ensure-umask-dropin.sh.
+SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
+
 PROVIDER="${1:-}"
 shift || true
 DRY_RUN=0
@@ -154,12 +157,12 @@ else
   UNIT_DIR="$HOME/.config/systemd/user"
   SVC="${SERVICE_ID}-${PROVIDER}-progress-watchdog"
   if [ -f "$UNIT_DIR/$SVC.timer" ] || [ -f "$UNIT_DIR/$SVC.service" ]; then
-    if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
-      run systemctl --user disable --now "$SVC.timer" 2>/dev/null || true
+    if pidof systemd >/dev/null 2>&1 && "$SYSTEMCTL_BIN" --user status >/dev/null 2>&1; then
+      run "$SYSTEMCTL_BIN" --user disable --now "$SVC.timer" 2>/dev/null || true
     fi
     run rm -f "$UNIT_DIR/$SVC.timer" "$UNIT_DIR/$SVC.service"
-    if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
-      run systemctl --user daemon-reload
+    if pidof systemd >/dev/null 2>&1 && "$SYSTEMCTL_BIN" --user status >/dev/null 2>&1; then
+      run "$SYSTEMCTL_BIN" --user daemon-reload
     fi
     DID_SOMETHING=1
     echo "✓ Watchdog retired (systemd: $SVC.timer + .service removed)"

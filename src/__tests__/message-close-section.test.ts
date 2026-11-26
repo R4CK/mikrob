@@ -53,31 +53,58 @@ function setup(agent: string, content: string) {
 }
 const read = (agent: string) => readFileSync(join(tmpRoot, 'agents', agent, 'CLAUDE.md'), 'utf-8')
 
-describe('message-close section: what it says (ACKONCLOSE927)', () => {
-  const body = buildMessageCloseBody()
+// Card 01eb0d0c: the inline curl recipe (notify boolean, 409 handling) moved into
+// store/agent-message-close.sh -- see agent-message-close.selftest.sh for the behavioural
+// pins (real JSON boolean, 409-is-a-no-op, quote/backtick-safe --result/--result-file/
+// --result-stdin). This generated body only has to NAME the command and keep the
+// delegated-vs-report decision visible -- it does NOT by itself prove the wrapper's quoting
+// is safe for every call shape (CYBERSEC NO-GO 38468, F1): the FIRST version of this body
+// taught `--result "..."` in double quotes, which a backtick/$(...) inside the text executes
+// in the CALLER's shell before the wrapper ever runs, regardless of how safe the wrapper's own
+// internals are. The fix is that this body must never teach that shape at all.
+describe('message-close section: what it says (ACKONCLOSE927, card 01eb0d0c)', () => {
+  const body = buildMessageCloseBody('backend')
 
-  it('tells the reader to close an INCOMING report with notify:false', () => {
-    expect(body).toMatch(/BEJÖVŐ RIPORT[\s\S]{0,120}"notify":false/)
+  it('tells the reader to close an INCOMING report with the default (no --notify flag)', () => {
+    expect(body).toMatch(/BEJÖVŐ RIPORT[\s\S]{0,160}--notify false/)
   })
 
   it('keeps the default for a DELEGATED task, where the ack is the result', () => {
-    expect(body).toMatch(/DELEGÁLT FELADAT[\s\S]{0,120}szokásos módon/)
+    expect(body).toMatch(/DELEGÁLT FELADAT[\s\S]{0,160}--notify true/)
   })
 
-  it('the example sends a real JSON boolean false, not the string', () => {
-    expect(body).toContain(`'{"status":"done","notify":false}'`)
-    expect(body).not.toContain('"notify":"false"')
-    expect(body).toMatch(/string 400-at kap/)
+  it('says a second close of a closed message is a no-op, and must not be retried or reported', () => {
+    expect(body).toMatch(/MÁR lezárt[\s\S]{0,120}NEM hiba/)
+    // CYBERSEC GO 3a38fe2cc, LOW-2a (rule 7): restore the retry/report half of this pin --
+    // "NEM hiba" alone does not say the no-op must not be retried or re-reported.
+    expect(body).toMatch(/NEM hiba[\s\S]{0,160}NEM kell jelenteni/)
   })
 
-  it('says a second close of a closed message is a 409 that needs no retry or report', () => {
-    expect(body).toMatch(/MÁR lezárt[\s\S]{0,80}409-et ad/)
-    expect(body).toMatch(/Ez nem hiba, nem kell ismételni vagy jelenteni\./)
+  it('names the wrapper script instead of the raw curl recipe', () => {
+    expect(body).toMatch(/agent-message-close\.sh backend <id>/)
+    expect(body).not.toContain('curl -H @-')
   })
 
-  it('the example is a PUT on the message id, with the bearer token via stdin header (not argv)', () => {
-    expect(body).toMatch(/curl -H @- -s -X PUT \S+\/api\/messages\/<id>/)
-    expect(body).toMatch(/printf 'Authorization: Bearer %s\\n' "\$\(cat /)
+  // CYBERSEC NO-GO 38468, F1: this is the actual regression pin -- a double-quoted --result in
+  // the shell example is the shape that executes a backtick/$(...) in the caller's shell. Never
+  // taught again, in EITHER language's example line.
+  it('never teaches a double-quoted --result on the command line (the ```bash example)', () => {
+    const codeBlock = body.match(/```bash\n([\s\S]*?)```/)?.[1] ?? ''
+    expect(codeBlock.length).toBeGreaterThan(0)
+    expect(codeBlock).not.toMatch(/--result\s+"/)
+  })
+
+  it('teaches --result-file / --result-stdin as the safe forms, with an explicit double-quote warning', () => {
+    expect(body).toContain('--result-file')
+    expect(body).toContain('--result-stdin')
+    expect(body).toMatch(/SOHA[\s\S]{0,40}--result "\.\.\."/)
+    expect(body.toLowerCase()).toContain('backtick')
+    // CYBERSEC GO 3a38fe2cc, LOW-1: --result-stdin must not be claimed safe unconditionally --
+    // only a quoted heredoc is safe; a double-quoted echo/printf still expands backticks/$(...)
+    // in the CALLER's shell. The old text claimed it "nem fut le soha" with no qualifier.
+    expect(body).not.toMatch(/result-stdin[\s\S]{0,40}nem fut le soha/)
+    expect(body).toMatch(/heredoc/)
+    expect(body.toLowerCase()).toContain('echo')
   })
 })
 

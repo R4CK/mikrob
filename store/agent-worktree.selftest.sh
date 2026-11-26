@@ -242,6 +242,51 @@ else
   bad "expected alice=alice bob=bob shared=intruder" "alice=[$alice_author2] bob=[$bob_author2] shared=[$main_shared_name]"
 fi
 
+# --- 11. CARD MODE (card 380a5e16, F7): --card gives a worktree keyed by CARD ID, not agent name ----
+CARD_A="aaaaaa1111"
+CARD_B="bbbbbb2222"
+out="$(run cardagent --card "$CARD_A" 2>&1)"; rc=$?
+CARD_TREE_A="$WORKTREES/card/$CARD_A"
+[[ $rc -eq 0 ]] && ok "--card creates a worktree exits 0" || bad "card worktree creation failed (rc=$rc)" "$out"
+[ -e "$CARD_TREE_A/.git" ] && ok "the card worktree is a real git worktree" || bad "no .git in the card worktree"
+card_branch="$(git -C "$CARD_TREE_A" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+[ "$card_branch" = "card/$CARD_A" ] && ok "the card worktree sits on branch card/$CARD_A, not agent/cardagent/work" \
+  || bad "card worktree is on the wrong branch" "$card_branch"
+
+# --- 12. card id validation: too short / non-hex is rejected, same shape as agent-worktree-marveen.sh -
+out="$(run cardagent --card abc 2>&1)"; rc=$?
+[[ $rc -ne 0 ]] && ok "a too-short card id is rejected" || bad "a too-short card id was NOT rejected" "$out"
+out="$(run cardagent --card "nothex12" 2>&1)"; rc=$?
+[[ $rc -ne 0 ]] && ok "a non-hex card id is rejected" || bad "a non-hex card id was NOT rejected" "$out"
+
+# --- 13. node_modules per-entry linking also applies in card mode (same function, different TREE) ----
+link_target_card="$(readlink -f "$CARD_TREE_A/apps/api/node_modules/$SCOPE/foo" 2>/dev/null)"
+own_pkg_card="$(readlink -f "$CARD_TREE_A/packages/foo" 2>/dev/null)"
+[ -n "$link_target_card" ] && [ "$link_target_card" = "$own_pkg_card" ] \
+  && ok "card-mode worktree also gets per-entry node_modules linking into its OWN packages/" \
+  || bad "card-mode worktree did not get per-entry node_modules linking" "link=$link_target_card own=$own_pkg_card"
+
+# --- 14. identity isolation also applies in card mode, using the AGENT argument (not the card id) ----
+echo cardwork > "$CARD_TREE_A/cardwork.txt"; git -C "$CARD_TREE_A" add cardwork.txt
+git -C "$CARD_TREE_A" commit -qm "card worktree commit"
+card_author="$(git -C "$CARD_TREE_A" log -1 --format='%an <%ae>')"
+[ "$card_author" = "cardagent <cardagent@mopsion.local>" ] \
+  && ok "a card-mode worktree still authors commits as the building AGENT (cardagent), not the card id" \
+  || bad "card-mode worktree authored with the wrong identity" "$card_author"
+
+# --- 15. TWO DIFFERENT CARDS by the SAME agent get INDEPENDENT worktrees/branches (Kesz-ha: two
+# mopsion cards by one agent land independently in either order) ---------------------------------------
+run cardagent --card "$CARD_B" >/dev/null 2>&1
+CARD_TREE_B="$WORKTREES/card/$CARD_B"
+card_b_branch="$(git -C "$CARD_TREE_B" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+[ "$card_b_branch" = "card/$CARD_B" ] && [ "$CARD_TREE_A" != "$CARD_TREE_B" ] \
+  && ok "a second card by the same agent gets its OWN tree and branch, independent of the first" \
+  || bad "the second card did not get an independent tree/branch" "tree_a=$CARD_TREE_A tree_b=$CARD_TREE_B branch_b=$card_b_branch"
+# card A's commit must not appear on card B's branch (true independence, not a shared ancestor accident)
+git -C "$CARD_TREE_B" log --oneline | grep -q "card worktree commit" \
+  && bad "card B's branch unexpectedly contains card A's commit" \
+  || ok "card B's branch does not contain card A's commit -- the two cards are independent"
+
 echo
 echo "agent-worktree.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

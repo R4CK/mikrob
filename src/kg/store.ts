@@ -304,6 +304,27 @@ export function redactKgLocalPii<T extends string | null | undefined>(text: T): 
     .replace(KG_LOCAL_HU_PHONE_RX, '[redacted:phone]') as T
 }
 
+/** Redacts (not rejects) every KG-local secret shape -- kv-secret AND the context-gated
+ *  64-hex/base64 blobs -- for text that must still be STORED after the operation it came from
+ *  already ran (card a1d57d99: a search query that looks secret-shaped must still execute and
+ *  return results; only the logged copy of the query text needs scrubbing). upsertNode's
+ *  assertNoKgLocalSecretShape (reject) and this function (redact) are deliberately separate:
+ *  a write-time reject can ask the caller to fix the node body, a post-hoc search-log write
+ *  cannot ask anyone to retype a query that already ran. Reuses the same regexes findKgLocalKvSecret/
+ *  findKgLocalContextualSecret match on, already ReDoS-fixed (Cybersec NO-GO 33019 F1/F3/F4) --
+ *  no new pattern introduced here. */
+export function redactKgLocalSecretsForLog<T extends string | null | undefined>(text: T): T {
+  if (text == null) return text
+  let out = (text as string).replace(KG_LOCAL_KV_SECRET_RX, (m, keyword: string) => `${String(keyword).toLowerCase()}=[redacted:secret]`)
+  out = out.replace(KG_LOCAL_HEX64_RX, (m: string, offset: number) =>
+    hasKgLocalKeyContext(out, offset, m.length) ? '[redacted:hex64]' : m
+  )
+  out = out.replace(KG_LOCAL_BASE64_BLOB_RX, (m: string, offset: number) =>
+    hasKgLocalKeyContext(out, offset, m.length) ? '[redacted:base64]' : m
+  )
+  return out as T
+}
+
 /** Report-only counts for the backfill dry-run (Kesz-ha point 3): how many matches of EACH of
  *  the 5 shapes exist in this text, WITHOUT the write-path's context requirement for 64-hex/
  *  base64 -- a wider net on purpose, so the dry-run tells the operator the true collision

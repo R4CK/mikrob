@@ -27,6 +27,26 @@ WATCHDOG="${WATCHDOG_BIN:-$REPO_DIR/scripts/watchdog.sh}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# Card ee830675: needs-fleet-oauth.mjs and watchdog-provider-env.mjs both dynamically import
+# REPO_DIR/dist/*.js (the single-source-of-truth compiled business logic) -- but dist/ is
+# gitignored and NOT rebuilt by this checkout, so a fresh worktree with no prior `npx tsc` run
+# has no dist/ at all. Every case that should reach a real yes/no/refuse decision then hit the
+# dynamic import's ERR_MODULE_NOT_FOUND, landed in the predicate's own catch block, and came back
+# as isolation=refuse reason=fleet-oauth-undecidable regardless of the scenario under test --
+# measured: 51/77 pass with no dist/ present, 77/77 once it is built. A STALE dist/ (built from an
+# older commit than REPO_DIR's HEAD) explains the smaller, non-matching failure count seen
+# elsewhere (cases 50/64/65 on a merge commit): only the cases whose expected behaviour changed
+# since that dist was built actually disagree. Same marker convention fleet-test.sh uses for the
+# same reason (BUILT_MARKER keyed by the commit dist was built from, not an unconditional rebuild).
+DIST_BUILT_MARKER="$REPO_DIR/dist/.built-commit"
+DIST_TARGET_SHA="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [ "$(cat "$DIST_BUILT_MARKER" 2>/dev/null)" != "$DIST_TARGET_SHA" ]; then
+  echo "watchdog-config-isolation: building dist (needs-fleet-oauth.mjs/watchdog-provider-env.mjs load compiled dist)" >&2
+  rm -f "$DIST_BUILT_MARKER"
+  (cd "$REPO_DIR" && npx tsc) || { echo "watchdog-config-isolation: dist build failed, aborting (see above)" >&2; exit 1; }
+  echo "$DIST_TARGET_SHA" > "$DIST_BUILT_MARKER"
+fi
+
 # The watchdog resolves store/.claude-oauth-token relative to its own
 # INSTALL_DIR; run it from a fixture install so the token file is ours.
 FIXTURE_INSTALL="$TMP/install"
@@ -37,6 +57,9 @@ cp "$WATCHDOG" "$FIXTURE_INSTALL/scripts/watchdog.sh"
 # install must carry it too, same as the watchdog script itself.
 cp "$REPO_DIR/scripts/lib/oauth_token_file_check.py" "$FIXTURE_INSTALL/scripts/lib/oauth_token_file_check.py"
 WD="$FIXTURE_INSTALL/scripts/watchdog.sh"
+# Card 23a14ae1: INSTALL_DIR no longer follows $0 (that derivation is what let a stray invocation
+# resolve to agents/logs on 2026-11-06) -- point it at the fixture install explicitly instead.
+export WATCHDOG_INSTALL_DIR="$FIXTURE_INSTALL"
 # Card 3ae2411d round 2: needs-fleet-oauth.mjs resolves the compiled dist relative to its OWN
 # location (scripts/needs-fleet-oauth.mjs -> ../dist), which the fixture install does not carry.
 # Point watchdog.sh at the real repo's copy instead of copying it in -- the script takes the
@@ -901,6 +924,115 @@ case "$OUT" in
 esac
 
 rm -f "$STUB_CHECKER"
+
+# --- card 11c6cab4 round 3 (RedHat comment 32213): needs-fleet-oauth.mjs computed
+# customProviderId with the OLD "any non-string -> null" rule, so a present-but-unusable
+# customProvider on the common shared-auth path was read as "no customProvider at all" --
+# FLEET_OAUTH_NEEDED went to 1 and watchdog.sh restarted the agent on the SHARED fleet login,
+# never reaching watchdog-provider-env.mjs's own refusal for this exact value (case 24/34 above
+# only reach that refusal because customProvider was a USABLE string there). These pin that the
+# undecidable classification now happens before the fleet-oauth branch, for the default
+# shared-auth agent specifically (the case RedHat measured). ---
+
+AGENT_SHARED_BYO="$FIXTURE_INSTALL/agents/shared-garbage-provider-agent"
+mkdir -p "$AGENT_SHARED_BYO/.claude-config"
+
+# 59) BLOCKING (round-3 repro): customProvider a number, default shared auth -> refuse
+#     (fleet-oauth-undecidable), NEVER isolation=no (which would restart on the shared login).
+printf '{"customProvider": 1}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "59: customProvider=1, shared auth -> refuse (undecidable), not isolation=no" ;;
+  *) fail "59: customProvider=1, shared auth -> refuse (undecidable), not isolation=no" "$OUT" ;;
+esac
+
+# 60) customProvider an empty object.
+printf '{"customProvider": {}}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "60: customProvider={}, shared auth -> refuse (undecidable)" ;;
+  *) fail "60: customProvider={}, shared auth -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 61) customProvider an empty array.
+printf '{"customProvider": []}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "61: customProvider=[], shared auth -> refuse (undecidable)" ;;
+  *) fail "61: customProvider=[], shared auth -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 62) customProvider the boolean true.
+printf '{"customProvider": true}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "62: customProvider=true, shared auth -> refuse (undecidable)" ;;
+  *) fail "62: customProvider=true, shared auth -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 63) a remote (ssh) agent on shared auth with the same garbage customProvider -- RedHat also
+#     measured the remote refusal in watchdog-provider-env.mjs is unreachable via this same path.
+printf '{"customProvider": 1, "remoteHost": "build-box", "remoteWorkdir": "/home/agent/work"}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "63: remote agent, customProvider=1, shared auth -> refuse (undecidable)" ;;
+  *) fail "63: remote agent, customProvider=1, shared auth -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 64) MUTATION PIN: the ordinary shared-auth, no-customProvider case must be UNAFFECTED --
+#     still isolation=yes with the fleet token prefix, same as case 28/50 above.
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
+printf '{"model": "claude-sonnet-5", "authMode": "shared"}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=yes prefix="*CLAUDE_CONFIG_DIR*CLAUDE_CODE_OAUTH_TOKEN*)
+    pass "64: no customProvider, shared auth -> unaffected, still fleet-token isolation" ;;
+  *) fail "64: no customProvider, shared auth -> unaffected, still fleet-token isolation" "$OUT" ;;
+esac
+
+# 65) MUTATION PIN: a USABLE customProvider string must still take the ordinary refuse path
+#     through watchdog-provider-env.mjs (isolation=refuse reason=provider-env-unavailable, same
+#     as case 24/34) -- round 3's new check must not swallow the already-working usable-string case.
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
+printf '{"customProvider": "my-ollama-endpoint"}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=provider-env-unavailable") pass "65: usable customProvider string -> still the ordinary (non-undecidable) refuse path" ;;
+  *) fail "65: usable customProvider string -> still the ordinary (non-undecidable) refuse path" "$OUT" ;;
+esac
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
+
+# --- card 270b2950 (RedHat residual MEDIUM-LOW + LOW off 11c6cab4 comment 32213/32340):
+# (a) a remote (ssh) agent WITHOUT a customProvider, on the default shared-auth mode, had NO
+# check at all before this card -- it fell straight into needsFleetOauthFor's "needed" branch
+# (no customProvider to trip case 53-57's check), and watchdog.sh then found no local
+# `.claude-config` dir for it (its real config lives on the remote host) and silently printed
+# isolation=no, never reaching the refusal watchdog-provider-env.mjs already had for a remote
+# agent. RedHat's round-1 fixture used the wrong config keys for this case, so it went
+# unmeasured then; round 3's own GO re-measured it correctly and left it open as a residual.
+# (b) an explicit customProvider: null was never pinned by name in the shared classifier,
+# though RedHat measured it already refuses (isCustomProviderFieldUnusable's own `'customProvider'
+# in config` check is true for a present null value, same branch as 1/{}/[]/true above). ---
+
+# 66) BLOCKING (residual (a) repro): remote agent, NO customProvider, default shared auth ->
+#     refuse (fleet-oauth-undecidable), never isolation=no.
+printf '{"remoteHost": "build-box", "remoteWorkdir": "/home/agent/work"}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "66: remote agent, no customProvider, shared auth -> refuse (undecidable), not isolation=no" ;;
+  *) fail "66: remote agent, no customProvider, shared auth -> refuse (undecidable), not isolation=no" "$OUT" ;;
+esac
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
+
+# 67) residual (b) repro: an explicit customProvider: null, default shared auth -> refuse
+#     (fleet-oauth-undecidable), same branch as 1/{}/[]/true (case 53-56), now pinned by name.
+printf '{"customProvider": null}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "67: customProvider=null, shared auth -> refuse (undecidable), not isolation=no" ;;
+  *) fail "67: customProvider=null, shared auth -> refuse (undecidable), not isolation=no" "$OUT" ;;
+esac
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
 
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

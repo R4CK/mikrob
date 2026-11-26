@@ -240,7 +240,9 @@ describe('page wiring (string contracts)', () => {
     }
   })
   it('switchPage loads it, the sidebar group lists it, and the i18n nav/header maps know it', () => {
-    expect(SWITCH).toContain("if (pageId === 'llmMonitor') loadLlmMonitor()")
+    // Card f1e33cfb ("Live load"): loadLlmMonitor() now shares the branch with the relocated
+    // spectrum/llmDist starters, so the exact single-call line is gone -- check the multi-call one.
+    expect(SWITCH).toContain("if (pageId === 'llmMonitor') { loadLlmMonitor(); startOvwSpectrum(); startOvwLlmDist() }")
     expect(GROUPS).toContain("pages: ['costs', 'tokenUsage', 'llmMonitor']")
     expect(NAV).toContain("llmMonitor: 'nav.llmMonitor'")
     expect(NAV).toContain("llmMonitorPage: { title: 'llmMon.page_title',     sub: 'llmMon.page_subtitle' }")
