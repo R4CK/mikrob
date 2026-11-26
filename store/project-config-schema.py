@@ -19,11 +19,17 @@ Usage:
 """
 import json
 import os
+import re
 import sys
 
 REQUIRED_STRING_FIELDS = ("repo", "base_branch", "land_script")
 OPTIONAL_STRING_FIELDS = ("on_create_script",)
 ALL_FIELDS = REQUIRED_STRING_FIELDS + OPTIONAL_STRING_FIELDS
+PATH_FIELDS = ("land_script", "on_create_script")
+
+# Forward invariants from CYBERED GO 28156 on this file's own first version (comment 28158, card
+# 60e5a40e): a project name is a path COMPONENT (joined into projects_dir), never a path itself.
+PROJECT_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 class ProjectConfigError(ValueError):
@@ -66,6 +72,30 @@ def validate_project_config(data, config_path="<config>"):
             f"{config_path}: 'repo' does not exist or is not a directory: {data['repo']}"
         )
 
+    # Forward invariant #3 (comment 28158): base_branch ends up as a git CLI argument in a future
+    # consumer (F6.2) -- a leading '-' would be read as an option, not a ref name.
+    if data["base_branch"].startswith("-"):
+        raise ProjectConfigError(
+            f"{config_path}: 'base_branch' must not look like an option: {data['base_branch']!r}"
+        )
+
+    for field in PATH_FIELDS:
+        value = data.get(field)
+        if not value:
+            continue
+        # Forward invariant #2 (comment 28158): land_script/on_create_script must stay INSIDE
+        # repo. os.path.join silently DISCARDS the first argument when the second is absolute
+        # (os.path.join("/a", "/etc/passwd") == "/etc/passwd"), so an absolute value here would
+        # otherwise point straight outside the repo with no error at all.
+        if value.startswith("/"):
+            raise ProjectConfigError(
+                f"{config_path}: '{field}' must be a relative path, got absolute: {value!r}"
+            )
+        repo_real = os.path.realpath(data["repo"])
+        joined_real = os.path.realpath(os.path.join(data["repo"], value))
+        if joined_real != repo_real and not joined_real.startswith(repo_real + os.sep):
+            raise ProjectConfigError(f"{config_path}: '{field}' escapes the repo: {value!r}")
+
     land_script_path = os.path.join(data["repo"], data["land_script"])
     if not os.path.isfile(land_script_path):
         raise ProjectConfigError(f"{config_path}: 'land_script' does not exist: {land_script_path}")
@@ -82,6 +112,10 @@ def validate_project_config(data, config_path="<config>"):
 
 
 def load_project_config(project, projects_dir=None):
+    # Forward invariant #1 (comment 28158): a project name is joined straight into a filesystem
+    # path below -- '../etc/passwd' or a bare '/' would otherwise escape projects_dir entirely.
+    if not PROJECT_NAME_RE.match(project):
+        raise ProjectConfigError(f"invalid project name: {project!r} (must match ^[a-zA-Z0-9_-]+$)")
     if projects_dir is None:
         projects_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects")
     config_path = os.path.join(projects_dir, f"{project}.json")

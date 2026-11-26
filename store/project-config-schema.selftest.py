@@ -136,6 +136,48 @@ def _load_missing_project():
 
 check("loading a project with no config file is refused", _load_missing_project)
 
+# --- Forward invariants from CYBERED GO 28156 on c661ace4 (comment 28158, card 60e5a40e) ---------
+# Each of the three needs its own negative test in the CONSUMING card -- this is that card.
+
+
+def _load_bad_project_name(name):
+    try:
+        load_project_config(name, os.path.join(STORE, "projects"))
+    except ProjectConfigError as exc:
+        assert "invalid project name" in str(exc), exc
+        return
+    raise AssertionError(f"expected ProjectConfigError for project name {name!r}")
+
+
+check("a path-traversal project name is refused", lambda: _load_bad_project_name("../etc/passwd"))
+check("a project name with a slash is refused", lambda: _load_bad_project_name("sub/dir"))
+check("a dot-dot project name is refused", lambda: _load_bad_project_name(".."))
+
+check(
+    "land_script as an absolute path escaping the repo is refused",
+    lambda: expect_refused({**GOOD, "land_script": "/etc/passwd"}, "must be a relative path"),
+)
+check(
+    "land_script using .. to escape the repo is refused",
+    lambda: expect_refused({**GOOD, "land_script": "../../../etc/passwd"}, "escapes the repo"),
+)
+check(
+    "on_create_script as an absolute path escaping the repo is refused",
+    lambda: expect_refused({**GOOD, "on_create_script": "/etc/passwd"}, "must be a relative path"),
+)
+check(
+    "on_create_script using .. to escape the repo is refused",
+    lambda: expect_refused({**GOOD, "on_create_script": "../../../etc/passwd"}, "escapes the repo"),
+)
+check(
+    "base_branch that looks like an option is refused",
+    lambda: expect_refused({**GOOD, "base_branch": "--upload-pack=evil"}, "must not look like an option"),
+)
+check(
+    "a bare leading-dash base_branch is refused too",
+    lambda: expect_refused({**GOOD, "base_branch": "-x"}, "must not look like an option"),
+)
+
 
 def _load_bad_json():
     tmp = tempfile.mkdtemp()

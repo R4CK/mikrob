@@ -267,6 +267,53 @@ else
   echo "  FAIL expected alice=alice bob=bob shared=intruder, got alice=[$alice_author2] bob=[$bob_author2] shared=[$main_shared_name]"; fail=1
 fi
 
+# F6.2 (card 60e5a40e): project_worktree_on_create wiring, exercised through the REAL script
+# (not just worktree-on-create.sh standalone -- see that file's own selftest for the library's
+# isolated cases). The project is always "marveen" per the script's hardcoded call, so these
+# configure $MAIN/store/projects/marveen.json directly.
+mkdir -p "$MAIN/store/projects"
+cp "$HERE/project-config-schema.py" "$MAIN/store/project-config-schema.py"
+
+n=$((n + 1))
+hook_log="$WORK/hook-calls.log"
+cat > "$MAIN/good-hook.sh" <<EOF
+#!/usr/bin/env bash
+echo "\$1" >> "$hook_log"
+EOF
+chmod +x "$MAIN/good-hook.sh"
+printf '{"repo": "%s", "base_branch": "develop", "land_script": "notes.txt", "on_create_script": "good-hook.sh"}\n' "$MAIN" > "$MAIN/store/projects/marveen.json"
+run hookagent --card ab12cd34ef >/dev/null
+hook_calls_after_create="$(wc -l < "$hook_log" 2>/dev/null || echo 0)"
+run hookagent --card ab12cd34ef >/dev/null  # reuse -- must NOT fire the hook again
+hook_calls_after_reuse="$(wc -l < "$hook_log" 2>/dev/null || echo 0)"
+if [ "$hook_calls_after_create" = "1" ] && [ "$hook_calls_after_reuse" = "1" ]; then
+  echo "  ok   through the real script, on_create fires once on creation and not again on reuse"
+else
+  echo "  FAIL expected 1 call after create and 1 after reuse, got $hook_calls_after_create then $hook_calls_after_reuse"; fail=1
+fi
+
+n=$((n + 1))
+cat > "$MAIN/bad-hook.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$MAIN/bad-hook.sh"
+printf '{"repo": "%s", "base_branch": "develop", "land_script": "notes.txt", "on_create_script": "bad-hook.sh"}\n' "$MAIN" > "$MAIN/store/projects/marveen.json"
+bad_out="$(run backend --card fedc543210 2>&1)"
+bad_rc=$?
+if [ "$bad_rc" = 3 ] \
+  && printf '%s' "$bad_out" | grep -q "on_create hook failed" \
+  && [ ! -e "$ROOT/card/fedc543210" ] \
+  && ! git -C "$MAIN" show-ref --verify --quiet "refs/heads/card/fedc543210"; then
+  echo "  ok   through the real script, a failing on_create exits 3 and removes the half-made worktree + branch"
+else
+  echo "  FAIL expected exit 3 + removed worktree/branch -> rc=$bad_rc out=$bad_out"; fail=1
+fi
+
+# Restore a harmless config (null hook) so it cannot leak into whatever runs after this file in
+# the same process -- not required for this file's own exit code, but keeps the fixture tidy.
+printf '{"repo": "%s", "base_branch": "develop", "land_script": "notes.txt", "on_create_script": null}\n' "$MAIN" > "$MAIN/store/projects/marveen.json"
+
 rm -rf "$WORK"
 
 echo ""
