@@ -33168,3 +33168,24 @@ Ki döntött: cybersec (NO-GO 38977), cybered (NO-GO 38978); backend (applied th
 Végrehajtó: backend.
 Hivatkozás: kártya eed988e7, comments 38977 (CYBERSEC NO-GO), 38978 (CYBERED NO-GO), 38964 (the
 per-card measurement table); card 5ecf6133 (point 5 above folded into its scope).
+
+## KG node embedding coverage: upsertNode auto-embed + backfill (kártya 6d542dc9)
+
+Root cause: `upsertNode` (src/kg/store.ts) never generated an embedding on write, even though the
+`kg_nodes.embedding` column and `hybridKgSearch`'s semantic read branch already existed -- measured
+0/890 `kg_nodes` with a non-null embedding on the live `store/knowledge-graph.db`.
+
+Fix: single write path, not per-call-site. `kgEmbedText()` joins title/body/snippet/keywords;
+`upsertNode()` fire-and-forget schedules a local-only Ollama embedding (`generateEmbedding`, src/db.ts,
+same as the memories backfill, no external call) unless the caller explicitly supplied one (including
+explicit null); `backfillKgNodeEmbeddings(db, limit)` drains existing NULL rows in batches. Measured
+after backfill on the live DB: 896/896 embedded, 0 failed (total grew from 890 to 896 during the run
+because new captures auto-embedded via the same hook). Full kg test suite 28 files/413 tests green,
+new file `src/__tests__/kg-embed-backfill.test.ts` (6 tests) added TDD-first; `npx tsc --noEmit -p .`
+clean.
+
+Ki döntött: fullstack (builder); gate: QA + WhiteHat pending.
+Végrehajtó: fullstack.
+Hivatkozás: kártya 6d542dc9, parent kártya 5ecf6133 (anchor-path + scoring fix, backend, zero file
+overlap confirmed), Peti 14753 (priority raise, "a tudásgráf használható kell legyen az ügynökök
+számára").
