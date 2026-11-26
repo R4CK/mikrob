@@ -499,6 +499,14 @@ export const EMBED_QUEUE_BOUND = 50
 let embedDroppedCount = 0
 let embedFailedCount = 0
 let backfillSweepTimer: ReturnType<typeof setTimeout> | null = null
+// F-3 (card 7f3cbe92, CYBERSEC NO-GO 39145): backfillSweepTimer is cleared to null the MOMENT the
+// timer fires, before the (long-running, up to BACKFILL_SWEEP_LIMIT rows x 100ms each)
+// backfillKgNodeEmbeddings call even starts -- so a drop/failure arriving while that call is still
+// in flight saw no pending timer and scheduled a SECOND, fully concurrent sweep over the same NULL
+// rows. Measured: backend down + a write every 3s -> 10,761 embed calls in 120s (repeated,
+// overlapping re-selection of the same backlog, not a single clean drain). This flag covers the
+// gap the timer alone cannot: "currently executing", not just "currently pending".
+let backfillSweepRunning = false
 const BACKFILL_SWEEP_DELAY_MS = 2000
 const BACKFILL_SWEEP_LIMIT = 2000
 
@@ -508,6 +516,18 @@ export function getEmbedDropCount(): number {
 
 export function getEmbedFailedCount(): number {
   return embedFailedCount
+}
+
+// CYBERSEC NO-GO 39145 F-5: resetEmbedCountersForTest() below (needed so one test's leaked
+// elevated embedActive cannot silently starve the NEXT test's slots) also wipes out the ONLY
+// thing that used to pin slot release at all: a deleted `embedActive--` in runEmbedSlot's
+// finally() left embedActive permanently elevated and leaked into the following test, which then
+// failed for an unrelated reason -- an implicit, accidental pin, and resetting between tests
+// erases exactly that leak before the next test can see it, so the mutant survives here while
+// still dying on develop (which has no such reset). Pin it explicitly and directly instead of
+// depending on cross-test leakage (guards-that-pin-behaviour point 1: ask for the resolved value).
+export function getEmbedActiveForTest(): number {
+  return embedActive
 }
 
 /** Test-only: the counters, the active/queue slot state and the pending-sweep timer are all
@@ -524,23 +544,49 @@ export function resetEmbedCountersForTest(): void {
     clearTimeout(backfillSweepTimer)
     backfillSweepTimer = null
   }
+  backfillSweepRunning = false
 }
 
 function scheduleBackfillSweep(db: Database.Database): void {
-  if (backfillSweepTimer) return
+  // F-3: single-flight -- a sweep already PENDING (timer set) or already RUNNING (the long async
+  // backfillKgNodeEmbeddings call itself) both skip scheduling a new one. The re-arm path in the
+  // .then() below (F-2) is the only other caller, and it runs after backfillSweepRunning is
+  // cleared, so it is never blocked by the pass it is re-arming for.
+  if (backfillSweepTimer || backfillSweepRunning) return
   backfillSweepTimer = setTimeout(() => {
     backfillSweepTimer = null
-    void backfillKgNodeEmbeddings(db, BACKFILL_SWEEP_LIMIT).catch(() => {
-      // best-effort self-heal; a failed sweep leaves rows NULL for the next trigger or an
-      // operator-run backfill, same posture as any other embed failure in this module.
-    })
+    backfillSweepRunning = true
+    void backfillKgNodeEmbeddings(db, BACKFILL_SWEEP_LIMIT)
+      .then((result) => {
+        // Cleared BEFORE the possible re-arm call below, not in a trailing .finally(): the
+        // single-flight guard above would otherwise block that exact call.
+        backfillSweepRunning = false
+        // F-2 (card 7f3cbe92, CYBERSEC NO-GO 39145): a single sweep only ever closed up to
+        // BACKFILL_SWEEP_LIMIT rows and nothing re-armed another one -- a backlog bigger than
+        // the limit (measured: 2500 NULL rows, 446 still NULL after +1h) stayed partially NULL
+        // forever. `attempted === limit` means the SELECT ... LIMIT ? query hit the cap, so more
+        // rows may remain; keep re-arming until a pass comes back under the limit.
+        if (result.attempted >= BACKFILL_SWEEP_LIMIT) {
+          scheduleBackfillSweep(db)
+        }
+      })
+      .catch(() => {
+        backfillSweepRunning = false
+        // best-effort self-heal; a failed sweep leaves rows NULL for the next trigger or an
+        // operator-run backfill, same posture as any other embed failure in this module.
+      })
   }, BACKFILL_SWEEP_DELAY_MS)
 }
 
 function runEmbedSlot(db: Database.Database, run: () => Promise<boolean>): void {
   const start = (): void => {
     embedActive++
-    run()
+    // CYBERSEC NO-GO 39145 F-1: this chain was `void`-marked on 6d542dc9 (no-floating-promises)
+    // and the `void` was lost in the conflict resolution that rebased this card onto that landing
+    // -- restoring it here, not just satisfying the linter: a floating promise here is also a
+    // promise whose rejection the runtime can surface unhandled (none of run()/then()/finally()
+    // currently reject, but the rest of this file never relies on that holding forever either).
+    void run()
       .then((ok) => {
         if (!ok) {
           embedFailedCount++
@@ -774,10 +820,28 @@ export async function backfillKgNodeEmbeddings(
     const text = kgEmbedText(row.title, row.body, row.snippet, row.keywords)
     const emb = await generateEmbedding(text)
     if (emb) {
-      db.prepare('UPDATE kg_nodes SET embedding = ?, embed_model = ? WHERE id = ?').run(
+      // F-4 (card 7f3cbe92, CYBERSEC NO-GO 39145): generateEmbedding above can take long enough
+      // for the node's text to change, or for its OWN fire-and-forget re-embed to already have
+      // succeeded, while this call was in flight. An unconditional UPDATE here would overwrite
+      // either outcome with a vector computed from TEXT THIS ROW NO LONGER HAS -- and since the
+      // column is then no longer NULL, this WHERE embedding IS NULL sweep would never see it
+      // again to repair it. Guarded on embedding IS NULL (nobody already wrote a fresher one) AND
+      // every field the embedded text was built from still matching what was read above -- if
+      // either moved, this UPDATE becomes a no-op and the row (still NULL) is caught by the next
+      // sweep instead of being clobbered with a stale-but-present vector.
+      db.prepare(
+        `UPDATE kg_nodes SET embedding = ?, embed_model = ?
+         WHERE id = ? AND embedding IS NULL
+           AND title = ? AND COALESCE(body, '') = COALESCE(?, '')
+           AND COALESCE(snippet, '') = COALESCE(?, '') AND COALESCE(keywords, '') = COALESCE(?, '')`,
+      ).run(
         Buffer.from(JSON.stringify(emb)),
         EMBED_MODEL,
         row.id,
+        row.title,
+        row.body,
+        row.snippet,
+        row.keywords,
       )
       embedded++
     }
