@@ -262,22 +262,52 @@ else
 
   # --- card 3f6bb903: holder-ensure runs on EVERY tick, before either early
   #     exit (healthy, or fresh-boot-grace skip) ---------------------------
-  check_line "3f6bb903: holder-ensure check calls pgrep for the holder process" \
-    '$holderOut = & wsl.exe -d $Distro -u $WslUser -- pgrep -f "sleep infinity" 2>$null' \
+  # CYBERED NO-GO (comment 38947, F-1/F-2): the original form called
+  # `pgrep -f "sleep infinity"` directly through wsl.exe's `--` hop, which is
+  # unproven and measured both ways (self-match through a non-bash parent
+  # shell -> never relaunches; lost quoting -> relaunches every tick
+  # unboundedly). Replaced with a dedicated, Linux-testable script invoked
+  # the same way the rollback/notify scripts already are.
+  check_absent "F-1/F-2 regression: the vulnerable inline pgrep form through wsl.exe's -- hop is gone" \
+    'wsl.exe -d $Distro -u $WslUser -- pgrep -f "sleep infinity"' "$PS1_CONTENT"
+  check_absent "F-1/F-2 regression: the old any-nonzero-relaunches condition is gone" \
+    'if ($LASTEXITCODE -ne 0 -or -not $holderOut) {' "$PS1_CODE"
+  check "3f6bb903: holder-ensure command variable declared" '$HolderEnsureCmd' "$PS1_CONTENT"
+  check_line "3f6bb903: holder-ensure is invoked as a named script via bash -lc (same pattern as rollback/notify, nothing left for wsl.exe to mis-quote)" \
+    '$holderOut = & wsl.exe -d $Distro -u $WslUser -e bash -lc $HolderEnsureCmd 2>$null' \
     "$PS1_CONTENT"
-  check_line "3f6bb903: missing/failed holder check launches a new holder" \
-    'if ($LASTEXITCODE -ne 0 -or -not $holderOut) {' \
+  check_line "F-2 fix: a relaunch requires BOTH exit=1 AND the HOLDER_MISSING marker, not just a nonzero exit" \
+    "if (\$holderCheckExit -eq 1 -and (\$holderOut -cmatch '^HOLDER_MISSING')) {" \
     "$PS1_CODE"
+  check_line "F-2 fix: any other inconclusive result explicitly does NOT relaunch (fail-closed)" \
+    '} elseif ($holderCheckExit -ne 0) {' "$PS1_CODE"
   # The holder-ensure block (lines pinned above) must appear BEFORE the
   # healthy early-exit in the rendered code -- otherwise a healthy tick would
   # never reach it, reintroducing exactly the bug this card fixes.
-  HOLDER_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n 'pgrep -f "sleep infinity"' | head -1 | cut -d: -f1)"
+  HOLDER_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n '\$HolderEnsureCmd 2>\$null' | head -1 | cut -d: -f1)"
   HEALTHY_EXIT_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n 'if ($healthy) {' | head -1 | cut -d: -f1)"
   if [ -n "$HOLDER_IDX" ] && [ -n "$HEALTHY_EXIT_IDX" ] && [ "$HOLDER_IDX" -lt "$HEALTHY_EXIT_IDX" ]; then
     echo "  ok   3f6bb903: holder-ensure runs BEFORE the healthy early-exit (line $HOLDER_IDX < $HEALTHY_EXIT_IDX)"
   else
     echo "  FAIL 3f6bb903: holder-ensure must run before the healthy early-exit (got holder=$HOLDER_IDX healthy-exit=$HEALTHY_EXIT_IDX)"
     fail=1
+  fi
+
+  # Regression guard for the EXACT bug this delta introduced and caught on
+  # its own render (markdown-style backticks in a PS1-comment inside the
+  # UNQUOTED <<PS1EOF heredoc get command-substituted at render time, since a
+  # heredoc body is not shell-comment-aware regardless of a leading '#').
+  # A clean render must produce ZERO stderr; this would have caught it.
+  DRYRUN_STDERR="$TMP/render-stderr.txt"
+  mkdir -p "$TMP/run-stderr-check"
+  : > "$CALL_LOG"
+  INSTALL_WSL_WATCHDOG_DRY_RUN=1 INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR="$TMP/run-stderr-check" \
+    run_isolated >/dev/null 2>"$DRYRUN_STDERR"
+  if [ -s "$DRYRUN_STDERR" ]; then
+    echo "  FAIL heredoc-safety: dry-run produced stderr output (a backtick or \$(...) inside the PS1EOF heredoc body gets command-substituted at render time, since heredoc bodies ignore a leading '#'): $(cat "$DRYRUN_STDERR")"
+    fail=1
+  else
+    echo "  ok   heredoc-safety: dry-run render produced zero stderr (guards against backtick/\$(...) command substitution inside the unquoted PS1EOF heredoc)"
   fi
 
   # --- card 3f6bb903: unplanned-restart detection + alert -------------------
@@ -497,6 +527,73 @@ if [ -f "$PS1_PATH" ]; then
   check_absent "OK-match fail-open: raw text never reintroduces the loose match either" '-match "OK"' "$PS1_CONTENT"
   check_line "X4: the wedged distro is actually terminated before relaunch" '    & wsl.exe --terminate $Distro 2>$null' "$PS1_CODE_X"
   check_line "X5: a healthy read resets the restart-count state" '  Set-Content -Path $RestartCountFile -Value "0"' "$PS1_CODE_X"
+fi
+
+# --- card 3f6bb903: wsl-watchdog-holder-ensure.sh itself (the script the
+#     CYBERED NO-GO fix moved the decision into), real execution on Linux --
+HOLDER_SCRIPT="$(dirname "$0")/wsl-watchdog-holder-ensure.sh"
+if [ -x "$HOLDER_SCRIPT" ]; then
+  HOLDER_OUT_BASELINE="$(bash "$HOLDER_SCRIPT")"; HOLDER_RC_BASELINE=$?
+  case "$HOLDER_OUT_BASELINE" in
+    HOLDER_OK*) BASELINE_HOLDERS=1 ;;
+    HOLDER_MISSING*) BASELINE_HOLDERS=0 ;;
+    *) BASELINE_HOLDERS=-1 ;;
+  esac
+
+  if [ "$BASELINE_HOLDERS" -ge 0 ]; then
+    echo "  ok   holder-ensure: baseline read is a clean OK or MISSING verdict ('$HOLDER_OUT_BASELINE', rc=$HOLDER_RC_BASELINE)"
+  else
+    echo "  FAIL holder-ensure: baseline read was ambiguous/erroneous ('$HOLDER_OUT_BASELINE', rc=$HOLDER_RC_BASELINE) -- cannot run the relative checks below"
+    fail=1
+  fi
+
+  # Add exactly one real holder: count must go up by exactly one and read OK
+  # or AMBIGUOUS depending on the baseline, never MISSING.
+  /bin/sleep infinity &
+  HOLDER_TEST_PID=$!
+  sleep 0.3
+  HOLDER_OUT_PLUS1="$(bash "$HOLDER_SCRIPT")"; HOLDER_RC_PLUS1=$?
+  kill "$HOLDER_TEST_PID" 2>/dev/null; wait "$HOLDER_TEST_PID" 2>/dev/null
+  if [ "$BASELINE_HOLDERS" -eq 0 ]; then
+    check "holder-ensure: adding the ONLY real holder reads HOLDER_OK" "HOLDER_OK count=1" "$HOLDER_OUT_PLUS1"
+    [ "$HOLDER_RC_PLUS1" -eq 0 ] && echo "  ok   holder-ensure: exit code 0 for exactly-one-holder" \
+      || { echo "  FAIL holder-ensure: expected exit 0, got $HOLDER_RC_PLUS1"; fail=1; }
+  else
+    check "holder-ensure: adding a SECOND real holder reads HOLDER_AMBIGUOUS" "HOLDER_AMBIGUOUS" "$HOLDER_OUT_PLUS1"
+    [ "$HOLDER_RC_PLUS1" -eq 2 ] && echo "  ok   holder-ensure: exit code 2 for ambiguous (2+) holders" \
+      || { echo "  FAIL holder-ensure: expected exit 2, got $HOLDER_RC_PLUS1"; fail=1; }
+  fi
+
+  # Lookalike: a file literally named "sleep infinity" must NOT be counted --
+  # this is the exact CYBERED F-1 "lookalike" shape (process whose cmdline
+  # CONTAINS the search text without being argv=["sleep","infinity"]).
+  LOOKALIKE_PATH="$TMP/sleep infinity"
+  printf '#!/bin/bash\nsleep 5\n' > "$LOOKALIKE_PATH"
+  chmod +x "$LOOKALIKE_PATH"
+  bash "$LOOKALIKE_PATH" &
+  LOOKALIKE_PID=$!
+  sleep 0.3
+  HOLDER_OUT_LOOKALIKE="$(bash "$HOLDER_SCRIPT")"
+  kill "$LOOKALIKE_PID" 2>/dev/null; wait "$LOOKALIKE_PID" 2>/dev/null
+  [ "$HOLDER_OUT_LOOKALIKE" = "$HOLDER_OUT_BASELINE" ] \
+    && echo "  ok   holder-ensure F-1 fix: a file literally named 'sleep infinity' is NOT counted as a holder (unchanged from baseline: '$HOLDER_OUT_LOOKALIKE')" \
+    || { echo "  FAIL holder-ensure F-1 regression: a lookalike-named process changed the verdict (baseline='$HOLDER_OUT_BASELINE' now='$HOLDER_OUT_LOOKALIKE')"; fail=1; }
+
+  # Self-match: invoking via a non-bash shell (dash) as the parent must not
+  # change the verdict either -- this is the CYBERED F-1 "self-match" shape.
+  # (Production always forces bash explicitly via `-e bash -lc`, but the
+  # detection logic itself must not depend on that for correctness.)
+  if command -v dash >/dev/null 2>&1; then
+    HOLDER_OUT_DASH="$(dash -c "bash '$HOLDER_SCRIPT'")"
+    [ "$HOLDER_OUT_DASH" = "$HOLDER_OUT_BASELINE" ] \
+      && echo "  ok   holder-ensure F-1 fix: invoking via a dash parent does not change the verdict" \
+      || { echo "  FAIL holder-ensure F-1 regression: dash-parent invocation changed the verdict (baseline='$HOLDER_OUT_BASELINE' now='$HOLDER_OUT_DASH')"; fail=1; }
+  else
+    echo "  ok   holder-ensure F-1 (self-match): dash not installed on this host, skipping that specific shell -- exact argv match (not a pgrep -f substring) makes this shell-independent by construction anyway"
+  fi
+else
+  echo "  FAIL wsl-watchdog-holder-ensure.sh not found or not executable at $HOLDER_SCRIPT"
+  fail=1
 fi
 
 if [ "$fail" -eq 0 ]; then

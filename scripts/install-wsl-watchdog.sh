@@ -195,6 +195,7 @@ cat > "$WATCHDOG_WSL" <<PS1EOF
 \$Probe       = "$INSTALL_DIR/scripts/wsl-liveness-probe.sh"
 \$RollbackCmd = "$INSTALL_DIR/scripts/wsl-watchdog-rollback-notify.sh"
 \$UnplannedRestartNotifyCmd = "$INSTALL_DIR/scripts/wsl-watchdog-unplanned-restart-notify.sh"
+\$HolderEnsureCmd = "$INSTALL_DIR/scripts/wsl-watchdog-holder-ensure.sh"
 \$MaxFails    = 3   # consecutive fails (~15 min @ 5-min cadence) before a restart
 # Peti 2026-08-05: "if you can't start on the first try, try 2 more times, then
 # restore yourself to the last working backup -- I shouldn't have to start WSL
@@ -245,12 +246,28 @@ function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf
 # until the NEXT restart -- and both the \$healthy early-exit above and the
 # fresh-boot-grace skip below return before ever reaching that branch, so the
 # distro silently lost its only anti-idle-termination client and powered off
-# ~14 min later with no watchdog action at all. pgrep's own exit code is the
-# idempotency check: a holder already running means nothing new is launched.
-\$holderOut = & wsl.exe -d \$Distro -u \$WslUser -- pgrep -f "sleep infinity" 2>\$null
-if (\$LASTEXITCODE -ne 0 -or -not \$holderOut) {
-  Log "no keepalive holder found on this tick -- launching one"
+# ~14 min later with no watchdog action at all.
+#
+# CYBERED NO-GO (comment 38947, F-1/F-2): calling 'pgrep -f "sleep infinity"'
+# directly through wsl.exe's '--' hop (the prior form of this check) is
+# unproven and measured both ways -- a self-matching parent shell makes it
+# never relaunch, or lost quoting on the way in makes it relaunch on EVERY
+# tick unboundedly. \$HolderEnsureCmd is a dedicated, named, Linux-testable
+# script invoked the SAME way the rollback/notify scripts already are
+# (bash -lc on a plain path, nothing left for wsl.exe to mis-quote), and it
+# reports a precise exit code rather than an ambiguous LASTEXITCODE: 0 =
+# exactly one holder, 1 = zero holders (relaunch), 2 = ambiguous/error (do
+# NOT relaunch, to avoid piling up duplicates on top of an already-odd
+# state -- the F-2 fix). Checking the HOLDER_MISSING marker in addition to
+# exit=1 guards against a wsl.exe-level failure (VM wedge) coincidentally
+# also returning 1 and being mistaken for a clean "zero holders" answer.
+\$holderOut = & wsl.exe -d \$Distro -u \$WslUser -e bash -lc \$HolderEnsureCmd 2>\$null
+\$holderCheckExit = \$LASTEXITCODE
+if (\$holderCheckExit -eq 1 -and (\$holderOut -cmatch '^HOLDER_MISSING')) {
+  Log "no keepalive holder found on this tick (out='\$holderOut') -- launching one"
   Start-Process -WindowStyle Hidden -FilePath "wsl.exe" -ArgumentList @("-d", \$Distro, "--exec", "/bin/sleep", "infinity")
+} elseif (\$holderCheckExit -ne 0) {
+  Log "holder-ensure check inconclusive (exit=\$holderCheckExit out='\$holderOut') -- NOT relaunching (fail-closed; avoids an unbounded relaunch flood on a VM/probe failure or an ambiguous multi-holder state)"
 }
 
 # Read the DISTRO's PID 1 age INSIDE wsl (a separate call -- the liveness
