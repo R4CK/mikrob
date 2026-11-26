@@ -123,11 +123,8 @@ while IFS= read -r -d '' link; do
     exit 4
   }
   link_dir_real="$(realpath -- "$(dirname "$link")")"
-  case "$link_dir_real" in
-    "$resolved"|"$resolved"/*)
-      echo "vendor-skill: upstream symlink creates a loop (points at its own ancestor): $link -> $resolved" >&2
-      exit 4 ;;
-  esac
+  # MUTATION-TEST-F: temporarily disabled ancestor-loop guard (to be reverted)
+  : "$link_dir_real"
   case "$resolved" in
     "$src_real"/*|"$src_real") ;;
     *) echo "vendor-skill: upstream symlink escapes its own tree: $link -> $resolved" >&2; exit 4 ;;
