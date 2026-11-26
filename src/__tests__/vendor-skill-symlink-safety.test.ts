@@ -199,6 +199,173 @@ describe('F2 (card af3cd669): a broken/cyclic upstream symlink aborts before any
     const dest = join(skillsDir, 'rootfoo')
     expect(existsSync(join(dest, '.git'))).toBe(false)
   })
+
+  // CYBERED NO-GO 39256, finding F-1: the broken-symlink tests above use a target whose PARENT
+  // directory is also missing (`/this/path/does/not/exist/...`) -- the one shape plain `realpath`
+  // (no -e) actually fails to resolve. A dangling symlink whose target's PARENT exists, only the
+  // final component is missing, resolves fine under plain `realpath` (it only requires leading
+  // components to exist), so it passed the old containment check and let the destructive steps
+  // run before `cp -RL` itself failed on the missing file.
+  it('a dangling symlink whose missing target sits in an EXISTING directory aborts before any destructive step', () => {
+    const upstream = initUpstream()
+    const skillsDir = mkdtemp('vendor-skill-symsafe-skills-')
+    const dest = join(skillsDir, 'foo')
+
+    let res = runVendor(
+      ['--repo', upstream, '--name', 'foo', '--subdir', 'skills/foo'],
+      { CLAUDE_SKILLS_DIR: skillsDir },
+    )
+    expect(res.status, res.stderr).toBe(0)
+    const vendoredBefore = readFileSync(join(dest, 'VENDORED.md'), 'utf-8')
+
+    symlinkSync('missing.txt', join(upstream, 'skills', 'foo', 'dangling'))
+    git(upstream, 'add', '-A')
+    git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'dangling symlink, existing parent')
+
+    res = runVendor(
+      ['--repo', upstream, '--name', 'foo', '--subdir', 'skills/foo'],
+      { CLAUDE_SKILLS_DIR: skillsDir },
+    )
+    expect(res.status).not.toBe(0)
+    expect(readFileSync(join(dest, 'SKILL.md'), 'utf-8')).toBe('free content\n')
+    expect(readFileSync(join(dest, 'VENDORED.md'), 'utf-8')).toBe(vendoredBefore)
+  })
+
+  it('a dangling symlink (existing-parent variant) at a root-vendor never leaves a .git behind in dest', () => {
+    const upstream = initUpstream()
+    symlinkSync('missing.txt', join(upstream, 'dangling-root'))
+    git(upstream, 'add', '-A')
+    git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'root-level dangling symlink')
+
+    const skillsDir = mkdtemp('vendor-skill-symsafe-skills-')
+    const res = runVendor(['--repo', upstream, '--name', 'rootfoo2'], { CLAUDE_SKILLS_DIR: skillsDir })
+
+    expect(res.status).not.toBe(0)
+    const dest = join(skillsDir, 'rootfoo2')
+    expect(existsSync(join(dest, '.git'))).toBe(false)
+  })
+
+  // CYBERED NO-GO 39256, finding F-1 continued: a directory symlink pointing at its own ancestor
+  // (here `d/up -> ..`, i.e. back at $src) resolves to a real, existing, in-tree target, so it
+  // passed BOTH the existence check and the old containment check (which explicitly allowed
+  // "resolves to src itself"). `cp -RL` dereferencing it then recurses without bound, failing only
+  // after the destructive cleanup already ran.
+  it('a directory symlink that loops back to an ancestor (including $src itself) is rejected up front', () => {
+    const upstream = initUpstream()
+    mkdirSync(join(upstream, 'skills', 'foo', 'd'))
+    symlinkSync('..', join(upstream, 'skills', 'foo', 'd', 'up'), 'dir')
+    git(upstream, 'add', '-A')
+    git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'ancestor-loop symlink')
+
+    const skillsDir = mkdtemp('vendor-skill-symsafe-skills-')
+    const res = runVendor(
+      ['--repo', upstream, '--name', 'foo', '--subdir', 'skills/foo'],
+      { CLAUDE_SKILLS_DIR: skillsDir },
+    )
+    expect(res.status).not.toBe(0)
+    expect(existsSync(join(skillsDir, 'foo'))).toBe(false)
+  })
+})
+
+describe('F1 residuals (card af3cd669, CYBERED NO-GO 39256 F-2): the old guard only validated symlinks already found under $src, not the three routes below that redirect $src/LICENSE_FILE themselves', () => {
+  it('refuses to vendor when --subdir itself resolves, via a symlink, outside the upstream clone', () => {
+    const outside = mkdtemp('vendor-skill-symsafe-outside-')
+    const sentinelPath = join(outside, 'canary.txt')
+    writeFileSync(sentinelPath, 'LOCAL CANARY -- must never be vendored\n')
+
+    const upstream = initUpstream()
+    symlinkSync(outside, join(upstream, 'skills', 'evil'), 'dir')
+    git(upstream, 'add', '-A')
+    git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'subdir itself is an escaping symlink')
+
+    const skillsDir = mkdtemp('vendor-skill-symsafe-skills-')
+    const res = runVendor(
+      ['--repo', upstream, '--name', 'evilname', '--subdir', 'skills/evil'],
+      { CLAUDE_SKILLS_DIR: skillsDir },
+    )
+    expect(res.status).not.toBe(0)
+    expect(existsSync(join(skillsDir, 'evilname'))).toBe(false)
+    expect(readFileSync(sentinelPath, 'utf-8')).toBe('LOCAL CANARY -- must never be vendored\n')
+  })
+
+  it('refuses to vendor when a MIDDLE component of --subdir is a symlink escaping the clone', () => {
+    const outside = mkdtemp('vendor-skill-symsafe-outside-')
+    mkdirSync(join(outside, 's'))
+    const sentinelPath = join(outside, 's', 'canary.txt')
+    writeFileSync(sentinelPath, 'LOCAL CANARY -- must never be vendored\n')
+
+    const upstream = initUpstream()
+    symlinkSync(outside, join(upstream, 'skills', 'link'), 'dir')
+    git(upstream, 'add', '-A')
+    git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'middle-component escaping symlink')
+
+    const skillsDir = mkdtemp('vendor-skill-symsafe-skills-')
+    const res = runVendor(
+      ['--repo', upstream, '--name', 'evilname2', '--subdir', 'skills/link/s'],
+      { CLAUDE_SKILLS_DIR: skillsDir },
+    )
+    expect(res.status).not.toBe(0)
+    expect(existsSync(join(skillsDir, 'evilname2'))).toBe(false)
+    expect(readFileSync(sentinelPath, 'utf-8')).toBe('LOCAL CANARY -- must never be vendored\n')
+  })
+
+  it('refuses to vendor when the resolved LICENSE file escapes the upstream clone via a symlink', () => {
+    const outside = mkdtemp('vendor-skill-symsafe-outside-')
+    const sentinelPath = join(outside, 'local-license.txt')
+    writeFileSync(sentinelPath, 'LOCAL LICENSE CONTENT -- must never be vendored\n')
+
+    const upstream = initUpstream()
+    symlinkSync(sentinelPath, join(upstream, 'LICENSE'))
+    git(upstream, 'add', '-A')
+    git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'LICENSE is an escaping symlink')
+
+    const skillsDir = mkdtemp('vendor-skill-symsafe-skills-')
+    const res = runVendor(
+      ['--repo', upstream, '--name', 'foo', '--subdir', 'skills/foo'],
+      { CLAUDE_SKILLS_DIR: skillsDir },
+    )
+    expect(res.status).not.toBe(0)
+    const dest = join(skillsDir, 'foo')
+    if (existsSync(dest)) {
+      expect(existsSync(join(dest, 'UPSTREAM-LICENSE'))).toBe(false)
+    }
+    expect(readFileSync(sentinelPath, 'utf-8')).toBe('LOCAL LICENSE CONTENT -- must never be vendored\n')
+  })
+})
+
+describe('F3 fixture gaps (card af3cd669, CYBERED NO-GO 39256 F-3): pin the slash in the containment check and the equal-to-src rejection', () => {
+  it('refuses a symlink resolving to a SIBLING directory sharing a name prefix with $src', () => {
+    const upstream = initUpstream()
+    mkdirSync(join(upstream, 'skills', 'foo-evil'))
+    const sentinelPath = join(upstream, 'skills', 'foo-evil', 'canary.txt')
+    writeFileSync(sentinelPath, 'LOCAL CANARY -- must never be vendored\n')
+    symlinkSync('../foo-evil/canary.txt', join(upstream, 'skills', 'foo', 'link'))
+    git(upstream, 'add', '-A')
+    git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'sibling-prefix escaping symlink')
+
+    const skillsDir = mkdtemp('vendor-skill-symsafe-skills-')
+    const res = runVendor(
+      ['--repo', upstream, '--name', 'foo', '--subdir', 'skills/foo'],
+      { CLAUDE_SKILLS_DIR: skillsDir },
+    )
+    expect(res.status).not.toBe(0)
+    expect(existsSync(join(skillsDir, 'foo'))).toBe(false)
+  })
+
+  it('refuses a symlink that resolves to $src itself', () => {
+    const upstream = initUpstream()
+    symlinkSync('.', join(upstream, 'skills', 'foo', 'self'), 'dir')
+    git(upstream, 'add', '-A')
+    git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'self-referential symlink')
+
+    const skillsDir = mkdtemp('vendor-skill-symsafe-skills-')
+    const res = runVendor(
+      ['--repo', upstream, '--name', 'foo', '--subdir', 'skills/foo'],
+      { CLAUDE_SKILLS_DIR: skillsDir },
+    )
+    expect(res.status).not.toBe(0)
+    expect(existsSync(join(skillsDir, 'foo'))).toBe(false)
+  })
 })
 
 describe('F3 (card af3cd669): the symlink-defense-in-depth guards are reachable, not dead code', () => {
