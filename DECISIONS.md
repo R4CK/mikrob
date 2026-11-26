@@ -33972,3 +33972,54 @@ Ki döntött: MikroB (kártyanyitás + a megoldás iránya, üzenet 25089, optio
 Hivatkozás: kártya cd872e72 (szülő b736f51a); d97659cb (blokkolt kártya, üzenet 25088);
 3f6bb903 (korábbi, ugyanilyen leolvasás, 11:28); `scripts/install-wsl-watchdog.sh`,
 `scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 -- Kártya cd872e72 2. kör: classify_task_state() szóhatár-rés (L-1) +
+## négy szerkezeti feltétel egyenkénti pin-je (L-3) + run_isolated_stderr_only()
+## kontroll-pin (L-4) (CYBERSEC GO 39190, MikroB üzenet 25151)
+
+Az első kör ("absent" = a `<Enabled>` literál szubsztring hiánya) szűk volt: egy eltérő
+írásmódú Enabled-tag (szóköz a záró `>` előtt, önmagát-záró `<Enabled/>`, névtér-előtagolt,
+attribútumot hordozó) NEM tartalmazza a `<Enabled>` literál szubsztringet, tehát átcsúszott
+volna a "ready" ágra -- pontosan az az irány, amit az 58badae1 H1 tilt (egy letiltott task
+újra-engedélyezése). CYBERSEC (GO 39190, L-1 lelet) és MikroB (üzenet 25151, MUST-FIX)
+mérte/döntötte.
+
+**Döntés 1 (L-1 javítás):** az "absent" teszt mostantól a sima "Enabled" szó (kis-nagybetű
+független, szögletes zárójel NÉLKÜL) teljes hiányát nézi a kimenetben, nem a `<Enabled>`
+literált. KÖVETKEZTETÉS: ez a leggyengébb lehetséges feltétel, ami minden eddig ismert
+írásmódot elkap (szóközös, önmagát-záró, névtér-előtagolt, attribútumos), anélkül hogy
+felsorolná őket (guards-that-pin-behaviour 4. pont: inverzió, ne enumeráció).
+
+**Döntés 2 (L-3 pin-gap zárás):** 4 új fixture, mindegyik PONTOSAN egy darabot hagy ki a
+4-tagú ÉS-láncból (`<Settings>`, `</Settings>`, `<Task`, `</Task>`), a másik hármat
+érvényesen tartva -- az 1. köri csonkolt fixture-ök MINDKÉT zárót egyszerre hagyták ki, így
+egy láncszem kivétele a másik maszkolása miatt észrevétlen maradt (CYBERSEC mutáció K4-K7
+mind túlélte). Egy 5. fixture az `<Enabled>true</Enabled>` ág rc-kapuját pinneli
+(rc!=0 + true szöveg -> unknown, K11).
+
+**Döntés 3 (L-4 kontroll-pin):** a selftest-fájl `run_isolated_stderr_only()` segédje maga
+sosem volt tesztelve arra, hogy TÉNYLEG továbbadja a valós stderr-t -- csak arra, hogy egy
+tiszta render esetén 0 bájtot ad. Egy regresszió (visszaállás a vakon-zöld `2>&1`-es
+`run_isolated()` alakra) a nulla-stderr check-et is simán zöldre vinné, mert MINDKÉT fél
+(BIN és a saját stdout) nullára olvasna. Új kontroll: egy stub BIN, ami garantáltan ír
+stderr-re, és a teszt elvárja, hogy a capture NEM üres.
+
+MEGFIGYELÉS (TDD, mind a 3 döntésre): a 4 új L-1 fixture a javítás ELŐTT pirosra futott
+(a régi `<Enabled>` literál teszt nem fogta meg őket), az L-3/L-4 fixture-ök már a javítás
+előtt is zöldek voltak (meglévő kódot pinnelnek, nem új ágat). Javítás után mind a 142 teszt
+zöld (0 FAIL). Mutáció: az egyetlen megváltozott sor (`'Enabled'` vissza `'<Enabled>'`-re)
+pontosan a 4 új L-1 esetet buktatja, semmi mást -- nem kaszkád, a javítás terhelő és
+nem-vákuum. A mutált fájl és az eredeti sha256 ellenőrzéssel visszaállítva byte-azonosra.
+
+**Mi maradt ki:** CYBERSEC L-2 (a "jól formázott" teszt négy független substring-grep,
+nem valódi struktúra-elemzés) SZÁNDÉKOSAN nyitva -- MikroB üzenete ezt OPCIONÁLISNAK
+jelölte ("csak ha kicsi marad"), és egy valódi XML-parse-ra váltás ehhez a bash-only
+scripthez aránytalan komplexitást adna egy LOW kockázatú résért (a schtasks valós kimenete
+nem produkál ilyen torz szöveget). d97659cb élő telepítés/kill-teszt továbbra is várja
+MikroB külön go-ját.
+
+Ki döntött: MikroB (F-1/F-3/L-4 MUST-FIX kijelölése, üzenet 25151; L-2 opcionálisként
+hagyása). CYBERSEC (39190, a 4 lelet forrása). backend3 (implementáció, teszt).
+Hivatkozás: kártya cd872e72; CYBERSEC GO 39190; CYBERED GO 39176 (F-1/F-3 eredeti
+felvetője); QA PASS 39182; `scripts/install-wsl-watchdog.sh`,
+`scripts/install-wsl-watchdog.selftest.sh`.

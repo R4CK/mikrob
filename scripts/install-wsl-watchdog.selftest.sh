@@ -339,6 +339,30 @@ else
     echo "  ok   heredoc-safety: dry-run render produced zero stderr (guards against backtick/\$(...) command substitution inside the unquoted PS1EOF heredoc)"
   fi
 
+  # cd872e72 round 2 (CYBERSEC GO 39190 L-4): a CONTROL for the heredoc-safety
+  # check above. Zero stderr on a clean render is only meaningful evidence if
+  # the capture path can also report NON-zero stderr when $BIN actually
+  # writes to it -- otherwise a regression of run_isolated_stderr_only() back
+  # to the vacuous `2>&1` form (which merges $BIN's stderr into ITS stdout
+  # before any caller redirect sees it) would make the check above pass
+  # silently again, with no test noticing. Point BIN at a stub that writes a
+  # known string to stderr and assert the capture is non-empty.
+  STUB_STDERR_BIN="$TMP/stub-forces-stderr.sh"
+  cat > "$STUB_STDERR_BIN" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "cd872e72 L-4 control: forced stderr" >&2
+exit 0
+STUBEOF
+  chmod +x "$STUB_STDERR_BIN"
+  CONTROL_STDERR="$TMP/control-stderr.txt"
+  ( BIN="$STUB_STDERR_BIN"; run_isolated_stderr_only >/dev/null 2>"$CONTROL_STDERR" )
+  if [ -s "$CONTROL_STDERR" ]; then
+    echo "  ok   cd872e72 L-4: run_isolated_stderr_only() DOES capture real stderr from \$BIN (control -- proves the capture path works, not just that it stayed silent on a clean render)"
+  else
+    echo "  FAIL cd872e72 L-4: run_isolated_stderr_only() reported empty stderr even though the stub wrote to stderr -- the helper may be regressed back to the vacuous 2>&1 form"
+    fail=1
+  fi
+
   # --- CYBERSEC NO-GO F-2 / QA FAIL: relaunch cap + give-up alert -----------
   # Card d97659cb: cap re-expressed at the 1-min cadence (60 ticks/hour, was
   # 12 @ 5-min) and now charged per HOLDER PROCESS (a tick can need 2 at
@@ -558,6 +582,63 @@ GARBLED_ENABLED='<?xml version="1.0"?><Task><Settings><Enabled>maybe</Enabled></
 [ "$(classify 1 "$WELLFORMED_NO_ENABLED")" = "unknown" ] \
   && echo "  ok   cd872e72-classify: rc!=0 even with well-formed absent-Enabled XML -> unknown, never ready (matches the existing Enabled=true rc-gate)" \
   || { echo "  FAIL cd872e72-classify: rc!=0 well-formed absent-Enabled XML did not classify as unknown"; fail=1; }
+
+# --- cd872e72 round 2 (MikroB 25151, CYBERSEC GO 39190 L-1): "absent" must
+#     mean the WORD Enabled does not occur ANYWHERE, in any spelling -- the
+#     round-1 fix only rejected the one literal substring <Enabled>, so a
+#     differently-spelled tag that still means the same thing fell through
+#     to ready. Each of these mentions "Enabled" but is neither the exact
+#     <Enabled>true</Enabled> nor <Enabled>false</Enabled> -- must stay
+#     unknown, never ready. ---------------------------------------------
+SPACED_ENABLED='<?xml version="1.0"?><Task><Settings><Enabled >false</Enabled></Settings></Task>'
+[ "$(classify 0 "$SPACED_ENABLED")" = "unknown" ] \
+  && echo "  ok   cd872e72 L-1: '<Enabled >false</Enabled>' (space before '>') -> unknown, not ready" \
+  || { echo "  FAIL cd872e72 L-1: spaced Enabled tag did not classify as unknown"; fail=1; }
+
+SELFCLOSING_ENABLED='<?xml version="1.0"?><Task><Settings><Enabled/></Settings></Task>'
+[ "$(classify 0 "$SELFCLOSING_ENABLED")" = "unknown" ] \
+  && echo "  ok   cd872e72 L-1: self-closing '<Enabled/>' -> unknown, not ready" \
+  || { echo "  FAIL cd872e72 L-1: self-closing Enabled tag did not classify as unknown"; fail=1; }
+
+PREFIXED_ENABLED='<?xml version="1.0"?><Task><Settings><t:Enabled>false</t:Enabled></Settings></Task>'
+[ "$(classify 0 "$PREFIXED_ENABLED")" = "unknown" ] \
+  && echo "  ok   cd872e72 L-1: namespaced '<t:Enabled>' -> unknown, not ready" \
+  || { echo "  FAIL cd872e72 L-1: namespaced Enabled tag did not classify as unknown"; fail=1; }
+
+ATTR_ENABLED='<?xml version="1.0"?><Task><Settings><Enabled xml:space="preserve">false</Enabled></Settings></Task>'
+[ "$(classify 0 "$ATTR_ENABLED")" = "unknown" ] \
+  && echo "  ok   cd872e72 L-1: attribute-bearing Enabled tag -> unknown, not ready" \
+  || { echo "  FAIL cd872e72 L-1: attribute-bearing Enabled tag did not classify as unknown"; fail=1; }
+
+# --- cd872e72 round 2 (CYBERSEC GO 39190 L-3): the four well-formedness
+#     clauses pinned INDIVIDUALLY. The round-1 truncation fixtures dropped
+#     BOTH closers together, so removing any ONE clause from the AND chain
+#     left the other masking it (K4-K7 survived mutation testing). Each
+#     fixture here holds exactly 3 of the 4 clauses true and 1 false. ------
+NO_SETTINGS_OPEN='</Settings><Task></Task>'
+[ "$(classify 0 "$NO_SETTINGS_OPEN")" = "unknown" ] \
+  && echo "  ok   cd872e72 L-3: missing '<Settings>' opener alone (other 3 clauses true) -> unknown" \
+  || { echo "  FAIL cd872e72 L-3: missing <Settings> opener did not classify as unknown"; fail=1; }
+
+NO_SETTINGS_CLOSE='<Settings><Task></Task>'
+[ "$(classify 0 "$NO_SETTINGS_CLOSE")" = "unknown" ] \
+  && echo "  ok   cd872e72 L-3: missing '</Settings>' closer alone (other 3 clauses true) -> unknown" \
+  || { echo "  FAIL cd872e72 L-3: missing </Settings> closer did not classify as unknown"; fail=1; }
+
+NO_TASK_OPEN='<Settings></Settings></Task>'
+[ "$(classify 0 "$NO_TASK_OPEN")" = "unknown" ] \
+  && echo "  ok   cd872e72 L-3: missing '<Task' opener alone (other 3 clauses true) -> unknown" \
+  || { echo "  FAIL cd872e72 L-3: missing <Task opener did not classify as unknown"; fail=1; }
+
+NO_TASK_CLOSE='<Settings></Settings><Task>'
+[ "$(classify 0 "$NO_TASK_CLOSE")" = "unknown" ] \
+  && echo "  ok   cd872e72 L-3: missing '</Task>' closer alone (other 3 clauses true) -> unknown" \
+  || { echo "  FAIL cd872e72 L-3: missing </Task> closer did not classify as unknown"; fail=1; }
+
+TRUE_RC_NONZERO='<?xml version="1.0"?><Task><Settings><Enabled>true</Enabled></Settings></Task>'
+[ "$(classify 1 "$TRUE_RC_NONZERO")" = "unknown" ] \
+  && echo "  ok   cd872e72 L-3: <Enabled>true</Enabled> with rc!=0 -> unknown, not ready (rc gate on the true branch pinned)" \
+  || { echo "  FAIL cd872e72 L-3: Enabled=true with nonzero rc did not classify as unknown"; fail=1; }
 
 # --- B2 (MikroB 17774 + cybered 17782): a persistent, version-controlled
 #     disable flag must win over ANY query result, including a mocked

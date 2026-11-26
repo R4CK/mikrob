@@ -51,8 +51,17 @@ classify_task_state() { # $1 = query exit code, stdin = query output (XML or emp
   # what tells "the tag just wasn't written" apart from "the query
   # truncated or errored mid-stream", which must stay "unknown" exactly as
   # before.
+  #
+  # CYBERSEC L-1 (gate round 2, msg 25151): "absent" means the WORD Enabled
+  # does not occur anywhere in the output, in ANY spelling -- not just the
+  # one literal substring <Enabled>. A differently-spelled tag (a space
+  # before the closing bracket, self-closing, namespaced, carrying an
+  # attribute) still mentions the word and must stay unknown, never fall
+  # through to ready: ready -> /Create would re-enable a disabled task if
+  # Windows ever serialized a disabled flag that way, the one thing
+  # 58badae1 H1 forbids.
   if [ "$rc" -eq 0 ] \
-     && ! printf '%s' "$out" | grep -qi '<Enabled>' \
+     && ! printf '%s' "$out" | grep -qi 'Enabled' \
      && printf '%s' "$out" | grep -qi '<Settings>' \
      && printf '%s' "$out" | grep -qi '</Settings>' \
      && printf '%s' "$out" | grep -qi '<Task' \
