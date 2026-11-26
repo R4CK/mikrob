@@ -56,6 +56,9 @@
 # Exit: 0 ok | 2 bad usage | 3 setup failed
 set -euo pipefail
 
+# shellcheck source=./worktree-on-create.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/worktree-on-create.sh"
+
 MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
 ROOT="${MARVEEN_WORKTREES:-/home/neon/marveen-agent-worktrees}"
 
@@ -159,6 +162,14 @@ else
     fi
   fi
   echo "created $TREE on $BRANCH"
+
+  # F6.2 (card 60e5a40e): run the project's configured on_create hook, fail-closed. Only reached
+  # on a FRESH creation (this whole block is the "else" of the "worktree already present" check
+  # above), never on reuse -- the card's own acceptance criterion ("once per new worktree, not on
+  # reuse") is a structural consequence of where this call sits, not a separate flag to maintain.
+  if ! project_worktree_on_create "marveen" "$MAIN" "$TREE" "$branch_preexisted" "$BRANCH"; then
+    die 3 "on_create hook failed for $TREE (see above) -- worktree removed"
+  fi
 fi
 
 # node_modules (card 0b23ec28, extended to --card mode by card cf678d23). A directory symlink

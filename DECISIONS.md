@@ -33092,6 +33092,74 @@ utasítására (msg 21740).
 
 **Ki döntött:** a kártya saját gate-sorozata (1d3cd7e57) áll, csak a merge-feloldás technikai; backend3 végezte. Gate: a meglévő QA + QA2 + CYBERED + CYBERSEC verdiktek (1d3cd7e57) delta re-gate alá esnek a merge-sha-n.
 
+## 2026-11-25 21:00 -- F7 kezdő lépés: `agent-worktree.sh --card` mód mopsionhoz (kártya 380a5e16)
+
+**Döntés:** `store/agent-worktree.sh` kapott egy `--card <id>` módot mopsionhoz, ugyanazzal a
+mechanizmussal mint az F4 (marveen) kártya-módú worktree-je: a kártya saját, eldobható worktree-jét
+`card/<id>` ágon hozza létre/tartja karban, a kártyánkénti `node_modules`-linkeléssel együtt.
+Selftest hozzáadva (`store/agent-worktree.selftest.sh`).
+**Miért:** a kártya 1. követelménye (`agent-worktree.sh --card <id> for mopsion`); Peti 13099
+döntése szerint a t3code/kártya-worktree mechanizmus az EGYETLEN irány, nem opcionális párhuzamos
+út.
+**Ellenőrzés:** `store/agent-worktree.selftest.sh` zöld (a `--card` ágra épülő új esetekkel).
+**Nincs ebben a bejegyzésben:** a kártya 2. (`mopsion-land.sh --card <id>`) és 3. (egy valós
+mopsion kártya kártya-módban landolva) követelménye -- ez a bejegyzés csak az 1. követelményt
+fedi; a kártya emiatt `waiting`-re ment review-ra, de a cím `[0%]` jelzése szándékosan nem lett
+felülírva, amíg a 2-3. pont nincs kész.
+**Ki döntött:** DevO (fullstack), kártya leírása szerint.
+**Hivatkozás:** kártya 380a5e16; commit 39a412993 (`feat(mopsion): add --card mode to
+agent-worktree.sh`); `store/agent-worktree.sh`, `store/agent-worktree.selftest.sh`.
+
+## 2026-11-26 -- F8a follow-up: per-session cap/dedupe + offered-row audit for kg-prompt-pointer-hook (card 35a0e556)
+
+Implements the two items MikroB's split (comment 38677, see the 2026-11-25 entry above) deferred
+off 69f63a1a onto this card: (1) at most one graph injection per (session_id, card_id) pair, so
+a long conversation that repeats a card id does not re-inject the same pointer block every turn;
+(2) every /api/kg/for-card lookup this hook makes is auditable by agent, which the server could
+not previously record for this caller.
+
+(1) Session cap/dedupe: the hook is a fresh subprocess per UserPromptSubmit event (no daemon),
+so an in-memory cache cannot work across invocations -- confirmed by reading the hook's own
+module docstring before designing anything. Used the same marker-file pattern already proven in
+scripts/hooks/blast-radius-guard.py's `_already_shown` (one empty marker file per key, under a
+uid-scoped tempdir, fail-open on write errors): here the key is (session_id, card_id), the
+marker holds no prompt text or card content, only the fact that the pair was already queried.
+The marker is written only AFTER a successful for-card call, not on the check itself, so a
+transient network failure stays retryable on a later prompt instead of being silently
+permanently suppressed.
+
+(2) Offered-row audit: kg_search_events/kg_usage already existed and already recorded
+agent+card_id+timestamp for every /api/kg/for-card call (src/web/routes/kg.ts), but the agent
+column requires `ctx.auth.agent`, which only resolves from a per-agent token or the
+self-asserted `X-Agent-Id` header (root CLAUDE.md convention) -- this hook authenticates with
+the shared dashboard token and sent no such header, so every row it caused was stamped
+agent='unknown'. Fix: added an X-Agent-Id header (resolved from cwd, same helper shape as
+scripts/hooks/activity_memory_capture.py's `_agent_id_from_cwd`) to the for-card call. No new
+table, no new log file -- reuses the existing audit trail exactly as the card required.
+
+Rejected the local-llm draft on this card (comment 38817, Draft-Review: ELUTASITVA, comment
+38857): it used a module-level Python dict for the session cache, which cannot survive the
+per-prompt subprocess model at all, and invented a new file-based audit log instead of reusing
+kg_search_events/kg_usage.
+
+Deferred (per the card's own text, explicitly non-blocking "optional ride-alongs"): survivor C
+(card-id cap unpinned beyond 2 -- already pinned at MAX_CARD_IDS=2, no action needed), survivor
+D (word-boundary on CARD_ID_PATTERN -- already present, `\b...\b`), survivor G (truncation
+char-cap length assertion), LOW-2 (8-hex lookalikes sent as ids that don't resolve to a real
+card). None of these block this card's own Kész-ha.
+
+Mutation-proven: (a) stashed the full .py change, reran the selftest -- the new X-Agent-Id
+assertion failed exactly as predicted, header empty; restored, 19/19 green. (b) separately
+mutated only the cap filter (`fresh_ids = card_ids` unconditionally) on a scratch copy -- G1
+failed exactly as predicted (second same-session call printed the block instead of suppressing
+it); restored, 19/19 green again.
+
+Ki döntött: backend (implementation against MikroB's comment 38677 split + the card's own
+spec); végrehajtó: backend.
+Hivatkozás: kártya 35a0e556, 69f63a1a, eed988e7; CYBERED 38674 KC2/BLOCKER-1 (kg_search_events/
+kg_usage already hold only the 8-hex card id, never prompt text); `scripts/hooks/
+kg-prompt-pointer-hook.py`, `scripts/hooks/kg-prompt-pointer-hook.selftest.sh`.
+
 ## 2026-11-26 -- card 1124f53f (Koteg 27): develop-sync (origin/develop @ 210c86aad) before delta re-gate
 
 **Kontextus:** a korábbi Gate-SHA (78318b316312149025f729c09a964f9a47446424, QA PASS 34457, QA2 PASS 34440, CYBERED GO 34442, CYBERSEC GO 34465) óta több kártya landolt, ezért MikroB (24649) a develop-sync merge-et kérte saját kártya-worktree-ben, friss delta re-gate-hez: `DECISIONS.md` (append-union), `src/web/fleet-transfer.ts`, `src/web/routes/kanban.ts`.
@@ -33105,3 +33173,13 @@ Post-merge, a merge-től független hiba: `context-guard-hard-busy-handoff.test.
 `git merge-base --is-ancestor 6b457343 HEAD` (f584f4e8d) igaz -- a Koteg 27 upstream-commitok a kártya ágán megvannak; `origin/develop`-nek még nem őse (várt, landolás előtt), azzá válik a land után.
 
 **Ki döntött:** MikroB (24649) kérte a develop-sync-et és a friss Gate-SHA-t; backend3 végezte. Gate: QA + CYBERSEC + CYBERED (trust-boundary klauzula, vault/secret/auth/approval/mail-gate érintve, a kártya saját szövege szerint).
+
+## 2026-11-26 -- card 1124f53f (Koteg 27): második develop-sync (origin/develop @ e022fe25) a land-refuzálás után
+
+**Kontextus:** a fenti (210c86aad-alapú) merge gate-sorozata zöld lett (QA PASS 38906, CYBERSEC GO 38905, CYBERED GO 38904, mind bd7fecb23e37d2f204889fa5d23b99521baa9d3f-n), és MikroB (24766) elindította a landolást -- a `marveen-land.sh --card 1124f53f --agent backend3` REFUZÁLTA: `origin/develop` eközben előrement (210c86aad -> e022fe250e49ceb8b2f7ce545d1a8857895c83ff, fullstack 60e5a40e landolása), és a kártya DECISIONS.md-je már nem tiszta tail-append a develop ÚJ állapotára.
+
+**Javítás:** `git merge-base --is-ancestor 210c86aad e022fe25` igaz (tiszta fast-forward, nincs divergencia), majd `git merge origin/develop` a card/1124f53f ágon. Egyetlen konfliktus: `DECISIONS.md` -- mindkét oldal új bejegyzést fűzött a fájl végéhez (append-union: a develop-en KÖZBEN landolt két bejegyzés, 380a5e16 és 35a0e556, elébe kerül a kártya saját bejegyzésének, markerek törölve, semmi tartalom nem veszett). Minden más fájl (package.json, kg-prompt-pointer-hook.py/.selftest.sh, agent-scaffold-skill-usage.test.ts, scaffold-section-sweeper.ts + új parity-teszt, agent-worktree-marveen.sh/.selftest.sh, overlap-signal-check.selftest.sh, project-config-schema.py/.selftest.py, worktree-on-create.sh/.selftest.sh) tisztán automergelt, konfliktus nélkül.
+
+**Teszt:** `npx tsc --noEmit` tiszta. `store/decisions-append-only-guard.sh DECISIONS.md` PASS.
+
+**Ki döntött:** a kártya saját gate-sorozata (bd7fecb23e) áll, csak a merge-feloldás technikai; backend3 végezte. Gate: a meglévő QA + CYBERSEC + CYBERED verdiktek delta re-gate alá esnek az új merge-sha-n (rule 4d).

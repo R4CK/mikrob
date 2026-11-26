@@ -64,12 +64,16 @@ describe('skill-usage scaffold block', () => {
     expect(AGENT_PROCESS).toContain('ensureSkillUsageSection(name)')
   })
 
-  // Deliberately NOT in the sweeper: the sweeper's own header scopes itself to
-  // security-propagation sections (evidence-rule, mcp-list-channel-warning and
-  // message-close are absent from it too, for the same reason). Adding an informational
-  // section there would be scope creep against that documented boundary.
-  it('is not added to the scaffold-section-sweeper (informational, not security-propagation)', () => {
-    expect(SWEEPER).not.toContain('ensureSkillUsageSection')
+  // Card 4af036ab (2026-11-25) corrects this: the "security-propagation only" boundary this test
+  // used to assert was never actually the sweeper's real policy -- fleet-roster and local-first
+  // (informational, not security) were in the sweep loop from day one, and the card's own measured
+  // symptom (fron-teddy and six other live agents missing evidence-rule, mcp-list-channel-warning,
+  // message-close, agent-id-header, skill-usage -- none of which are more "security" than the
+  // sections that WERE already swept) shows the boundary was restart luck rehardened into a
+  // comment, not a maintained design decision. scaffold-section-sweeper-parity.test.ts now pins
+  // the real policy: every marker-producing writer start time applies gets swept too.
+  it('IS added to the scaffold-section-sweeper, so a long-lived agent gets it without a restart (card 4af036ab)', () => {
+    expect(SWEEPER).toContain('ensureSkillUsageSection')
   })
 
   it('points to an existing hand-curated table first, rather than silently duplicating it', () => {
