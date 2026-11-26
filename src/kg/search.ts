@@ -227,8 +227,14 @@ export async function hybridKgSearch(
     ftsRows.forEach((row, rank) => {
       const entry = byId.get(row.id)
       const contribution = 1 / (60 + rank + 1)
+      // Card 5ecf6133 (CYBERSEC NO-GO F-3, comment 39014): this used to echo the WHOLE query text
+      // (opts.q, which for a for-card.ts call is the dispatched card's own title+description) --
+      // measured on the backfilled copy, 69% of rendered entries were only that echo, and it alone
+      // pushed 29/40 recent cards past the 3000-char package cap before the renderer's own 300-char
+      // per-entry cap ever got a chance to help. A fixed, short label costs nothing to render and
+      // leaves the budget for the anchor/title fields an agent can actually use.
       if (entry) entry.score += contribution
-      else byId.set(row.id, { row, score: contribution, why: `szöveg-egyezés: "${opts.q}"` })
+      else byId.set(row.id, { row, score: contribution, why: 'szöveg-egyezés' })
     })
 
     // Branch 2: embedding vector search, fused by the same RRF constant.

@@ -164,6 +164,19 @@ export function parseNameOnlyBatch(stdout: string): Map<string, string[]> {
  * marveen half and looked like a successful sweep. `-m` splits a merge into one diff per parent and
  * `--first-parent` keeps the branch side, which is the change the card actually landed.
  */
+/** Resolves a (possibly abbreviated) sha to its full 40-char object name, or null if it does not
+ *  resolve as a commit in this repo. filesForCommits keys its result by the FULL sha (`%H`), so a
+ *  caller that looks its own abbreviated input back up in that map never finds it (card 5ecf6133,
+ *  CYBERSEC NO-GO F-4: 22 of 47 "unresolved" kg_anchors placeholder rows carried a short Gate-SHA
+ *  that resolves fine in git, just not under the key filesForCommits actually returns). */
+export function resolveFullSha(repoPath: string, sha: string): string | null {
+  try {
+    return git(repoPath, ['rev-parse', '--verify', `${sha}^{commit}`]).trim()
+  } catch {
+    return null
+  }
+}
+
 export function filesForCommits(repoPath: string, fullShas: readonly string[]): Map<string, string[]> {
   if (fullShas.length === 0) return new Map()
   const stdout = git(repoPath, [

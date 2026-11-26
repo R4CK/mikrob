@@ -2,8 +2,11 @@
 // and mocked file IO/filesForSha -- no real git call, no real file written.
 import { describe, it, expect } from 'vitest'
 import Database from 'better-sqlite3'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { migrate, upsertNode, upsertAnchor, type KgAnchorRow } from '../kg/store.js'
-import { runAnchorPathBackfillCli, type AnchorBackfillCliDeps } from '../kg/anchor-path-backfill-cli.js'
+import { runAnchorPathBackfillCli, atomicWriteFile, type AnchorBackfillCliDeps } from '../kg/anchor-path-backfill-cli.js'
 import type { AnchorBackfillBackup } from '../kg/anchor-path-backfill.js'
 
 function freshKgDb(): Database.Database {
@@ -100,5 +103,65 @@ describe('runAnchorPathBackfillCli', () => {
     const after = kgDb.prepare('SELECT * FROM kg_anchors').all() as KgAnchorRow[]
     expect(after).toHaveLength(1)
     expect(after[0]).toEqual(before)
+  })
+
+  // CYBERSEC F-4a / CYBERED H-A: the final file on disk after a clean run must carry a non-null
+  // appliedAt (the real commit timestamp), not the pre-mutation placeholder value.
+  it('the final backup file on disk has a non-null appliedAt', () => {
+    const kgDb = freshKgDb()
+    seedSolutionWithPlaceholder(kgDb, 'sol:a:0', '1111111', 1)
+    const { deps, files } = makeDeps(kgDb)
+    runAnchorPathBackfillCli(['--backup', '/tmp/x.json'], deps)
+    const backup = JSON.parse(files.get('/tmp/x.json')!) as AnchorBackfillBackup
+    expect(backup.appliedAt).toBe(1000)
+  })
+
+  // Simulates the exact crash window CYBERED's H-A names: the process dies right after the
+  // pre-mutation write and never reaches the post-commit overwrite. --restore must refuse that
+  // file, not report a clean success while leaving the created rows behind.
+  it('--restore refuses the pre-mutation snapshot left behind by a crash before the post-commit write', () => {
+    const kgDb = freshKgDb()
+    seedSolutionWithPlaceholder(kgDb, 'sol:a:0', '1111111', 1)
+    let writeCount = 0
+    const files = new Map<string, string>()
+    const { deps } = makeDeps(kgDb, {
+      writeFile: (path, content) => {
+        writeCount++
+        if (writeCount === 1) files.set(path, content) // only the pre-mutation write lands
+        // the second (post-commit) write is dropped, simulating the crash
+      },
+    })
+    runAnchorPathBackfillCli(['--backup', '/tmp/x.json'], deps)
+    expect(writeCount).toBe(2) // the code DID try both writes; only the first one "landed"
+
+    const { deps: restoreDeps } = makeDeps(kgDb, { readFile: (path) => files.get(path)! })
+    expect(() => runAnchorPathBackfillCli(['--restore', '/tmp/x.json'], restoreDeps)).toThrow(/appliedAt=null/)
+  })
+})
+
+describe('atomicWriteFile (real filesystem)', () => {
+  it('writes via a temp file + rename -- target has full content, no leftover temp file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kg-backfill-atomic-'))
+    try {
+      const target = join(dir, 'backup.json')
+      atomicWriteFile(target, JSON.stringify({ hello: 'world' }))
+      expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ hello: 'world' })
+      expect(readdirSync(dir)).toEqual(['backup.json']) // no .tmp-* leftover
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a second write fully replaces the first, never leaving a truncated mix', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kg-backfill-atomic-'))
+    try {
+      const target = join(dir, 'backup.json')
+      atomicWriteFile(target, JSON.stringify({ appliedAt: null }))
+      atomicWriteFile(target, JSON.stringify({ appliedAt: 12345 }))
+      expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ appliedAt: 12345 })
+      expect(readdirSync(dir)).toEqual(['backup.json'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

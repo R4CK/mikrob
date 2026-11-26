@@ -86,6 +86,26 @@ describe('planAnchorPathBackfill', () => {
     expect(plan.toBackfill).toHaveLength(0)
     expect(plan.unresolved).toHaveLength(0)
   })
+
+  // CYBERSEC NO-GO F-1 (comment 39014): DECISIONS.md et al. are touched by nearly every landing,
+  // and an anchor on one flips the owning node 'stale' on the very next unrelated landing. Filtered
+  // out BEFORE the MAX_FILE_ANCHORS_PER_PLACEHOLDER cap, not just deprioritized.
+  it('filters DECISIONS.md/README.md out of resolved paths, keeping real files', () => {
+    const db = freshKgDb()
+    seedSolutionWithPlaceholder(db, 'sol:a:0', '1111111', 1)
+    const plan = planAnchorPathBackfill(db, {
+      filesForSha: () => ['DECISIONS.md', 'src/real.ts', 'README.md'],
+    })
+    expect(plan.toBackfill[0]!.resolvedPaths).toEqual(['src/real.ts'])
+  })
+
+  it('a sha that only touched a non-discriminating path goes to unresolved, not a stale-flagging anchor', () => {
+    const db = freshKgDb()
+    seedSolutionWithPlaceholder(db, 'sol:a:0', '1111111', 1)
+    const plan = planAnchorPathBackfill(db, { filesForSha: () => ['DECISIONS.md'] })
+    expect(plan.toBackfill).toHaveLength(0)
+    expect(plan.unresolved).toHaveLength(1)
+  })
 })
 
 describe('applyAnchorPathBackfill + restoreAnchorPathBackfill (tested rollback)', () => {
@@ -186,5 +206,51 @@ describe('applyAnchorPathBackfill + restoreAnchorPathBackfill (tested rollback)'
     expect(() => restoreAnchorPathBackfill(db, result.backup)).not.toThrow()
     const afterRows = db.prepare('SELECT * FROM kg_anchors ORDER BY id').all() as KgAnchorRow[]
     expect(afterRows).toEqual(beforeRows)
+  })
+
+  // CYBERSEC F-4a / CYBERED H-A: a process that dies after the mutating transaction commits but
+  // before the post-commit backup is written leaves only the pre-mutation record (appliedAt still
+  // null) on disk. Restoring from THAT record must refuse, not silently report success while the
+  // newly-created rows stay behind.
+  it('restore refuses a backup whose appliedAt is still null (never confirmed committed)', () => {
+    const db = freshKgDb()
+    seedSolutionWithPlaceholder(db, 'sol:a:0', '1111111', 1)
+    const plan = planAnchorPathBackfill(db, { filesForSha: () => ['src/a.ts'] })
+    const result = applyAnchorPathBackfill(db, plan, () => {}, () => 1000)
+    const pendingBackup = { ...result.backup, appliedAt: null }
+    expect(() => restoreAnchorPathBackfill(db, pendingBackup)).toThrow(/appliedAt=null/)
+    // Nothing was touched by the refused restore attempt.
+    const rows = db.prepare('SELECT * FROM kg_anchors WHERE node_id = ?').all('sol:a:0') as KgAnchorRow[]
+    expect(rows.map((r) => r.path)).toEqual(['src/a.ts'])
+  })
+
+  // CYBERSEC LOW-b1 / CYBERED H-C: a resolved path can already carry a REAL anchor from an earlier
+  // run on the same (node_id, repo, path). upsertAnchor then UPDATEs it in place -- that row must
+  // not land in createdIds (it would get wrongly DELETED on restore instead of reverted).
+  it('a resolved path that already has a real anchor is UPDATED, not treated as newly created', () => {
+    const db = freshKgDb()
+    seedSolutionWithPlaceholder(db, 'sol:a:0', '1111111', 1)
+    // Simulate a pre-existing real anchor the forward-fix already wrote for this exact node/path.
+    upsertAnchor(db, { node_id: 'sol:a:0', repo: 'marveen', path: 'src/a.ts', sha: 'ddddddd', state: 'fresh' })
+    const preExisting = db
+      .prepare('SELECT * FROM kg_anchors WHERE node_id = ? AND path = ?')
+      .get('sol:a:0', 'src/a.ts') as KgAnchorRow
+
+    const plan = planAnchorPathBackfill(db, { filesForSha: () => ['src/a.ts'] })
+    const result = applyAnchorPathBackfill(db, plan, () => {}, () => 1000)
+
+    expect(result.created).toBe(0)
+    expect(result.updated).toBe(1)
+    expect(result.backup.createdIds).toHaveLength(0)
+    expect(result.backup.updatedOriginals).toHaveLength(1)
+    expect(result.backup.updatedOriginals[0]!.id).toBe(preExisting.id)
+    expect(result.backup.updatedOriginals[0]!.sha).toBe('ddddddd') // pre-overwrite value
+
+    const overwritten = db.prepare('SELECT * FROM kg_anchors WHERE id = ?').get(preExisting.id) as KgAnchorRow
+    expect(overwritten.sha).toBe('1111111') // overwritten with the backfill's sha
+
+    restoreAnchorPathBackfill(db, result.backup)
+    const reverted = db.prepare('SELECT * FROM kg_anchors WHERE id = ?').get(preExisting.id) as KgAnchorRow
+    expect(reverted).toEqual(preExisting) // exact prior state, not deleted
   })
 })

@@ -100,6 +100,19 @@ describe('runCapture', () => {
     kgDb.close()
   })
 
+  // Card 5ecf6133 (CYBERSEC NO-GO F-1, comment 39014): DECISIONS.md/README.md/etc are touched by
+  // nearly every landing, and anchoring on them flips the node 'stale' on the next unrelated
+  // landing. Filtered out of the forward fix too, not just the backfill.
+  it('card 5ecf6133: DECISIONS.md and other non-discriminating paths are filtered out of real anchors', () => {
+    const kgDb = freshKgDb()
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      filesForSha: (sha) => (sha === 'abc1234' ? ['DECISIONS.md', 'src/kg/search.ts', 'README.md'] : []),
+    }))
+    const anchors = kgDb.prepare('SELECT * FROM kg_anchors WHERE node_id = ?').all(result.solutionIds[0]!) as Array<{ path: string }>
+    expect(anchors.map((a) => a.path)).toEqual(['src/kg/search.ts'])
+    kgDb.close()
+  })
+
   // Card 5ecf6133: filesForSha failing/returning nothing (unresolvable sha) must not fail the
   // capture or write a fake anchor -- it just skips the file anchor, same posture as the git
   // sweep's own "skip this repo's file edges" fallback (kanban-relations-git.ts).

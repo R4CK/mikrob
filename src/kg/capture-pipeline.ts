@@ -29,10 +29,11 @@ import {
   upsertAnchor,
   findSecretShape,
   UNSAFE_CHARS_RX,
+  NON_DISCRIMINATING_ANCHOR_PATHS,
   type KgNodeInput,
 } from './store.js'
 import { markCaptureDone, markCaptureFailed, markCaptureSkipped } from './capture.js'
-import { filesForCommits } from '../kanban-relations-git.js'
+import { filesForCommits, resolveFullSha } from '../kanban-relations-git.js'
 
 // F4 (card 2ace4db9, WhiteHat): both subprocess calls below used to hardcode the live checkout
 // path -- a gate/CI run against a different checkout (or a renamed live install) would silently
@@ -382,10 +383,14 @@ const MAX_FILE_ANCHORS_PER_SOLUTION = 20
 /** Default filesForSha: same merge-aware git call the fork-upstream git sweep already proved
  *  correct (-m --first-parent, see filesForCommits's own doc comment) -- never throws, so a sha
  *  that doesn't resolve in this checkout (wrong repo, gc'd, test fixture) just yields no file
- *  anchor instead of failing the whole capture. */
+ *  anchor instead of failing the whole capture. Resolves a short sha to its full form FIRST (card
+ *  5ecf6133, CYBERSEC F-4): filesForCommits keys its result by the full %H, so looking it up by the
+ *  original short sha silently found nothing. */
 function defaultFilesForSha(sha: string): string[] {
   try {
-    return filesForCommits(MARVEEN_MAIN, [sha]).get(sha) ?? []
+    const full = resolveFullSha(MARVEEN_MAIN, sha)
+    if (!full) return []
+    return filesForCommits(MARVEEN_MAIN, [full]).get(full) ?? []
   } catch {
     return []
   }
@@ -484,7 +489,14 @@ export function runCapture(
 
   const gateSha = allowedActive ? closure.sha : (latestReviewGateSha(comments) ?? null)
   // Card 5ecf6133: resolved once per run (same sha for every draft item below), not per solution.
-  const changedFiles = gateSha ? deps.filesForSha(gateSha).slice(0, MAX_FILE_ANCHORS_PER_SOLUTION) : []
+  // Non-discriminating paths (DECISIONS.md etc, CYBERSEC F-1) are filtered BEFORE the cap, so they
+  // never displace a real file out of the MAX_FILE_ANCHORS_PER_SOLUTION budget.
+  const changedFiles = gateSha
+    ? deps
+        .filesForSha(gateSha)
+        .filter((p) => !NON_DISCRIMINATING_ANCHOR_PATHS.has(p))
+        .slice(0, MAX_FILE_ANCHORS_PER_SOLUTION)
+    : []
 
   const draftResult = callDraftWithRetry(deps.draftFn, frameReviewAsData(review.content), KG_DRAFT_MAX_ATTEMPTS)
   if ('error' in draftResult) {

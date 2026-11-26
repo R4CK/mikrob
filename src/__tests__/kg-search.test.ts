@@ -92,6 +92,20 @@ describe('hybridKgSearch', () => {
     db.close()
   })
 
+  // Card 5ecf6133 (CYBERSEC NO-GO F-3, comment 39014): why used to echo the WHOLE query text
+  // (opts.q), which for a for-card.ts call is the dispatched card's own title+description -- on
+  // the backfilled copy this alone pushed 29/40 recent cards past the 3000-char package cap.
+  it('an FTS text match gets a short fixed why, not an echo of the whole query', async () => {
+    const db = freshDb()
+    seedBasic(db)
+    const longQuery = `Fail-closed regression fix ${'x'.repeat(500)}`
+    const { results } = await hybridKgSearch(db, { q: longQuery, project: 'mikrob' })
+    const sol1 = results.find((r) => r.id === 'sol:1')!
+    expect(sol1.why).toBe('szöveg-egyezés')
+    expect(sol1.why.length).toBeLessThan(50)
+    db.close()
+  })
+
   it('anchor-path match finds the exact node regardless of q', async () => {
     const db = freshDb()
     seedBasic(db)

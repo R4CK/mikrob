@@ -1,9 +1,9 @@
 // The body of scripts/kg-anchor-path-backfill.ts -- lives here so a test can drive it with its
 // collaborators mocked, same reasoning as backfill-cli.ts.
 import type Database from 'better-sqlite3'
-import { writeFileSync, readFileSync } from 'node:fs'
+import { writeFileSync, readFileSync, renameSync, fsyncSync, openSync, closeSync } from 'node:fs'
 import { openKgDb, kgDbPath } from './store.js'
-import { filesForCommits } from '../kanban-relations-git.js'
+import { filesForCommits, resolveFullSha } from '../kanban-relations-git.js'
 import {
   planAnchorPathBackfill,
   applyAnchorPathBackfill,
@@ -37,10 +37,27 @@ export interface AnchorBackfillCliDeps {
 
 export function defaultFilesForSha(sha: string): string[] {
   try {
-    return filesForCommits(MARVEEN_MAIN, [sha]).get(sha) ?? []
+    const full = resolveFullSha(MARVEEN_MAIN, sha)
+    if (!full) return []
+    return filesForCommits(MARVEEN_MAIN, [full]).get(full) ?? []
   } catch {
     return []
   }
+}
+
+/** Write + fsync + rename, not a plain writeFileSync (card 5ecf6133, CYBERSEC F-4a): a kill
+ *  mid-write used to leave truncated JSON at the final path with no way to tell. The temp file
+ *  lives next to the target so the rename stays on the same filesystem (atomic). */
+export function atomicWriteFile(path: string, content: string): void {
+  const tmpPath = `${path}.tmp-${process.pid}-${Date.now()}`
+  const fd = openSync(tmpPath, 'w')
+  try {
+    writeFileSync(fd, content, 'utf8')
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  renameSync(tmpPath, path)
 }
 
 export function defaultAnchorBackfillCliDeps(): AnchorBackfillCliDeps {
@@ -49,7 +66,7 @@ export function defaultAnchorBackfillCliDeps(): AnchorBackfillCliDeps {
     kgDbPath,
     filesForSha: defaultFilesForSha,
     readFile: (path) => readFileSync(path, 'utf8'),
-    writeFile: (path, content) => writeFileSync(path, content, 'utf8'),
+    writeFile: atomicWriteFile,
     now: () => Math.floor(Date.now() / 1000),
     log: (msg) => console.log(msg),
     warn: (msg) => console.error(msg),
@@ -75,7 +92,9 @@ export function runAnchorPathBackfillCli(argv: readonly string[], deps: AnchorBa
     const backup = JSON.parse(deps.readFile(restorePath)) as AnchorBackfillBackup
     restoreAnchorPathBackfill(kgDb, backup)
     deps.log(
-      `RESTORED: ${backup.createdIds.length} created row(s) deleted, ${backup.originals.length} original placeholder row(s) re-inserted from ${restorePath}.`,
+      `RESTORED: ${backup.createdIds.length} created row(s) deleted, ` +
+        `${backup.updatedOriginals.length} overwritten row(s) reverted, ` +
+        `${backup.originals.length} original placeholder row(s) re-inserted from ${restorePath}.`,
     )
     return
   }
@@ -101,18 +120,22 @@ export function runAnchorPathBackfillCli(argv: readonly string[], deps: AnchorBa
     kgDb,
     plan,
     (preBackup) => {
-      // Written before the transaction below mutates anything; the full backup (with createdIds)
-      // is re-written once more after, so the file on disk always reflects the true outcome even
-      // if the process is interrupted between these two writes (the pre-mutation copy is still a
-      // valid, if incomplete, restore target -- it just has no created rows to also delete yet).
-      deps.writeFile(backupPath, JSON.stringify({ ...preBackup, createdIds: [] }, null, 2))
+      // Written before the transaction below mutates anything, with appliedAt EXPLICITLY null
+      // (card 5ecf6133, CYBERSEC F-4a / CYBERED H-A): if the process dies after the transaction
+      // commits but before the real post-commit write below, this file is what --restore would
+      // read, and restoreAnchorPathBackfill refuses any backup with appliedAt=null rather than
+      // silently reporting success while leaving the newly-created rows behind.
+      deps.writeFile(backupPath, JSON.stringify({ ...preBackup, createdIds: [], appliedAt: null }, null, 2))
     },
     deps.now,
   )
+  // Post-commit write: atomic (temp+rename via deps.writeFile), and only ever reached after the
+  // mutation has actually committed -- result.backup.appliedAt is the real commit timestamp.
   deps.writeFile(backupPath, JSON.stringify(result.backup, null, 2))
 
   deps.log(`backfilled: ${result.backfilled} placeholder row(s) replaced`)
   deps.log(`created:    ${result.created} real-path anchor row(s)`)
+  deps.log(`updated:    ${result.updated} pre-existing real-path anchor row(s) overwritten`)
   deps.log(`unresolved: ${result.unresolved} (left as placeholders)`)
   deps.log(`backup written to ${backupPath} -- restore with --restore ${backupPath}`)
 }
