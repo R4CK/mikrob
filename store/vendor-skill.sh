@@ -84,6 +84,27 @@ src="$clone"
 [[ -n "$SUBDIR" ]] && src="$clone/$SUBDIR"
 [[ -d "$src" ]] || { echo "vendor-skill: subdir '$SUBDIR' not in $REPO@$SHA" >&2; exit 4; }
 
+# SYMLINKVALIDATE924 (card af3cd669, WhiteHat follow-up on f3a6f30a, F1+F2): `cp -RL` below
+# dereferences every symlink in $src BY CONTENT, which creates two problems if it runs
+# unchecked: (F1) a symlink pointing OUTSIDE $src copies whatever LOCAL file sits at that path
+# into the vendored skill, exposed to every agent that reads it; (F2) a broken/cyclic symlink
+# makes cp fail only AFTER $dest's prior payload is already wiped (the cleanup below) and BEFORE
+# the .git removal, leaving a destructive half-replace behind. Validating every upstream symlink
+# resolves to a real target INSIDE $src -- BEFORE $dest is touched at all -- catches both: a
+# broken/cyclic symlink fails to resolve by realpath, same as an escaping one fails the
+# containment check.
+src_real="$(realpath -- "$src")" || { echo "vendor-skill: cannot resolve src '$src'" >&2; exit 4; }
+while IFS= read -r -d '' link; do
+  resolved="$(realpath -- "$link" 2>/dev/null)" || {
+    echo "vendor-skill: broken or cyclic symlink in upstream: $link" >&2
+    exit 4
+  }
+  case "$resolved" in
+    "$src_real"/*|"$src_real") ;;
+    *) echo "vendor-skill: upstream symlink escapes its own tree: $link -> $resolved" >&2; exit 4 ;;
+  esac
+done < <(find "$src" -type l -print0)
+
 # Licence text, if the upstream ships one (copied verbatim alongside the vendored files).
 # SUBDIR FIRST, repo root second: a skill monorepo can licence each skill separately and ship NO root
 # LICENSE at all (anthropics/skills -- Apache-2.0 per skill dir, proprietary for the document skills).

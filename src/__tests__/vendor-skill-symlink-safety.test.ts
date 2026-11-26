@@ -195,12 +195,12 @@ describe('F2 (card af3cd669): a broken/cyclic upstream symlink aborts before any
 })
 
 describe('F3 (card af3cd669): the symlink-defense-in-depth guards are reachable, not dead code', () => {
-  it('a sanctioned exclusion through a LEFTOVER nested symlink in dest is refused, not followed (REALPATH924 guard)', () => {
-    // VENDORED.md/UPSTREAM-LICENSE are the only names the top-level cleanup skips; anything else
-    // nested survives a re-vendor only if upstream's own tree does not overwrite that path. Here
-    // a prior run leaves a nested symlink at dest/legacy/evil that this run's upstream commit
-    // never ships a file at -- exactly the "pre-existing dir from before this fix" case the
-    // guard's own comment names.
+  it('a sanctioned exclusion through a LEFTOVER symlink at dest/VENDORED.md is refused, not followed (REALPATH924 guard)', () => {
+    // VENDORED.md/UPSTREAM-LICENSE are the ONLY names the top-level cleanup skips (line 102);
+    // anything else nested (e.g. dest/legacy/evil) is unconditionally wiped by that cleanup
+    // before the sanctioned-exclusion block ever runs, so it can never reach this guard. The
+    // only scenario where a pre-existing symlink can survive to be checked here is at exactly
+    // one of those two exempt names, with a sanctioned entry naming that same path.
     const outside = mkdtemp('vendor-skill-symsafe-outside-')
     const sentinelPath = join(outside, 'sentinel.txt')
     writeFileSync(sentinelPath, 'do not delete me\n')
@@ -217,13 +217,14 @@ describe('F3 (card af3cd669): the symlink-defense-in-depth guards are reachable,
     )
     expect(res.status, res.stderr).toBe(0)
 
-    // Plant the leftover nested symlink directly in dest -- not through upstream, not through cp.
-    mkdirSync(join(dest, 'legacy'))
-    symlinkSync(outside, join(dest, 'legacy', 'evil'), 'dir')
+    // Replace the real VENDORED.md with a symlink escaping dest -- cleanup exempts this exact
+    // name, and this upstream never ships its own VENDORED.md, so cp -RL never overwrites it.
+    rmSync(join(dest, 'VENDORED.md'))
+    symlinkSync(outside, join(dest, 'VENDORED.md'), 'dir')
 
     writeFileSync(
       sanctionedPath,
-      JSON.stringify({ sanctioned: { [dest]: ['missing:legacy/evil/sentinel.txt'] } }),
+      JSON.stringify({ sanctioned: { [dest]: ['missing:VENDORED.md'] } }),
     )
     res = runVendor(
       ['--repo', upstream, '--name', 'foo', '--subdir', 'skills/foo'],
