@@ -150,8 +150,7 @@ while IFS= read -r -d '' link; do
     "$src_real"/*|"$src_real") ;;
     *) echo "vendor-skill: upstream symlink escapes its own tree: $link -> $resolved" >&2; exit 4 ;;
   esac
-# MUTATION-TEST-I: temporarily reverted -H to plain find (to be reverted back)
-done < <(find "$src" -type l -print0)
+done < <(find -H "$src" -type l -print0)
 
 # Licence text, if the upstream ships one (copied verbatim alongside the vendored files).
 # SUBDIR FIRST, repo root second: a skill monorepo can licence each skill separately and ship NO root
