@@ -259,12 +259,12 @@ fi
 # --- Dashboard API ---
 echo -e "\n${BOLD}Dashboard${RESET}"
 if [ -f "store/.dashboard-token" ]; then
-  # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card b267df80): 0600 temp
-  # header file instead of a curl argv (/proc/<pid>/cmdline is world-readable).
-  _hdr_file="$(mktemp)"; chmod 600 "$_hdr_file"
-  printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" > "$_hdr_file"
-  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H @"$_hdr_file" "http://localhost:${WEB_PORT}/api/agents" 2>/dev/null)
-  rm -f "$_hdr_file"; unset _hdr_file
+  # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card b267df80): stdin
+  # header instead of a curl argv (/proc/<pid>/cmdline is world-readable) --
+  # and instead of a 0600 tempfile (card 0aba66b8, CYBERED NO-GO 8c291307:
+  # a mktemp'd header file with no trap survives SIGTERM mid-run).
+  HTTP=$(printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" \
+    | curl -s -o /dev/null -w "%{http_code}" -H @- "http://localhost:${WEB_PORT}/api/agents" 2>/dev/null)
   if [ "$HTTP" = "200" ]; then
     ok "Dashboard API: responding (HTTP 200)"
   else

@@ -33938,3 +33938,32 @@ javított `redispatch-guard.sh` `_curl_get` igazolja, hogy nem szivárog.
 Ki döntött: fullstack (önálló, self-advance a fleet-nudger után, WhiteHat2 eredeti GO-ja alapján).
 Hivatkozás: kártya 0aba66b8; WhiteHat2 Cybersec GO msg 15339 (2026-10-29); Gate-SHA
 c1ff5413c8f8e69b7ea2fddce96d90b608b53e3a; `store/token-header-no-tempfile.selftest.sh`.
+
+## 2026-11-26 -- token header tempfiles, kör 2: scripts/ is a valódi hatókör volt (kártya 0aba66b8)
+
+CYBERED NO-GO 8c291307-en: a kör 1 klasszifikátora `store/*.sh`-ra volt szűkítve, és kihagyta a
+kártyán megnevezett `scripts/doctor.sh`-t -- ugyanaz a mktemp-header-mint-EXIT-trap-nélkül minta
+(a "Dashboard API" blokk), élő SIGTERM-mel reprodukálva. Javítva a flotta-szabvány stdin mintával
+(`printf ... | curl -H @-`).
+
+Teljes repó-újraellenőrzés (nem csak `scripts/doctor.sh`): egy `mktemp`-változót kerestünk, amibe
+`Authorization:` fejléc íródik és ami egy `curl -H @...`-ban landol, MINDEN `store/*.sh` +
+`scripts/*.sh` fájlban (27 valódi jelölt), majd mindegyiknél megnézve, van-e rá VALÓDI `trap ...
+EXIT` takarítás (direkt vagy egy nevesített cleanup-függvényen át) -- a bash az EXIT trapet egy
+csapdázatlan SIGTERM-nél is lefuttatja, ez az alapja a repó többi, már helyes mintájának
+(`freellm-call.sh`, `fleet-nudger.sh`, `quota-check.sh` stb., mind `trap cleanup EXIT`-tel). A 27
+jelöltből 25 már helyesen takarított (hamis pozitív a kör 1 nyers regex-éhez képest); a 2 valódi
+új sebezhetőség mindkettő `scripts/channels.sh`-ban volt (két azonos alakú `_hdr_file` call-site, a
+fájl saját EXIT trapje csak logol, nem takarít) -- ugyanazzal a stdin mintával javítva.
+
+Új önteszt-ág (`store/token-header-no-tempfile.selftest.sh`, 3-4. eset) + statikus
+`store/token-header-no-tempfile-scan.py`: a scan a fenti osztályozást futtatja le `store/` +
+`scripts/` ellen, mutáció-tesztelve (a kör 1 kontroll-mintáját egy ideiglenes fába másolva
+bizonyítja, hogy a scan TÉNYLEG fogja a hibás alakot), és a saját jelölt-számát (`scanned: N`)
+állítja, hogy egy inert/üres scan ne tudjon csendben zöldet adni.
+
+Ki döntött: MikroB (CYBERED NO-GO felvétele, msg 25282); fullstack (hatókör-bővítés,
+implementáció, teszt).
+Hivatkozás: kártya 0aba66b8; CYBERED NO-GO 8c2913071bf377a0a38aee8d318a3861462a8c11 (komment,
+msg 25282); `scripts/doctor.sh`, `scripts/channels.sh`,
+`store/token-header-no-tempfile.selftest.sh`, `store/token-header-no-tempfile-scan.py`.
