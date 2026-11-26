@@ -5481,19 +5481,29 @@ const MEMORY_SEARCH_LABEL_BLOCK_RE = new RegExp(
 // AGENT_NAME for the model to substitute -- this body is written deterministically,
 // so the header dump file is genuinely per-agent and two agents searching at the
 // same time cannot read each other's label out of one shared /tmp path.
-export function buildMemorySearchLabelBody(name: string): string {
+export function buildMemorySearchLabelBody(name: string, strict = false): string {
   return [
-    '## Memória-keresés: a `agent-memory-search.sh` paranccsal (KÖTELEZŐ ezt használni)',
+    '## Memória-keresés: a FEJLÉCET is olvasd el (KÖTELEZŐ)',
     '',
     'A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a',
     'maradék töltelékszavakra hozott sorokat adja vissza -- a body ilyenkor UGYANÚGY néz ki, mint',
     'egy valódi találat, a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik. Ez a script',
     'kódolja a kérdést, kiolvassa a fejlécet és felkiáltja, ha a válasz nem bizonyíték:',
     '',
-    '```bash',
-    `${agentMemorySearchScriptPath} ${name} "KULCSSZÓ" [--category hot|warm|cold|shared] \\`,
-    '    [--date tegnap|ÉÉÉÉ-HH-NN] [--since ÉÉÉÉ-HH-NN] [--until ÉÉÉÉ-HH-NN] [--strict]',
-    '```',
+    // #2232/card 1535f7f9: a strict-profile agent's dontAsk mode cannot run the script
+    // directly from its own CLAUDE.md recipe through an unlisted path -- it gets the same
+    // verb through the already allow-listed marveen-api.sh helper instead (see apiHelper
+    // elsewhere in this file); a non-strict agent keeps calling the script directly.
+    ...(strict ? [
+      '```bash',
+      `${apiHelper} memory-search ${name} KULCSSZO`,
+      '```',
+    ] : [
+      '```bash',
+      `${agentMemorySearchScriptPath} ${name} "KULCSSZÓ" [--category hot|warm|cold|shared] \\`,
+      '    [--date tegnap|ÉÉÉÉ-HH-NN] [--since ÉÉÉÉ-HH-NN] [--until ÉÉÉÉ-HH-NN] [--strict]',
+      '```',
+    ]),
     '',
     '- Kilépő kód 0 = valódi (`relaxed=false`) találat vagy valódi, ellenőrzött 0 találat.',
     '- Kilépő kód 6 = `relaxed=true`: amit kaptál, MENTETT KÖZELÍTÉS, nem bizonyíték --',
@@ -5503,6 +5513,17 @@ export function buildMemorySearchLabelBody(name: string): string {
     '- Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), add meg a `--strict` flaget.',
     '',
     'A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).',
+    '',
+    // Non-strict agents may still need the raw header read (e.g. scripting around the
+    // helper's own exit code), so keep the `-H @-` recipe available alongside the script.
+    ...(strict ? [] : [
+      'Ha a nyers fejlécre is szükséged van a script helyett:',
+      '```bash',
+      `${agentAuthHeaderPath} ${name} | curl -s -H @- -D /tmp/mem-fejlec-${name}.txt \\`,
+      `  "${dashboardOrigin}/api/memories?agent=${name}&q=KULCSSZO"`,
+      `grep -i '^x-memory-search' /tmp/mem-fejlec-${name}.txt`,
+      '```',
+    ]),
   ].join('\n')
 }
 
@@ -5535,7 +5556,7 @@ export function ensureMemorySearchLabelSection(name: string): void {
   // context on every session start.
   if (!hasBlock && /x-memory-search/i.test(existing)) return
 
-  const block = `${MEMORY_SEARCH_LABEL_BEGIN}\n${buildMemorySearchLabelBody(name)}\n${MEMORY_SEARCH_LABEL_END}`
+  const block = `${MEMORY_SEARCH_LABEL_BEGIN}\n${buildMemorySearchLabelBody(name, agentRunsStrict(name))}\n${MEMORY_SEARCH_LABEL_END}`
   const updated = hasBlock
     ? existing.replace(MEMORY_SEARCH_LABEL_BLOCK_RE, block)
     : existing.trimEnd() + '\n\n' + block + '\n'
@@ -6084,29 +6105,46 @@ const MSGCLOSE_BLOCK_RE = new RegExp(
   `${MSGCLOSE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MSGCLOSE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-export function buildMessageCloseBody(name: string): string {
+export function buildMessageCloseBody(name: string, strict = false): string {
   return [
     '## Üzenet lezárása: a `agent-message-close.sh` paranccsal',
     '',
     'Egy neked jött inter-agent üzenetet ezzel zárd le -- a script adja a PUT-ot, a JSON boolean',
     '`notify` mezőt és a 409 (már lezárt) eset csendes kezelését, nem kell kézzel curl-t írnod:',
     '',
-    '```bash',
-    `${agentMessageCloseScriptPath} ${name} <id>                                        # bejövő riport/értesítés`,
-    `${agentMessageCloseScriptPath} ${name} <id> --notify true --result-file <path>      # delegált feladat eredménye`,
-    '```',
+    // #2232/card 1535f7f9: a strict-profile agent's dontAsk mode only allow-lists the
+    // marveen-api.sh helper, not the script directly -- route the same verb through it.
+    ...(strict ? [
+      '```bash',
+      `${apiHelper} message-close <id> --no-notify`,
+      '```',
+    ] : [
+      '```bash',
+      `${agentMessageCloseScriptPath} ${name} <id>                                        # bejövő riport/értesítés`,
+      `${agentMessageCloseScriptPath} ${name} <id> --notify true --result-file <path>      # delegált feladat eredménye`,
+      '```',
+      '',
+      'Ha a nyers fejjel kell hívnod (pl. a helper nélkül):',
+      '```bash',
+      `${agentAuthHeaderPath} ${name} \\`,
+      `| curl -H @- -s -X PUT ${dashboardOrigin}/api/messages/<id> -H "Content-Type: application/json" \\`,
+      `  --data-binary '{"status":"done","notify":false}'`,
+      '```',
+    ]),
     '',
-    '- DELEGÁLT FELADAT (a feladó az eredményre vár): írd ki az eredményt a Write toollal egy',
-    '  fájlba, majd `--notify true --result-file <path>` -- a nyugta maga az eredmény.',
-    '- BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): flag nélkül -- alapértelmezés `--notify false`,',
+    '- BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): alapértelmezés `--notify false`,',
     '  mert a nyugta itt csak a feladó sorát növeli (mérve 2026-09-27: három lezárás a feladó',
     '  várakozó sorát 1-ről 4-re vitte).',
-    '- SOHA ne írd `--result "..."` KÖZVETLENÜL a parancssorba dupla idézőjelben: egy backtick vagy',
-    '  `$(...)` a szövegben a TE saját héjadban fut le, mielőtt a script elindulna (CYBERSEC NO-GO',
-    '  38468). A biztonságos forma a `--result-file <path>` (írd ki a Write toollal, add át az',
-    '  útvonalat) -- a `--result-stdin` CSAK egyszeres idézőjeles heredocból (`<<\'EOF\'`) biztonságos,',
-    '  mert egy dupla idézőjeles `echo`/`printf` ugyanúgy végrehajtja a backtickot/`$(...)`-t a HÍVÓ',
-    '  héjában, mielőtt a script látná a szöveget.',
+    ...(strict ? [] : [
+      '- DELEGÁLT FELADAT (a feladó az eredményre vár): írd ki az eredményt a Write toollal egy',
+      '  fájlba, majd `--notify true --result-file <path>` -- a nyugta maga az eredmény.',
+      '- SOHA ne írd `--result "..."` KÖZVETLENÜL a parancssorba dupla idézőjelben: egy backtick vagy',
+      '  egy, a szövegben szereplő parancs-behelyettesítés a TE saját héjadban fut le, mielőtt a script',
+      '  elindulna (CYBERSEC NO-GO 38468). A biztonságos forma a `--result-file <path>` (írd ki a Write',
+      '  toollal, add át az útvonalat) -- a `--result-stdin` CSAK egyszeres idézőjeles heredocból',
+      '  (`<<\'EOF\'`) biztonságos, mert egy dupla idézőjeles `echo`/`printf` ugyanúgy végrehajtja a',
+      '  behelyettesítést a HÍVÓ héjában, mielőtt a script látná a szöveget.',
+    ]),
     '- Egy MÁR lezárt üzenet újabb lezárása (409) a script számára NEM hiba: egy sort ír stderr-re és',
     '  0-val lép ki, NEM kell megismételni a lezárást, és NEM kell jelenteni.',
     '- A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
@@ -6120,7 +6158,7 @@ export function ensureMessageCloseSection(name: string): void {
   const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody(name)}\n${MSGCLOSE_END}`
+  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody(name, agentRunsStrict(name))}\n${MSGCLOSE_END}`
 
   let existing: string
   try {

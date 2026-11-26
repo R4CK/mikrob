@@ -307,7 +307,14 @@ export function applyFederationBlock(content: string, block: string | null): str
     return result === content ? null : result
   }
   // Insert: after the inter-agent section when the heading exists (i.e.
-  // before the NEXT '## ' heading), else append at EOF.
+  // before the NEXT '## ' heading); else before the background-checkpoint
+  // block if the root CLAUDE.md carries one (card 1535f7f9's agent-scaffold.ts
+  // BGCHECKPOINT_BEGIN -- literal here, not imported, to avoid a scaffold ->
+  // federation -> scaffold layering edge for one marker string). Appended
+  // AFTER federation historically, so without this a disable/enable cycle's
+  // EOF fallback would leave it reordered BEFORE the reinserted block. Else
+  // append at EOF.
+  const BGCHECKPOINT_BEGIN = '<!-- BEGIN GENERATED: background-checkpoint (auto-generated, do not edit by hand) -->'
   const headingIdx = lines.findIndex((l) => l.trim() === INTERAGENT_HEADING)
   if (headingIdx !== -1) {
     let insertAt = lines.length
@@ -315,6 +322,13 @@ export function applyFederationBlock(content: string, block: string | null): str
       if (lines[i].startsWith('## ')) { insertAt = i; break }
     }
     const next = [...lines.slice(0, insertAt), '', ...blockLines, '', ...lines.slice(insertAt)]
+    return next.join('\n')
+  }
+  const bgCheckpointIdx = lines.indexOf(BGCHECKPOINT_BEGIN)
+  if (bgCheckpointIdx !== -1) {
+    const before = lines.slice(0, bgCheckpointIdx)
+    if (before.length && before[before.length - 1] === '') before.pop()
+    const next = [...before, '', ...blockLines, '', ...lines.slice(bgCheckpointIdx)]
     return next.join('\n')
   }
   return `${content.replace(/\n*$/, '')}\n\n${block}\n`
