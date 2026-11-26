@@ -33063,3 +33063,106 @@ unchanged), 6d542dc9 (embedding coverage, coordinated, no file overlap); `src/kg
 capture-pipeline.ts`, `src/kg/anchor-path-backfill.ts`, `src/kg/anchor-path-backfill-cli.ts`,
 `scripts/kg-anchor-path-backfill.ts`, `src/kg/search.ts`, `src/web/routes/kg.ts`,
 `src/config-registry.ts`.
+
+## 2026-11-26 -- CORRECTION on 5ecf6133: "mean recall 0.3083, MET" above was self-retrieval, not
+held-out; four gate-found defects fixed; the honest held-out number is 0.0500, below target
+
+CYBERSEC NO-GO (comment 39014, 4 MEDIUM) and CYBERED NO-GO (comment 39018, 2 MEDIUM) on the first
+gate round of Gate-SHA `4c0b346476c02bd4da334a7b06fa3b0555787ec0` (the entry directly above).
+MikroB's binding decision on the metric (msg 24845), quoted because it changes what this project
+counts as "MET" going forward, not just for this card:
+
+> F-2 is right, 0.3083 is self-retrieval (9/12 cards got their own node back). The measure from
+> now on is HELD-OUT recall: for each sampled card, exclude the card's own captured node(s) and
+> any node created after the card's dispatch time, then score. Report both numbers. Target stays
+> >= 0.3 held-out; if that is not reachable with this card's scope, say so with the number, do
+> not tune to the sample. Widen the sample to >= 30 cards so one card is not 8%.
+
+**What "self-retrieval" meant:** `for-card.ts` is called AFTER a card is captured into the graph,
+so the dispatched card's own `sol:<cardId>:*` node (anchored on that same card's own Gate-SHA
+files, by construction) was eligible to be its own top hit. At real dispatch time that node does
+not exist yet -- a solution only gets captured once the card is `done` -- so the self-retrieval
+number overstated how useful the graph is to an agent working a NEW card.
+
+**Re-measured, same methodology CYBERED used (card's own node + anchors + edges deleted inside a
+rolled-back SQLite savepoint before the query, so the next card's measurement sees the full graph
+again), widened to 30 cards (the original 12 + 18 more, every distinct card with a real-path
+anchor after the backfill, picked deterministically by node id so the pick is reproducible),
+against a fresh copy of the live `store/knowledge-graph.db` (`.backup` + `PRAGMA integrity_check`
+ok before and after, the real backfill applied to the COPY only, never touched live) with this
+round's four fixes applied and the live embedding coverage already present (896/901 nodes,
+landed by 6d542dc9):
+
+- **Self-retrieval (card's own node still eligible), 30 cards: mean recall 0.3228, mean precision
+  0.2833.** Comparable to the 0.3083/0.4444 reported above (different sample size, same method).
+- **Held-out (card's own node(s) and anything captured at or after it excluded), 30 cards: mean
+  recall 0.0500, mean precision 0.0389.** This is the honest number per MikroB's own instruction:
+  >= 0.3 held-out is NOT reached by this card's scope. 28 of 30 sampled cards scored 0.0 held-out
+  recall. Cross-checked against CYBERED's own leave-one-out estimate (comment 39018: 0.060 mean
+  recall over 140 held-out cards) -- same order of magnitude, same conclusion, independently
+  arrived at with a different sample and a different measurement run.
+- **Why it's this low:** a card's title/description rarely names the file path a PAST card's
+  solution is anchored on, and FTS/embedding similarity between two cards' TEXT is a weak proxy
+  for "these touch the same code" when the match has to come from vocabulary overlap alone, not
+  from a shared file. Anchor-path exact-match (the strongest signal) only fires when the NEW
+  card's own text happens to mention a real path, which is rare. This is a real, measured limit
+  of this card's scope (anchor paths + minScore + ordering), not a bug introduced by it, and not
+  something closeable without a different retrieval signal (topic/semantic clustering beyond
+  plain FTS/cosine similarity, or populating the still-empty finding/decision/anti_pattern node
+  types so there is more than one card's own solution to ever find) -- out of scope here, noted
+  for whoever picks up the follow-on gap card MikroB opened after this one.
+
+**Four defects CYBERSEC/CYBERED found and this round fixes, each with a new test and a hand-run
+mutation check (revert the fix, confirm the new test goes red; restore, confirm green again):**
+
+1. **CYBERSEC F-1 (MEDIUM): an anchor on `DECISIONS.md`/`README.md`/etc flips the owning node
+   'stale' on the very next unrelated landing, and a 'draft' node promoted to 'stale' through
+   that path became searchable without ever clearing its gate (EK-MT-3).** Measured: 195/298
+   backfilled nodes anchored on `DECISIONS.md` alone, active 288 -> 113 on the next simulated
+   landing. Fixed two ways: `NON_DISCRIMINATING_ANCHOR_PATHS` (`src/kg/store.ts`) is filtered out
+   of every real-path anchor write, forward fix and backfill alike, BEFORE the file cap -- a card
+   that only touched such a file correctly ends up unresolved, not falsely anchored; and
+   `checkLandingAnchors` (`src/kg/anchor-staleness.ts`) no longer promotes a 'draft' node to
+   'stale' at all, closing the path even for a file this list does not name.
+2. **CYBERSEC F-4b (MEDIUM): a short Gate-SHA resolves fine in `git` but `filesForCommits` keys
+   its result by the FULL sha, so looking the original short sha back up found nothing.** 22 of
+   47 "unresolved" rows in the prior round were actually resolvable this way. Fixed with
+   `resolveFullSha` (`src/kanban-relations-git.ts`): resolve first, then look up by the resolved
+   form. Re-running the dry-run against the fresh copy after this fix: 348 placeholders, 214
+   resolvable (up from the shape the un-fixed tool would have reported), 134 correctly left
+   unresolved (mostly cards whose only touched files are now the excluded non-discriminating
+   paths from fix 1, not an unresolved sha).
+3. **CYBERSEC F-4a / CYBERED H-A (MEDIUM): the backfill's pre-mutation and post-mutation backup
+   writes were two separate file writes with no flag distinguishing them -- a process dying
+   between the transaction's commit and the second write left only the incomplete pre-image on
+   disk, and `--restore` against it reported a clean success while the newly-created rows stayed
+   behind, unreachable from the "restored" state.** CYBERSEC LOW-b1 / CYBERED H-C (same severity
+   bucket, folded into the same fix): a resolved path that already carried a real anchor got
+   silently UPDATEd and its id wrongly landed in `createdIds`, so restoring deleted a row the run
+   never created instead of reverting the overwrite. Fixed in `anchor-path-backfill.ts`: the
+   backup record now separates `updatedOriginals` (reverted by UPDATE) from `createdIds` (deleted
+   on restore), and carries `appliedAt`, set only after the mutating transaction commits;
+   `restoreAnchorPathBackfill` refuses any backup with `appliedAt == null`. The CLI's file writes
+   are also atomic now (temp file + fsync + rename), so a kill mid-write cannot leave truncated
+   JSON at the final path.
+4. **CYBERSEC F-3 (MEDIUM): the FTS text-match `why` echoed the WHOLE query text -- for a
+   `for-card.ts` call that is the dispatched card's own title+description -- and `for-card.ts`
+   drops whole entries to stay under 3000 chars BEFORE the renderer's own 300-char cap ever
+   helps.** Measured by CYBERSEC: 29 of 40 recent cards lost at least one of 3 results to this,
+   3 got an empty package. Fixed in `src/kg/search.ts`: the FTS branch's `why` is now a short
+   fixed label (`'szöveg-egyezés'`), not an echo. `src/kg/for-card.ts`'s entries also now carry
+   the node's own `title` (CYBERSEC/CYBERED: an agent otherwise gets a bare node id like
+   `sol:3a7c...:0` with nothing that says what it is) -- an additive field on the MT-07 contract.
+
+**Not re-opened for this round (optional per MikroB's decision, msg 24845):** pinning the 0.35
+minScore revert with its own dedicated test (already covered indirectly by the existing
+mutation-proof minScore test in `kg-search.test.ts`), the `--dry-run` + `--backup` combination
+(already correctly refused by the existing flag-order logic, confirmed by reading the code, not
+newly tested this round), and the already-fixed overlap-restore-deletes-a-pre-existing-row case
+(this IS fix 3 above, same root cause as H-C).
+
+Ki döntött: CYBERSEC (comment 39014), CYBERED (comment 39018), MikroB (msg 24845, binding
+held-out-metric decision); backend (fixes, held-out re-measurement). Végrehajtó: backend.
+Hivatkozás: kártya 5ecf6133; `src/kg/store.ts`, `src/kg/anchor-staleness.ts`,
+`src/kanban-relations-git.ts`, `src/kg/anchor-path-backfill.ts`,
+`src/kg/anchor-path-backfill-cli.ts`, `src/kg/search.ts`, `src/kg/for-card.ts`.
