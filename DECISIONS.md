@@ -34016,3 +34016,46 @@ fullstack (implementáció, mérés, teszt, a local-llm.sh rés kimondása).
 Hivatkozás: kártya 0aba66b8; CYBERSEC NO-GO 8c2913071bf377a0a38aee8d318a3861462a8c11 (komment
 39272, F-2/F-3); `store/git-object-integrity-monitor.sh`, `store/local-llm.sh`,
 `store/gemini-offload-call.sh`, `store/token-header-drop-pin.selftest.sh`.
+
+## 2026-11-26 -- token header tempfiles, kör 4: local-llm.sh vissza, hatókör szűkítve (kártya 0aba66b8)
+
+CYBERSEC NO-GO 39297 a kör 3 sháján (f024b180): két lelet. F-1 (MEDIUM, regresszió): a
+`store/local-llm.sh` gateway-hívása egy ARRAY-ben tartotta a process substitution-t
+(`-H @<(printf ... GATEWAY_AUTH_TOKEN)`), és az array-t később, külön parancsban futtatta
+timeout+flock alatt. Bash-ben a process substitution `/dev/fd/N`-je lezárul, amint az azt
+létrehozó hozzárendelés-utasítás véget ér -- mire a curl a `flock`/`timeout` láncon át
+lefutott, az fd már halott volt. Mért: közvetlen inline process substitution rc 0 (headerrel
+megérkezik); array-ben tartva, akár timeout/flock alatt is, rc 26 ("Failed to open
+/dev/fd/63"), semmi nem éri el a szervert. A gateway-kapcsoló (`local-llm-gateway-enabled.json`)
+ma nem létezik az élő alapértelmezett helyen, tehát ma senki nem futtatja ezt az ágat -- de
+amint valaki bekapcsolja, minden gateway-hívás rc 26-tal elhasal, és a hívó félrevezető "timeout
+or server error" üzenetet kap.
+
+F-2 (MEDIUM, a kör 3 REVIEW 39276 téves állítása): a REVIEW azt állította, hogy egy
+konvertált fájl visszaállítását (revert) a kör 2 statikus scannere ("store/
+token-header-no-tempfile-scan.py") már szerkezetileg elkapja MINDEN store/+scripts/ fájlra.
+CYBERSEC megmérte: a scan fejléc-használat regexe nem illeszkedik az idézett `-H "@$HDR"`
+alakra, amit a `git-object-integrity-monitor.sh` eredetileg használt -- ennek és a
+`local-llm.sh`-nak a visszaállítása is ÁTMENT a scanen észrevétlenül. Az állítás hamis volt.
+
+MikroB döntése (39309, a 39279 szabály alapján): a kártya csak a zöld részt landolja. A
+`store/local-llm.sh` VISSZA a develop-verziójára (a kör 3 array+procsub változása törölve ebből
+az ágból) -- a fájl eredeti `GATEWAY_AUTH_HDR` mktemp-mintája (a kártya eredeti sebezhetősége)
+ezen a fájlon MARAD, konvertálatlanul. A helyes javítás (stdin-forma a flock/timeout láncon
+belül, CYBERSEC mért V6 javaslata szerint), a scanner regex-javítása (F-2) és a 34
+trap-reliant fájl egy ÚJ kártyára (16822e2f) megy, később.
+
+Ebben a körben landoló, valóban zöld rész: `store/git-object-integrity-monitor.sh` és
+`store/gemini-offload-call.sh` (mindkettő CYBERSEC által hermetikusan, élő próbával
+ellenőrzött, header-drop és revert-mutáns ellen is pinnelt a `token-header-drop-pin.selftest.sh`
+17 helyén), a `token-header-no-tempfile.selftest.sh` scripts/-kiterjesztése (kör 2). A
+`token-header-drop-pin.selftest.sh` fejléce és a local-llm.sh-ról szóló "STATED GAP" sora
+frissült: nem állítja többé, hogy a revert szerkezetileg el van kapva, és nem állítja, hogy
+local-llm.sh konvertálva van csak dinamikusan nem pinnelve -- a fájl ebben a körben
+egyszerűen változatlan (develop-állapot), a hiány és a javítás egyaránt 16822e2f-é.
+
+Ki döntött: CYBERSEC (NO-GO 39297, a mérés és a hamis állítás kimondása); MikroB (a szétválasztás
+szabálya és konkrét döntése, 39279/39309); fullstack (a revert végrehajtása, a REVIEW és a
+selftest szövegének helyreállítása).
+Hivatkozás: kártya 0aba66b8; CYBERSEC NO-GO 39297 (f024b1802579735ec5fde163bbd04520dde5659f sha-n);
+MikroB 39309; follow-up kártya 16822e2f; `store/local-llm.sh`, `store/token-header-drop-pin.selftest.sh`.

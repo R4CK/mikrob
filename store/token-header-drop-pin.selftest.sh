@@ -8,11 +8,13 @@
 # output, never on what curl's -H argument actually carried.
 #
 # The companion gap F-3 also names -- a full-file REVERT back to the old mktemp-without-trap
-# pattern -- is NOT this file's job: store/token-header-no-tempfile-scan.py (case 4 of
-# token-header-no-tempfile.selftest.sh) already catches that structurally for every file under
-# store/ and scripts/, because a revert reintroduces the exact shape that scan flags. Verified by
-# planting a reverted copy of a converted file into a scratch dir and confirming the scan flags it
-# (see that selftest's own case 4 and its mutation control).
+# pattern -- is NOT this file's job, and is NOT closed by store/token-header-no-tempfile-scan.py
+# either: CYBERSEC's round-3 re-gate (NO-GO 39297, F-2) disproved the earlier claim that the scan
+# catches every revert structurally -- its header-use regex misses the quoted `-H "@$HDR"` form,
+# so a revert of store/git-object-integrity-monitor.sh (which used that quoted shape) and of
+# store/local-llm.sh both SURVIVED the scan unflagged. Fixing the scanner's regex and re-proving
+# revert coverage is deferred to the follow-up card 16822e2f (MikroB split 39309), together with
+# local-llm.sh.
 #
 # Mechanism: `curl` is overridden to a shell FUNCTION for the duration of each site's real,
 # sed-extracted source. The override never makes a network call -- it just looks at every `@...`
@@ -212,13 +214,15 @@ VALIDATE_ONLY=1
 $(sed -n '340,343p' "$REPO_ROOT/store/gemini-offload-call.sh")
 " "x-goog-api-key: GEMFAKE1"
 
-echo "-- STATED GAP (not a silent skip): store/local-llm.sh's gateway curl call is wrapped in" \
-     "'flock -w ... \"\$GPU_LOCK\" curl ...'. flock execs its argument via execvp, which never" \
-     "consults this shell's function table, so a curl() override (the mechanism every check_site" \
-     "above relies on) cannot intercept it. Verified by code reading only (grep -n GATEWAY_AUTH_HDR" \
-     "store/local-llm.sh showing zero remaining references, and the -H @<(printf ...) line itself)," \
-     "not by this harness. A real network-capturing listener would be needed to pin this site" \
-     "dynamically; out of scope for this round."
+echo "-- OUT OF SCOPE (not a silent skip): store/local-llm.sh is reverted to its develop shape in" \
+     "this round (CYBERSEC NO-GO 39297 on f024b180 -- the round-3 array-held process substitution" \
+     "closes its /dev/fd/N before curl runs, breaking the gateway call with rc 26; MikroB split" \
+     "39309 moves local-llm.sh to the follow-up card 16822e2f). It still carries the original" \
+     "mktemp-without-trap token file (grep -n GATEWAY_AUTH_HDR store/local-llm.sh), unconverted;" \
+     "its gateway curl call is also wrapped in 'flock -w ... \"\$GPU_LOCK\" curl ...', which execs" \
+     "its argument via execvp and would bypass a curl() function override the same way the other" \
+     "sites here rely on, so even a correct fix will need a real network-capturing listener to pin" \
+     "dynamically, not this harness's mechanism. Both the fix and that pin are 16822e2f's job."
 
 echo "sites checked: $SITES_RUN"
 [ "$FAIL" -eq 0 ] && echo "selftest: PASS"
