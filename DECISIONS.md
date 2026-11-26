@@ -33189,3 +33189,32 @@ Végrehajtó: fullstack.
 Hivatkozás: kártya 6d542dc9, parent kártya 5ecf6133 (anchor-path + scoring fix, backend, zero file
 overlap confirmed), Peti 14753 (priority raise, "a tudásgráf használható kell legyen az ügynökök
 számára").
+
+## 2026-11-26 -- KG embedding F-1: preserve on re-import, cap fan-out (kártya 6d542dc9)
+
+CYBERSEC GO condition (comment 24952) on the embedding fix above: `upsertNode`'s `ON CONFLICT`
+clause set `embedding=excluded.embedding`, and a normal caller never passes `embedding`, so
+`excluded.embedding` is always NULL -- every re-import of an already-embedded node clobbered its
+valid embedding back to NULL. Fixed with `COALESCE(excluded.x, x)` on both `embedding` and
+`embed_model`, plus a text-changed check (comparing the joined embed text against the existing
+row's) that skips the recompute -- and its Ollama call -- entirely when nothing feeding the
+embedding changed. Also capped the fire-and-forget fan-out
+(`EMBED_CONCURRENCY_LIMIT=4`, `EMBED_QUEUE_BOUND=50`, excess requests dropped -- the row stays NULL
+for `backfillKgNodeEmbeddings` to pick up later) so a bulk re-import cannot outrun an external abort
+and leave most rows NULL.
+
+Live action (explicitly directed, comment 24952): embedded the 5 remaining NULL nodes from card
+eed988e7 on the live `store/knowledge-graph.db` -- 901/901 embedded after. A first attempt to
+measure via a copy (`cp store/knowledge-graph.db <copy>`) was discovered to be UNSAFE for a WAL-mode
+DB (missed WAL-resident pages, gave a stale count) and was discarded without acting on it -- logged
+as a process gap, not hidden.
+
+4 new tests (10 total in `kg-embed-backfill.test.ts`), full kg suite 28 files/417 tests green,
+`npx tsc --noEmit -p .` clean. LOWs (stale vector on out-of-order answers, loopback pin for
+`OLLAMA_URL`, no production caller for `backfillKgNodeEmbeddings`) carried into the REVIEW as
+follow-ups, not fixed here.
+
+Ki döntött: cybersec (GO, comment 24952); fullstack (applied the fix).
+Végrehajtó: fullstack.
+Hivatkozás: kártya 6d542dc9, comments 24952 (CYBERSEC GO + F-1 condition), 39057 (live-write
+disclosure).
