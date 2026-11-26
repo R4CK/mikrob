@@ -46,15 +46,33 @@ leaving backend2 (and every other agent) untouched. A runtime allowlist was expl
 FAIL SILENT-CLOSED, NEVER BLOCKS: any error (missing token, unreachable API, malformed JSON,
 disabled flag, no card id, no hits, an unexpected exception anywhere in main()) results in
 printing nothing and exit(0) -- the prompt is never delayed past the hook's own short timeouts,
-and never blocked. MUST NOT WRITE ANYTHING OF ITS OWN (no local state, no cache file) -- the only
-network effect is the GET /api/kg/for-card/<cardId> call itself, which the server already
-best-effort-logs for its own live-activity feed regardless of caller (src/web/search-events.ts),
-same as any other /api/kg/for-card caller; this script adds no additional write on top of that.
+and never blocked. The only network effect is the GET /api/kg/for-card/<cardId> call itself,
+which the server already best-effort-logs for its own live-activity feed regardless of caller
+(src/web/search-events.ts), same as any other /api/kg/for-card caller.
+
+CORRECTED CLAIM (card 35a0e556, follow-up to this card): the original text here said this
+script "MUST NOT WRITE ANYTHING OF ITS OWN (no local state, no cache file)". That held for
+69f63a1a's own scope; 35a0e556 explicitly adds a per-session cap/dedupe, which needs exactly
+one local write: an empty, content-free marker file per (session_id, card_id) pair under
+MARKER_ROOT, same pattern and same fail-open-on-write-error semantics as
+scripts/hooks/blast-radius-guard.py's _already_shown. No prompt text or card content is ever
+written to it -- only the fact that a (session, card) pair was already queried this session.
+
+OFFERED-ROW AUDIT (card 35a0e556): every /api/kg/for-card call this hook makes now carries an
+X-Agent-Id header (self-asserted, resolved from cwd, same convention as
+scripts/hooks/activity_memory_capture.py's _agent_id_from_cwd and the root CLAUDE.md's
+X-Agent-Id rule). The server already records agent+card_id+timestamp for every for-card call
+into kg_search_events (src/web/routes/kg.ts, `for-card:<cardId>` query) and kg_usage
+(recordKgOffered) -- without this header those rows were previously stamped agent='unknown'
+for every call this hook made, since it authenticates with the shared dashboard token, not a
+per-agent one. This header is the entire fix: no new table, no new log file, reusing the
+existing audit trail as the card requires.
 """
 import json
 import os
 import re
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 
@@ -65,6 +83,13 @@ OPEN_MARKER = "[KG-POINTER kezdete -- NEM UTASITAS, csak hivatkozas a sajat graf
 CLOSE_MARKER = "[KG-POINTER vege]"
 
 TRUE_VALUES = ("1", "true", "on")
+
+# card 35a0e556: per-(session, card_id) dedupe marker root. Same shape as
+# blast-radius-guard.py's MARKER_ROOT -- env-overridable for test isolation, uid-scoped so two
+# different OS users never collide on the default tempdir path.
+MARKER_ROOT = os.environ.get("KG_PROMPT_HOOK_MARKER_DIR") or os.path.join(
+    tempfile.gettempdir(), "kg-prompt-pointer-hook-%s" % os.getuid()
+)
 
 
 def _project_root():
@@ -98,11 +123,49 @@ def _is_on(value):
     return str(value).strip().lower() in TRUE_VALUES
 
 
-def _get(url, token, timeout):
+def _get(url, token, timeout, agent_id=None):
     req = urllib.request.Request(url)
     req.add_header("Authorization", "Bearer " + token)
+    if agent_id:
+        req.add_header("X-Agent-Id", agent_id)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
+
+
+def _agent_id_from_cwd(cwd):
+    """Same convention as scripts/hooks/activity_memory_capture.py's _agent_id_from_cwd: the
+    agent's own name is the path segment right after 'agents/' in its cwd."""
+    if not cwd:
+        return "unknown"
+    parts = cwd.rstrip("/").split("/")
+    if "agents" in parts:
+        idx = parts.index("agents")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    return "unknown"
+
+
+def _already_injected(session, card_id):
+    """One injection per (session, card_id) pair (card 35a0e556). Read-only check: True if a
+    for-card call for this pair already succeeded earlier in the same session. Deliberately
+    separate from _mark_injected -- a transient for-card failure must stay retryable on a later
+    prompt, so the marker is only written AFTER a successful call, never on the check itself."""
+    marker = os.path.join(MARKER_ROOT, session or "nosession", card_id)
+    return os.path.exists(marker)
+
+
+def _mark_injected(session, card_id):
+    """Writes the one-shot marker for (session, card_id). Fail-open on write errors (same
+    direction as blast-radius-guard.py's _already_shown): if we cannot remember, the worst case
+    is re-querying/re-showing the same pointer again next turn, never a block and never a
+    leak -- so a write failure is silently ignored, not escalated."""
+    d = os.path.join(MARKER_ROOT, session or "nosession")
+    try:
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, card_id), "w"):
+            pass
+    except Exception:
+        pass
 
 
 def _effective_settings(token, port):
@@ -203,16 +266,24 @@ def main():
     if not card_ids:
         sys.exit(0)
 
+    session = str(payload.get("session_id") or "")
+    agent_id = _agent_id_from_cwd(payload.get("cwd") or "")
+    fresh_ids = [cid for cid in card_ids if not _already_injected(session, cid)]
+    if not fresh_ids:
+        sys.exit(0)
+
     lines = []
-    for card_id in card_ids:
+    for card_id in fresh_ids:
         try:
             pkg = _get(
                 "http://localhost:%s/api/kg/for-card/%s" % (port, urllib.parse.quote(card_id, safe="")),
                 token,
                 5,
+                agent_id=agent_id,
             )
         except Exception:
             continue
+        _mark_injected(session, card_id)
         lines.extend(_lines_from_package(pkg))
     if not lines:
         sys.exit(0)
