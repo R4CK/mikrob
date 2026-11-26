@@ -38,6 +38,11 @@ CLEANCORE_MAIN_TEST="$TMP/no-git-here"
 # sandbox (cleaned up with the rest of $TMP) so section 3 still runs (no change to code paths
 # exercised) but scans nothing.
 WT_TMP_SANDBOX="$TMP/wt-tests-tmp-sandbox"
+# MikroB (msg 25245, Peti-approved 14795): the sandbox must be removed when the selftest ends,
+# including on failure. Nested under $TMP rather than a separate mktemp -d so the EXISTING
+# `trap cleanup EXIT` below (which already does `rm -rf "$TMP"`) removes it unconditionally --
+# verified by hand: an `exit 1` placed right after that trap is registered still leaves no TMP
+# dir behind. No separate trap/cleanup needed.
 mkdir -p "$MARVEEN_MAIN_TEST" "$CLEANCORE_MAIN_TEST" "$WT_TMP_SANDBOX"
 
 git init -q "$MARVEEN_MAIN_TEST"
