@@ -268,4 +268,21 @@ WHY_LINE_LEN=$(printf '%s\n' "$OUT_LONG_WHY" | grep '^- sol:1' | awk '{print len
 [ "$WHY_LINE_LEN" -le 320 ] || fail "F8: expected the why to be capped to roughly 300 chars, entry line was $WHY_LINE_LEN chars"
 pass "F8: a 2000-char why is capped per-entry instead of consuming the whole block budget"
 
+# --- F9 (card 5ecf6133, CYBERSEC GO-with-conditions msg 24927): the JSON package already carries
+#     a node's title and its first anchor path -- this pins that the RENDERED TEXT block actually
+#     shows them, not just the id + why + verdict + sha it printed before. ---
+TITLE_ANCHOR_PAYLOAD="$(python3 -c "
+import json
+print(json.dumps({'card_id': 'cardA', 'solutions': [{'card_id': 'sol:1', 'error_class': None,
+  'title': 'fix the offload race', 'anchor': {'path': 'src/offload.ts', 'symbol': None,
+  'line_start': None, 'line_end': None}, 'why': 'ugyanazt a fajlt erinti', 'verdict': None,
+  'gate_sha': None, 'date': '2026-10-30', 'source_ref': 'kanban_comments:1'}],
+  'known_pitfalls': [], 'decisions': [], 'cross_project_refs': [],
+  'meta': {'scope': 'marveen', 'chars': 10, 'truncated': False}}))
+")"
+OUT_TITLE_ANCHOR="$(printf '%s' "$TITLE_ANCHOR_PAYLOAD" | python3 -I "$SCRIPT_DIR/kg-for-card-block-render.py")"
+printf '%s' "$OUT_TITLE_ANCHOR" | grep -q 'fix the offload race' || fail "F9: expected the node's title to appear in the rendered text block, got: $OUT_TITLE_ANCHOR"
+printf '%s' "$OUT_TITLE_ANCHOR" | grep -q 'src/offload.ts' || fail "F9: expected the node's anchor path to appear in the rendered text block, got: $OUT_TITLE_ANCHOR"
+pass "F9: title and anchor path actually reach the rendered text block, not just the JSON package"
+
 echo "selftest: $PASS_COUNT passed, 0 failed"

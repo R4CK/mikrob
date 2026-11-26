@@ -21,6 +21,13 @@ const SCRIPT = join(REPO_ROOT, 'scripts', 'startup.sh')
 // never actually invoked by anything that runs in CI. Wiring it here closes that gap directly,
 // the same way umask-dropin.test.ts wires its own store/ selftest.
 describe('install-wsl-watchdog.selftest.sh actually runs', () => {
+  // Card 3f6bb903: the selftest now exercises real subprocesses (dry-run
+  // re-renders, backgrounded `sleep infinity` processes for the holder-ensure
+  // behavioural checks) on top of its existing ~90 static-text-pin checks --
+  // normally ~1.5s, but under shared fleet-test CPU contention it can exceed
+  // vitest's 5000ms DEFAULT test timeout even though execFileSync's own
+  // timeout option below was already set to 120s (the intent was always to
+  // allow a slow run; only the vitest-level timeout was never raised to match).
   it('passes when invoked', () => {
     const out = execFileSync(
       'bash',
@@ -29,7 +36,7 @@ describe('install-wsl-watchdog.selftest.sh actually runs', () => {
     )
     expect(out).toContain('PASS')
     expect(out).not.toContain('FAIL')
-  })
+  }, 120_000)
 })
 
 describe('startup.sh: WSL watchdog disable-flag early exit', () => {

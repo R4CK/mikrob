@@ -25,7 +25,11 @@ def other(y):
 PY
 mkdir -p "$MAIN/store"
 cp "$HERE/agent-worktree-marveen.sh" "$MAIN/store/agent-worktree-marveen.sh"
-git -C "$MAIN" add src/foo.py store/agent-worktree-marveen.sh
+# card 60e5a40e: agent-worktree-marveen.sh now unconditionally sources worktree-on-create.sh at
+# the top, even for --path-only calls (see its own line ". $HERE/worktree-on-create.sh") -- the
+# copy here has to mirror that, same as agent-worktree-marveen.selftest.sh's fixture already does.
+cp "$HERE/worktree-on-create.sh" "$MAIN/store/worktree-on-create.sh"
+git -C "$MAIN" add src/foo.py store/agent-worktree-marveen.sh store/worktree-on-create.sh
 git -C "$MAIN" commit -qm base
 
 ORIGIN="$WORK/origin.git"

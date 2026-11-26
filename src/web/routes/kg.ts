@@ -174,7 +174,9 @@ export async function tryHandleKg(ctx: RouteContext): Promise<boolean> {
         types: types.length > 0 ? types : undefined,
         strict,
         k,
-        minScore: numberSetting('KG_MIN_SCORE', 0.35),
+        // Card 5ecf6133: 0.35 fallback matched the old (unreachable) KG_MIN_SCORE registry
+        // default -- see search.ts's hybridKgSearch for the RRF-contribution math.
+        minScore: numberSetting('KG_MIN_SCORE', 0.01),
         expandHops: numberSetting('KG_EXPAND_HOPS', 1),
         snippetMaxLines: numberSetting('KG_SNIPPET_MAX_LINES', 60),
       })
@@ -213,7 +215,7 @@ export async function tryHandleKg(ctx: RouteContext): Promise<boolean> {
     const k = resolveK(url.searchParams.get('k'))
     const pkg = await buildForCardPackage(kgDb(), cardId, {
       k,
-      minScore: numberSetting('KG_MIN_SCORE', 0.35),
+      minScore: numberSetting('KG_MIN_SCORE', 0.01),
       expandHops: numberSetting('KG_EXPAND_HOPS', 1),
       maxChars: numberSetting('KG_INJECT_MAX_CHARS', 3000),
     })

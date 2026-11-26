@@ -98,6 +98,28 @@ describe('checkLandingAnchors (MT-09, EK-MT-8)', () => {
     expect(anchor.content_hash).toBe(sha256Hex('some body'))
   })
 
+  // Card 5ecf6133 (CYBERSEC NO-GO F-1, comment 39014): 'draft' is NOT in SEARCHABLE_STATUSES
+  // (search.ts) but 'stale' IS -- promoting a never-gate-approved draft to 'stale' through this
+  // path made it searchable/injectable without ever clearing EK-MT-3's gate.
+  it('a drifted anchor on a draft node leaves it draft, not stale (EK-MT-3: draft must not become searchable)', () => {
+    const db = makeDb()
+    seedSolution(db, 'sol:1')
+    setNodeStatus(db, 'sol:1', 'draft', 'mikrob')
+    const oldBody = 'v1'
+    const newBody = 'v2'
+    upsertAnchor(db, {
+      node_id: 'sol:1', repo: 'marveen', path: 'src/f.ts', sha: 'a1a1234',
+      content_hash: sha256Hex(oldBody),
+    })
+    const gitShow: GitShowFn = () => newBody
+    const report = checkLandingAnchors(db, {
+      repo: 'marveen', changedPaths: ['src/f.ts'], sha: 'b2b5678', gitShow, actor: 'test',
+    })
+    expect(report.drifted).toBe(1) // the anchor itself is still re-checked and marked drifted
+    expect(report.nodesMarkedStale).toBe(0) // but the owning node is NOT promoted
+    expect(getNode(db, 'sol:1')?.status).toBe('draft')
+  })
+
   it('a drifted anchor on an archived node does not flip the node back out of archived', () => {
     const db = makeDb()
     seedSolution(db, 'sol:1')

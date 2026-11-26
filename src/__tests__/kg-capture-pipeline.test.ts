@@ -47,6 +47,9 @@ function deps(overrides: Partial<CaptureDeps> = {}): CaptureDeps {
   return {
     closureCheck: (): ClosureResult => ({ verdict: 'AGREE', sha: 'abc1234' }),
     draftFn: () => JSON.stringify([{ title: 'off-by-one fix', body: 'fixed the loop bound' }]),
+    // Card 5ecf6133: a real-looking file, standing in for filesForCommits() against a real repo --
+    // every test that doesn't override this gets a real path, not the old kanban_comments:<id>.
+    filesForSha: () => ['src/web/queue-drain.ts'],
     now: () => 1000,
     extractor: 'local-llm:kg-capture@v1',
     ...overrides,
@@ -70,11 +73,55 @@ describe('runCapture', () => {
     const node = kgDb.prepare('SELECT * FROM kg_nodes WHERE id = ?').get(result.solutionIds[0]!) as Record<string, unknown>
     expect(node.status).toBe('active')
     expect(node.gate_sha).toBe('abc1234')
-    const anchors = kgDb.prepare('SELECT * FROM kg_anchors WHERE node_id = ?').all(result.solutionIds[0]!) as Array<{ sha: string }>
+    const anchors = kgDb.prepare('SELECT * FROM kg_anchors WHERE node_id = ?').all(result.solutionIds[0]!) as Array<{ sha: string; path: string }>
     expect(anchors.length).toBeGreaterThanOrEqual(1)
     expect(anchors[0]!.sha).toBe('abc1234')
     const produced = kgDb.prepare("SELECT * FROM kg_edges WHERE rel = 'produced' AND dst = ?").get(result.solutionIds[0]!)
     expect(produced).toBeTruthy()
+    const implementedIn = kgDb.prepare("SELECT * FROM kg_edges WHERE rel = 'implemented_in' AND src = ?").get(result.solutionIds[0]!)
+    expect(implementedIn).toBeTruthy()
+    kgDb.close()
+  })
+
+  // Card 5ecf6133: the repro the card's own Kész-ha list asks for -- the anchor's path must be a
+  // plausible file path (slash + extension), never the kanban_comments:<id> placeholder that used
+  // to sit in 343/343 live anchor rows (src/kg/capture-pipeline.ts:541, before this fix).
+  it('card 5ecf6133: anchor path is a real file path from the Gate-SHA diff, not kanban_comments:<id>', () => {
+    const kgDb = freshKgDb()
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      filesForSha: (sha) => (sha === 'abc1234' ? ['src/kg/capture-pipeline.ts', 'src/kg/search.ts'] : []),
+    }))
+    const anchors = kgDb.prepare('SELECT * FROM kg_anchors WHERE node_id = ?').all(result.solutionIds[0]!) as Array<{ path: string }>
+    expect(anchors.map((a) => a.path).sort()).toEqual(['src/kg/capture-pipeline.ts', 'src/kg/search.ts'])
+    for (const a of anchors) {
+      expect(a.path).not.toMatch(/^kanban_comments:/)
+      expect(a.path).toMatch(/\/.*\.\w+$/)
+    }
+    kgDb.close()
+  })
+
+  // Card 5ecf6133 (CYBERSEC NO-GO F-1, comment 39014): DECISIONS.md/README.md/etc are touched by
+  // nearly every landing, and anchoring on them flips the node 'stale' on the next unrelated
+  // landing. Filtered out of the forward fix too, not just the backfill.
+  it('card 5ecf6133: DECISIONS.md and other non-discriminating paths are filtered out of real anchors', () => {
+    const kgDb = freshKgDb()
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      filesForSha: (sha) => (sha === 'abc1234' ? ['DECISIONS.md', 'src/kg/search.ts', 'README.md'] : []),
+    }))
+    const anchors = kgDb.prepare('SELECT * FROM kg_anchors WHERE node_id = ?').all(result.solutionIds[0]!) as Array<{ path: string }>
+    expect(anchors.map((a) => a.path)).toEqual(['src/kg/search.ts'])
+    kgDb.close()
+  })
+
+  // Card 5ecf6133: filesForSha failing/returning nothing (unresolvable sha) must not fail the
+  // capture or write a fake anchor -- it just skips the file anchor, same posture as the git
+  // sweep's own "skip this repo's file edges" fallback (kanban-relations-git.ts).
+  it('card 5ecf6133: filesForSha returning [] skips file anchors without failing the capture', () => {
+    const kgDb = freshKgDb()
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({ filesForSha: () => [] }))
+    expect(result.outcome).toBe('captured')
+    const anchors = kgDb.prepare('SELECT * FROM kg_anchors WHERE node_id = ?').all(result.solutionIds[0]!)
+    expect(anchors).toHaveLength(0)
     const implementedIn = kgDb.prepare("SELECT * FROM kg_edges WHERE rel = 'implemented_in' AND src = ?").get(result.solutionIds[0]!)
     expect(implementedIn).toBeTruthy()
     kgDb.close()

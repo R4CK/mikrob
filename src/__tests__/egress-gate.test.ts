@@ -231,6 +231,84 @@ describe('the open reader posture (operator opt-in)', () => {
       expect(isEgressBlocked('WebFetch', { url: 'https://evil.example/feed' }, OPEN, bad as never)).toBe(true)
     }
   })
+
+  // Card 8f1c9795 (9529d46e follow-up, WhiteHat 25728): remaining SSRF bypass classes, each its
+  // own `it` so a red run names the class (MikroB comment on the card).
+  it('req 0: deprecated IPv4-compatible IPv6 (::/96) denied', () => {
+    const urls = [
+      'http://[::7f00:1]/',   // ::/96 -> 127.0.0.1
+      'http://[::a9fe:a9fe]/', // ::/96 -> 169.254.169.254
+      'http://[::0a00:0001]/', // ::/96 -> 10.0.0.1
+    ]
+    for (const url of urls) {
+      expect(egressDecision('WebFetch', { url }, OPEN, QUARANTINE).tier).toBe('quarantine-denied')
+    }
+  })
+
+  it('req 1: ALL trailing dots stripped, not just one', () => {
+    const urls = ['http://localhost../', 'http://metadata.google.internal../']
+    for (const url of urls) {
+      expect(egressDecision('WebFetch', { url }, OPEN, QUARANTINE).tier).toBe('quarantine-denied')
+    }
+  })
+
+  it('req 2: 2002::/16 (6to4) decoded to its embedded v4', () => {
+    // 2002:a9fe:a9fe:: -> embedded v4 a9fe:a9fe = 169.254.169.254 (private)
+    expect(egressDecision('WebFetch', { url: 'http://[2002:a9fe:a9fe::]/' }, OPEN, QUARANTINE).tier).toBe('quarantine-denied')
+    // 2002:0808:0808:: -> embedded v4 8.8.8.8 (public) -- the decode must not blanket-deny 2002::/16
+    expect(egressDecision('WebFetch', { url: 'http://[2002:808:808::]/' }, OPEN, QUARANTINE).tier).toBe('quarantine-open')
+  })
+
+  it('req 2: 64:ff9b:1::/48 (RFC 8215 local-use NAT64) denied outright', () => {
+    expect(egressDecision('WebFetch', { url: 'http://[64:ff9b:1::1]/' }, OPEN, QUARANTINE).tier).toBe('quarantine-denied')
+  })
+
+  it('req 2: fe80::/10, fec0::/10 and ff00::/8 denied beyond the literal string "fe80"', () => {
+    const urls = [
+      'http://[fe9f::1]/',  // fe80::/10, previously missed (old check matched "fe80" literally)
+      'http://[febf::1]/',  // fe80::/10, top of the range
+      'http://[fec0::1]/',  // fec0::/10, deprecated site-local
+      'http://[ff02::1]/',  // ff00::/8, multicast
+    ]
+    for (const url of urls) {
+      expect(egressDecision('WebFetch', { url }, OPEN, QUARANTINE).tier).toBe('quarantine-denied')
+    }
+    // fec00::/9 boundary neighbour is a different, unrelated higher range -- not denied by this rule
+    expect(egressDecision('WebFetch', { url: 'http://[2001:db8::1]/' }, OPEN, QUARANTINE).tier).toBe('quarantine-open')
+  })
+
+  it('req 3: ip6-* alias hostnames and the additional literal denied hosts', () => {
+    const urls = [
+      'http://ip6-localhost/', 'http://ip6-loopback/', 'http://ip6-localnet/',
+      'http://ip6-allnodes/', 'http://ip6-allrouters/',
+      'http://168.63.129.16/metadata/instance', // Azure IMDS
+      'http://192.0.0.8/',                       // 192.0.0.0/24
+    ]
+    for (const url of urls) {
+      expect(egressDecision('WebFetch', { url }, OPEN, QUARANTINE).tier).toBe('quarantine-denied')
+    }
+  })
+
+  it('req 4: single-label hosts denied unless allowlisted (none are, today)', () => {
+    expect(egressDecision('WebFetch', { url: 'http://metadata/' }, OPEN, QUARANTINE).tier).toBe('quarantine-denied')
+    expect(egressDecision('WebFetch', { url: 'http://metadata.c.my-project.internal/' }, OPEN, QUARANTINE).tier).toBe('quarantine-denied') // caught by .internal suffix instead
+    // a dotted public host is unaffected by this rule
+    expect(egressDecision('WebFetch', { url: 'http://example.com/' }, OPEN, QUARANTINE).tier).toBe('quarantine-open')
+  })
+
+  // Req 5 (RedHat mutation-battery pin): the two "unrecognised tail -- deny to be safe" branches
+  // inside the embedded-v4 decoders. A mutant that flips either `true` to `false` must turn one
+  // of these red -- these inputs match the ::ffff:/64:ff9b:: PREFIX but have a tail that is
+  // neither dotted-decimal nor exactly two hex groups, so only the fail-closed branch decides.
+  it('req 5: an unrecognised tail after ::ffff:/64:ff9b:: fails closed, not open', () => {
+    const urls = [
+      'http://[::ffff:1:2:3]/',   // 3 groups, not the expected 2
+      'http://[64:ff9b::1:2:3]/', // same shape, other prefix
+    ]
+    for (const url of urls) {
+      expect(egressDecision('WebFetch', { url }, OPEN, QUARANTINE).tier).toBe('quarantine-denied')
+    }
+  })
 })
 
 describe('what a block records about the caller', () => {

@@ -477,8 +477,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'KG_MIN_SCORE',
     type: 'string',
-    default: '0.35',
-    description: 'MT-03/04 (card 34c2d2a2): a hibrid kereső minimális rangsor-pontszáma (0..1) -- ez alatt a találat nem kerül a results tömbbe. Nincs saját float típus a beállítás-regiszterben, ezért sztringként tárolva, 0..1 közti tizedestört formátummal validálva.',
+    default: '0.01',
+    description: 'MT-03/04 (card 34c2d2a2): a hibrid kereső minimális rangsor-pontszáma (0..1) -- ez alatt a találat nem kerül a results tömbbe. Nincs saját float típus a beállítás-regiszterben, ezért sztringként tárolva, 0..1 közti tizedestört formátummal validálva. Card 5ecf6133: a korábbi 0.35 az RRF-fúzió matematikájával elérhetetlen volt (lásd src/kg/search.ts hybridKgSearch).',
     module: 'knowledge-graph',
     secret: false,
     requiresRestart: false,

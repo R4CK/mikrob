@@ -47,6 +47,9 @@ describe('buildForCardPackage (MT-07 dispatch package, EK-MT-6)', () => {
     const entry = pkg.known_pitfalls.find((e) => e.card_id === 'finding:1')!
     expect(entry.verdict).toBe('QA FAIL')
     expect(entry.gate_sha).toBe('deadbee')
+    // Card 5ecf6133 (CYBERSEC/CYBERED: "an agent gets sol:3a7c...:0 with nothing that says what it
+    // is"): the node's own title must reach the package so the id is actually usable.
+    expect(entry.title).toBe('QA FAIL')
     db.close()
   })
 

@@ -53,8 +53,9 @@ hit_log, enabled_file, maxchars_file, package_file, settings_fault_file = sys.ar
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        agent_hdr = self.headers.get("X-Agent-Id", "")
         with open(hit_log, "a") as f:
-            f.write(self.path + "\n")
+            f.write(self.path + " X-Agent-Id=" + agent_hdr + "\n")
         if self.path.startswith("/api/settings"):
             with open(settings_fault_file) as f:
                 fault = f.read().strip()
@@ -111,9 +112,15 @@ PASS_COUNT=0
 pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo "PASS $1"; }
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-run_hook() { # $1 = prompt text (may be empty), extra env vars already exported by caller
-  printf '{"prompt": %s, "cwd": "/home/neon/marveen/agents/backend"}' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1")" \
-    | (cd "$WORKDIR" && WEB_PORT="$PORT" python3 scripts/hooks/kg-prompt-pointer-hook.py)
+MARKER_DIR="$WORKDIR/markers"
+
+run_hook() { # $1 = prompt text (may be empty), $2 = session id (default: fresh per call, so
+             # existing cases stay independent -- only the dedupe cases below pass the same
+             # session id on purpose). Extra env vars already exported by caller.
+  local sid="${2:-selftest-$RANDOM-$RANDOM}"
+  printf '{"prompt": %s, "cwd": "/home/neon/marveen/agents/backend", "session_id": "%s"}' \
+    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1")" "$sid" \
+    | (cd "$WORKDIR" && WEB_PORT="$PORT" KG_PROMPT_HOOK_MARKER_DIR="$MARKER_DIR" python3 scripts/hooks/kg-prompt-pointer-hook.py)
 }
 
 CARD_PROMPT='how do we fix 69f63a1a'
@@ -149,8 +156,10 @@ grep -q '/api/kg/for-card/69f63a1a?' "$HIT_LOG" && fail "F2: the request carried
 printf '%s' "$OUT_ON" | grep -q 'sol:7f3a91c2' || fail "F2: expected the node id in the block: $OUT_ON"
 printf '%s' "$OUT_ON" | grep -q 'land-lock-queueing' || fail "F2: expected the short label in the block: $OUT_ON"
 printf '%s' "$OUT_ON" | grep -q 'should never appear' && fail "F2: 'why' field leaked into a pointers-only block: $OUT_ON"
+grep -q '/api/kg/for-card/69f63a1a X-Agent-Id=backend' "$HIT_LOG" || fail "G-AUDIT: expected the for-card call to carry X-Agent-Id=backend (resolved from cwd), log: $(cat "$HIT_LOG")"
 : > "$HIT_LOG"
 pass "F2: flag on + card id + real entries -> framed pointers-only block (node id + label, never why)"
+pass "G-AUDIT: for-card call carries X-Agent-Id=backend, reusing kg_search_events/kg_usage's existing agent column (card 35a0e556)"
 
 # --- F3: for-card package has no entries -> empty output, no crash. ---
 printf '{"card_id":"69f63a1a","solutions":[],"known_pitfalls":[],"decisions":[]}' > "$PACKAGE_FILE"
@@ -300,5 +309,43 @@ RC_DEAD_PORT=$?
 [ "$RC_DEAD_PORT" = "0" ] || fail "F14: expected exit 0 under total connectivity loss, got rc=$RC_DEAD_PORT"
 [ -z "$OUT_DEAD_PORT" ] || fail "F14: expected empty output under total connectivity loss, got: $OUT_DEAD_PORT"
 pass "F14: total connectivity loss (dead port) -- exit 0, empty stdout, no traceback (exit1/crash shape)"
+
+# --- G1 (card 35a0e556): per-session cap/dedupe. Same session id, same card id, called twice
+#     -> the FIRST call hits for-card and prints the block; the SECOND call (same session) must
+#     NOT hit for-card again, and must print nothing, because it was already injected. ---
+printf '{"card_id":"69f63a1a","solutions":[{"card_id":"sol:1","error_class":"x","verdict":null,"why":""}],"known_pitfalls":[],"decisions":[]}' > "$PACKAGE_FILE"
+: > "$HIT_LOG"
+DEDUPE_SESSION="g1-session-$RANDOM"
+OUT_G1_FIRST="$(run_hook "$CARD_PROMPT" "$DEDUPE_SESSION")"
+[ -n "$OUT_G1_FIRST" ] || fail "G1: expected a non-empty block on the first call of a fresh session"
+grep -q 'for-card' "$HIT_LOG" || fail "G1: expected the first call to hit for-card, log: $(cat "$HIT_LOG")"
+: > "$HIT_LOG"
+OUT_G1_SECOND="$(run_hook "$CARD_PROMPT" "$DEDUPE_SESSION")"
+[ -z "$OUT_G1_SECOND" ] || fail "G1: expected empty output on the second call of the SAME session (already injected), got: $OUT_G1_SECOND"
+grep -q 'for-card' "$HIT_LOG" && fail "G1: the second call hit for-card again -- the per-session cap did not suppress it, log: $(cat "$HIT_LOG")"
+pass "G1: second call in the same session for the same card is suppressed, zero extra for-card calls"
+
+# --- G2: a DIFFERENT session id for the same card id is NOT suppressed -- the cap is scoped to
+#     (session, card_id), not to card_id alone. ---
+: > "$HIT_LOG"
+OUT_G2_OTHER="$(run_hook "$CARD_PROMPT" "g2-other-session-$RANDOM")"
+[ -n "$OUT_G2_OTHER" ] || fail "G2: expected a non-empty block for a different session id, got empty"
+grep -q 'for-card' "$HIT_LOG" || fail "G2: expected a for-card hit for the new session, log: $(cat "$HIT_LOG")"
+pass "G2: a different session id for the same card id is not suppressed by another session's marker"
+
+# --- G3: marker-dir write failure fails OPEN (never blocks, never crashes) -- pointed at a path
+#     that cannot be created (parent is a regular file, not a directory). The pair was never
+#     marked before, so _already_injected still correctly returns False; the call proceeds and
+#     the hook still exits 0 with the normal block, it just cannot remember for next time. ---
+: > "$HIT_LOG"
+UNWRITABLE_PARENT="$WORKDIR/not-a-dir"
+printf 'x' > "$UNWRITABLE_PARENT"
+OUT_G3="$(printf '{"prompt": %s, "cwd": "/home/neon/marveen/agents/backend", "session_id": "g3-session"}' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$CARD_PROMPT")" \
+  | (cd "$WORKDIR" && WEB_PORT="$PORT" KG_PROMPT_HOOK_MARKER_DIR="$UNWRITABLE_PARENT/markers" python3 scripts/hooks/kg-prompt-pointer-hook.py))"
+RC_G3=$?
+[ "$RC_G3" = "0" ] || fail "G3: expected exit 0 even when the marker dir cannot be created, got rc=$RC_G3"
+[ -n "$OUT_G3" ] || fail "G3: expected the normal non-empty block despite an unwritable marker dir (fail-open, not fail-closed)"
+grep -q 'for-card' "$HIT_LOG" || fail "G3: expected a for-card hit despite an unwritable marker dir, log: $(cat "$HIT_LOG")"
+pass "G3: unwritable marker dir fails open -- still exits 0 with the normal block, never crashes or blocks"
 
 echo "selftest: $PASS_COUNT case(s), PASS"

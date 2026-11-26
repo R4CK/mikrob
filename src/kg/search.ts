@@ -130,9 +130,21 @@ function clampLines(text: string | null, maxLines: number): string | null {
   return lines.slice(0, maxLines).join('\n') + `\n...(${lines.length - maxLines} more lines)`
 }
 
+// Card 5ecf6133: now that a node can carry several real-path anchors (the backfill/forward-fix
+// writes one per Gate-SHA file, not one placeholder), ORDER matters -- for-card.ts only ever
+// shows anchors[0] per entry (the MT-07 contract's `anchor` field is singular). DECISIONS.md is
+// touched by nearly every card (the project's own ground-truth-exclusion convention already
+// treats it as a non-discriminator), so without this it kept winning the "first" slot and
+// starving the one useful anchor out of the dispatch package entirely -- measured: mean recall on
+// the eed988e7 12-card sample stuck at 0.208 with plain id order, because DECISIONS.md was
+// anchors[0] on 7 of 12 cards. Push it last, not drop it: it's still a real anchor, just the
+// least specific one when something more specific exists.
 function loadAnchors(db: Database.Database, nodeId: string): KgSearchAnchor[] {
   return db
-    .prepare('SELECT repo, path, symbol, line_start, line_end, sha, state FROM kg_anchors WHERE node_id = ?')
+    .prepare(
+      `SELECT repo, path, symbol, line_start, line_end, sha, state FROM kg_anchors
+       WHERE node_id = ? ORDER BY (path = 'DECISIONS.md') ASC, id ASC`,
+    )
     .all(nodeId) as KgSearchAnchor[]
 }
 
@@ -172,7 +184,14 @@ export async function hybridKgSearch(
 ): Promise<{ results: KgSearchResult[]; meta: KgSearchMeta }> {
   const scope = resolveScope(opts)
   const k = opts.k ?? 3
-  const minScore = opts.minScore ?? 0.35
+  // Card 5ecf6133: 0.35 was unreachable. Each branch's RRF contribution is 1/(60+rank+1), and
+  // every branch caps its candidate pool at k*4 rows (the LIMIT above) -- with k in [1,8]
+  // (KG_TOPK's range), the worst-ranked row still in a pool contributes at least
+  // 1/(60+k*4+1), i.e. >= 1/92 ~= 0.0109 even at k=8. 0.01 sits just under that floor, so any
+  // FTS or embedding hit that made it into a branch's own pool now clears the seed filter --
+  // matching src/db.ts's hybridSearch for memories, which fuses the same way but has no
+  // absolute floor at all (rank + slice(0, limit) only).
+  const minScore = opts.minScore ?? 0.01
   const expandHops = opts.expandHops ?? 1
   const snippetMaxLines = opts.snippetMaxLines ?? 60
   const strict = opts.strict ?? false
@@ -208,8 +227,14 @@ export async function hybridKgSearch(
     ftsRows.forEach((row, rank) => {
       const entry = byId.get(row.id)
       const contribution = 1 / (60 + rank + 1)
+      // Card 5ecf6133 (CYBERSEC NO-GO F-3, comment 39014): this used to echo the WHOLE query text
+      // (opts.q, which for a for-card.ts call is the dispatched card's own title+description) --
+      // measured on the backfilled copy, 69% of rendered entries were only that echo, and it alone
+      // pushed 29/40 recent cards past the 3000-char package cap before the renderer's own 300-char
+      // per-entry cap ever got a chance to help. A fixed, short label costs nothing to render and
+      // leaves the budget for the anchor/title fields an agent can actually use.
       if (entry) entry.score += contribution
-      else byId.set(row.id, { row, score: contribution, why: `szöveg-egyezés: "${opts.q}"` })
+      else byId.set(row.id, { row, score: contribution, why: 'szöveg-egyezés' })
     })
 
     // Branch 2: embedding vector search, fused by the same RRF constant.
