@@ -371,20 +371,34 @@
     "jogasz": [
       "contract-review-redline",
       "engineering-standards",
+      "fork-adopt-investigation",
+      "interview-me",
       "legal-compliance-review",
       "project-workflow"
     ],
     "marketing": [
+      "analyzing-user-feedback",
       "brand-foundations-strategy",
       "brand-handbook-compiler",
+      "brand-identity-stress-test",
+      "brand-logo-concepts",
       "brand-tone-of-voice-guide",
+      "brand-visual-identity-direction",
+      "competitive-analysis",
       "d3-data-visualization",
       "engineering-standards",
       "frontend-design-research",
       "humanize-writing",
       "idea-refine",
+      "interview-me",
+      "launch-marketing",
       "marketing-gtm",
-      "project-workflow"
+      "measuring-product-market-fit",
+      "positioning-messaging",
+      "pricing-strategy",
+      "project-workflow",
+      "retention-engagement",
+      "user-onboarding"
     ],
     "penzugy": [
       "d3-data-visualization",
@@ -426,9 +440,14 @@
     ],
     "teszter": [
       "browser-testing-with-devtools",
+      "dogfooding",
+      "fe-rule12-audit",
+      "i18n-parity-sweep",
       "project-workflow",
       "qa-test-strategy",
+      "rule13-touch-target-compliance",
       "sp-systematic-debugging",
+      "usability-testing",
       "user-flow-menu-design"
     ],
     "videooo": [
