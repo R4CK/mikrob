@@ -33912,3 +33912,75 @@ Ki döntött: MikroB (a fix-kör kötelező pontjai, msg 25049); backend3 (imple
 Hivatkozás: kártya d97659cb; QA PASS 39117, CYBERED GO 39119, CYBERSEC GO 39120 (H-1 feltétel,
 F-1/F-2/L-2..L-5 leletek); `scripts/wsl-watchdog-holder-ensure.sh`, `scripts/install-wsl-watchdog.sh`,
 `scripts/install-wsl-watchdog.selftest.sh`.
+
+## card e99c3dc1 -- FLEET_TEST_PRIORITY=land ancestor-lock verification + distinguishable
+## LAND-queue timeout message (2026-11-26)
+
+Előzmény: a gate-store-selftests vs. land starvation kártyán (e99c3dc1) a per-tree lock
+exemption-kísérlet 4 egymást követő NO-GO/FAIL után bounce-olt (39178/39179); MikroB döntése
+(39179) a tree-lock exemption RETIRE-elése és egy scheduling-szintű re-plan volt. Az első posztolt
+terv (39188) egy TELJESEN ÚJ ticket-class/`--land`-flag mechanizmust javasolt, de a kódolás előtt
+kiderült: a FLEET_TEST_PRIORITY=land priority-ticket ütemezés (kártya b7d8ecc4) MÁR LÉTEZIK és már
+élesben van (`fleet_test_resolve_priority_rank`, `FLEET_TEST_AGING_S`, `marveen-land.sh` már
+exportálja `FLEET_TEST_PRIORITY=land`-et minden fleet-test.sh hívás előtt). Korrekció posztolva
+(39196), MikroB jóváhagyta szűkített hatókörrel, egy szigorítással (msg 25163): a nyitott fd
+önmagában gyenge bizonyíték, az ellenőrzésnek a TÉNYLEGESEN tartott flock-ot kell néznie.
+
+MI KÉSZÜLT EL:
+1. `fleet_test_verify_land_priority()` (store/fleet-test.sh): a FLEET_TEST_PRIORITY=land állítást
+   az ős-PID lánc bejárásával ellenőrzi (bound: FLEET_TEST_PRIORITY_ANCESTOR_DEPTH, alap 10) --
+   a lánc azért nem az azonnali szülőn áll meg, mert run_fg_killable (marveen-land.sh) a SAJÁT
+   lock-fd-másolatát lezárja a subshellben MIELŐTT exec-eli a fleet-test.sh-t (kártya 81c6fbb5
+   Q3) -- a fd csak a marveen-land.sh fő processzén él, azon túl. Egy ős csak akkor számít
+   igazoltnak, ha MIND a három igaz: (a) van nyitott fd-je a develop-lock fájlon, (b) azon a fd-n
+   TÉNYLEGESEN tart flock-ot, (c) a saját cmdline-ja `store/marveen-land.sh`-t nevez meg. Bármelyik
+   ellenőrzés befejezhetetlensége (nincs /proc, olvashatatlan, nincs találat a bound-on belül) ->
+   normal priority, soha nem land (fail-closed).
+2. MÉRÉSI LELET, ami a tervezett primitívet megváltoztatta: MikroB 25163 a `/proc/locks`
+   globális listát kérte a flock-ellenőrzéshez. MÉRVE (nem feltételezve): egy valódi, másik
+   processz `flock -n`-jét helyesen blokkoló és `fuser -v`-vel helyesen kimutatott flock
+   EGYÁLTALÁN NEM jelent meg a `/proc/locks`-ban ezen a platformon (WSL2) -- as a globális
+   listából hiányzott a teljes mérés alatt. A `/proc/<pid>/fdinfo/<fd>` SAJÁT "lock:" sora
+   viszont helyesen jelezte mindkét irányban (pozitív és negatív kontroll is mérve). A kódot
+   ezért a fd-specifikus fdinfo-ellenőrzésre írtam, nem a globális /proc/locks-ra -- szemantikailag
+   ugyanazt vagy szigorúbbat ad (nem keverhető össze egy MÁSIK processz ugyanazon inode-on tartott
+   lock-jával), és tényleg működik ezen a platformon. Nem kértem újra jóváhagyást a primitívváltásra
+   (a cél -- tényleges flock, nem csak nyitott fd -- változatlan, és a fail-closed szemantika miatt
+   egy rossz primitívválasztás legrosszabb esete is csak extra starvation, nem jogosultság-szivárgás),
+   de a REVIEW-ban és itt is jelezve, mérési bizonyítékkal.
+3. `fleet_test_any_land_ticket_pending()` + a timeout `die()` ág (TREE_TICKET_DIR vizsgálata a
+   timeout pillanatában): ha a várakozó sajat ticket törlése után marad rank-0 (land) ticket a
+   sorban, a die() üzenet explicit megnevezi ("queued behind a LAND ticket") -- egy teszt ezentúl
+   a stderr szövegén tud assertálni, nem csak az exit kódon.
+4. `--effective-priority` introspekciós flag (ugyanaz a minta mint `--lock-path`): a VERIFIKÁLT
+   effektív prioritást nyomtatja ki, lock/tree/CPU-slot machinery futtatása nélkül.
+
+Hermetikus teszt (src/__tests__/fleet-test-land-priority-verified.test.ts, 8 teszt, mind zöld):
+valódi folyamatfát épít fel (egy "ős" bash -c processz, ami opcionálisan tart egy flock-ot a
+develop-lock fájlon és/vagy a cmdline-jában hordozza a `store/marveen-land.sh` jelölőt, egy
+subshell ami lezárja a saját fd-másolatát a 81c6fbb5 Q3 minta szerint, majd a script a valódi
+`--effective-priority`-val), minden lock-fájl saját mktemp könyvtárban -- SEM `/home/neon/marveen`,
+SEM `/home/neon/marveen-test` literál nincs a tesztfájlban (a fájl sajátmagát grep-eli ennek
+bizonyítására). Négy manuális mutáció (cmdline-ellenőrzés elhagyása, flock-ellenőrzés elhagyása
+nyitott-fd-elfogadásra, a teljes verifikáció kikapcsolása, a timeout-ág törlése) mindegyike PIROS
+lett, majd az eredeti visszaállítva és `diff`-fel igazolva, hogy byte-azonos az eredetivel.
+
+Ellenőrzés: `fleet-test-land-priority-verified.test.ts` 8/8; a meglévő fleet-test.sh guard-suite
+(fleet-test-serialises-runs, fleet-test-shares-cleancore-cpu-pool, fleet-test-no-test-tree-
+reassignment-after-guard, fleet-test-refuses-test-tree-is-root, fleet-test-relative-tree-is-root)
+56/56 együtt. `npx tsc --noEmit -p .` tiszta. `lint-ratchet.sh`: nem romlott semelyik szabály
+(459 lelet, baseline tartja). Kézi smoke-teszt: `--lock-path`, `--cpu-slots`, `--path`,
+`--effective-priority` (sima hívás és `FLEET_TEST_PRIORITY=land` self-report ellenőrzés nélkül
+is `normal`-t ad, ahogy a fail-closed szemantika várja).
+
+Mi maradt ki: élő marveen-land.sh lefutás elleni teszt (valódi landolás a valódi lock-kal) --
+ez a hermetikus keret direkt azért épült, hogy ez SOHA ne kelljen (MikroB 25163 constraint,
+a kártya korábbi körének 15:12:35-ös incidense pont ezt a mintát okozta). A gate-selftests
+fájlok (ami a RETIRED tree_lock_exempt() mechanizmust tesztelte) nincs felújítva -- az a kód
+sosem landolt, nem is lesz (MikroB 39179 döntés).
+
+Ki döntött: MikroB (retire + re-plan 39179, korrekció-jóváhagyás + primitív-szigorítás 25163);
+fullstack (implementáció, mérés, teszt).
+Hivatkozás: kártya e99c3dc1; kapcsolódó b7d8ecc4, 81c6fbb5 (Q3), 2f0c7d24; komment 39178/39179/
+39188/39196; msg 25149/25160/25163; `store/fleet-test.sh`,
+`src/__tests__/fleet-test-land-priority-verified.test.ts`.
