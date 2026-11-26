@@ -93,12 +93,41 @@ src="$clone"
 # resolves to a real target INSIDE $src -- BEFORE $dest is touched at all -- catches both: a
 # broken/cyclic symlink fails to resolve by realpath, same as an escaping one fails the
 # containment check.
+#
+# CYBERED NO-GO 39256 follow-up (same card): three gaps survived the above.
+# F-1a: plain `realpath` (no -e) only requires LEADING path components to exist -- a symlink
+# whose final target component is MISSING, but whose containing directory exists, still
+# resolves "successfully" to a path realpath never checked for existence. Fixed by requiring
+# `[[ -e "$resolved" ]]` alongside the realpath success check.
+# F-1b: a directory symlink pointing at its own ancestor (e.g. `d/up -> ..`) resolves to a REAL,
+# EXISTING, in-tree path -- it passes both the existence check above and the containment case
+# below (which explicitly allows "resolves to $src itself", for symlinks that legitimately point
+# back at their own containing directory without looping). `cp -RL` then recurses into it without
+# bound. Fixed by rejecting any symlink whose own directory sits at-or-under its resolved target.
+# F-2: the loop above only validates symlinks `find` finds INSIDE $src -- it never validates $src
+# itself, or $LICENSE_FILE (found below, outside $src's tree when --subdir is set). Three routes
+# exploited this: --subdir's LAST component is itself a symlink out of the clone; a MIDDLE
+# component of --subdir is a symlink out of the clone; LICENSE_FILE is a symlink to a local file.
+# Fixed by resolving $clone itself and requiring $src (and, after it is found, $LICENSE_FILE) to
+# resolve inside it, in addition to the per-symlink walk above.
+clone_real="$(realpath -- "$clone")" || { echo "vendor-skill: cannot resolve clone '$clone'" >&2; exit 4; }
 src_real="$(realpath -- "$src")" || { echo "vendor-skill: cannot resolve src '$src'" >&2; exit 4; }
+case "$src_real" in
+  "$clone_real"/*|"$clone_real") ;;
+  *) echo "vendor-skill: --subdir resolves outside the upstream clone: $src -> $src_real" >&2; exit 4 ;;
+esac
 while IFS= read -r -d '' link; do
-  resolved="$(realpath -- "$link" 2>/dev/null)" || {
+  resolved="$(realpath -- "$link" 2>/dev/null)"
+  [[ -n "$resolved" && -e "$resolved" ]] || {
     echo "vendor-skill: broken or cyclic symlink in upstream: $link" >&2
     exit 4
   }
+  link_dir_real="$(realpath -- "$(dirname "$link")")"
+  case "$link_dir_real" in
+    "$resolved"|"$resolved"/*)
+      echo "vendor-skill: upstream symlink creates a loop (points at its own ancestor): $link -> $resolved" >&2
+      exit 4 ;;
+  esac
   case "$resolved" in
     "$src_real"/*|"$src_real") ;;
     *) echo "vendor-skill: upstream symlink escapes its own tree: $link -> $resolved" >&2; exit 4 ;;
@@ -116,6 +145,21 @@ for d in ${SUBDIR:+"$src"} "$clone"; do
     [[ -f "$d/$c" ]] && { LICENSE_FILE="$d/$c"; break 2; }
   done
 done
+
+# CYBERED NO-GO 39256, F-2 (LICENSE_FILE route): found by NAME above with zero symlink
+# validation -- if it is itself a symlink to a local file outside the clone, its content was
+# copied verbatim into dest/UPSTREAM-LICENSE below, bypassing the $src-scoped walk entirely.
+if [[ -n "$LICENSE_FILE" ]]; then
+  license_real="$(realpath -- "$LICENSE_FILE" 2>/dev/null)"
+  [[ -n "$license_real" && -e "$license_real" ]] || {
+    echo "vendor-skill: broken or cyclic LICENSE symlink: $LICENSE_FILE" >&2
+    exit 4
+  }
+  case "$license_real" in
+    "$clone_real"/*|"$clone_real") ;;
+    *) echo "vendor-skill: LICENSE file escapes the upstream clone: $LICENSE_FILE -> $license_real" >&2; exit 4 ;;
+  esac
+fi
 
 dest="$SKILLS_DIR/$NAME"
 mkdir -p "$dest"
