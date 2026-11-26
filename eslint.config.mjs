@@ -25,7 +25,12 @@ export default tseslint.config(
       '@typescript-eslint/no-floating-promises': 'error',
       '@typescript-eslint/await-thenable': 'error',
       '@typescript-eslint/no-misused-promises': 'error',
-      '@typescript-eslint/no-unused-vars': 'error',
+      // RedHat N1, f3dd0c65 delta-gate (card e94fea8e): commit 7b4e903ec raised this rule's
+      // baseline 185 -> 197 purely for `(..._a: unknown[]) => ...`-style vitest-mock args that
+      // are deliberately unused (the convention this codebase already uses to mark "ignored on
+      // purpose") -- a ratchet loosening, not a real regression. argsIgnorePattern restores the
+      // convention's intent instead of permanently inflating the bound for it.
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-unsafe-argument': 'error',
     },
   },

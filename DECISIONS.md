@@ -34038,3 +34038,40 @@ Ki döntött: backend3 (gyökér-ok vizsgálat, javítás, mérés, önjavítás
 Hivatkozás: kártya a1c38d36; CYBERSEC NO-GO 39270 + QA PASS 39267 (sha 68fe4d9c); a javítás commitja
 ezen bejegyzés után következik; `store/wsl-cleanup.selftest.sh`; `store/wsl-cleanup.sh` (csak
 olvasva, nem módosult).
+
+## 2026-11-26 -- lint-ratchet no-unused-vars baseline visszahúzva argsIgnorePattern-rel (kártya e94fea8e, RedHat N1, f3dd0c65 delta-gate)
+
+A commit `7b4e903ec` (Köteg 16 után) a `@typescript-eslint/no-unused-vars` lint-ratchet plafonját
+185-ről 197-re emelte, kizárólag a `(..._a: unknown[]) => ...` alakú vitest-mock argumentumok
+miatt -- ez egy ratchet-lazítás egy nem-valódi regresszióra, nem valódi hibafelhalmozódás: a
+kódbázis saját, már bevett konvenciója az aláhúzás-prefixszel jelölt "szándékosan nem használt"
+paraméter.
+
+Javítás `eslint.config.mjs`-ben: `argsIgnorePattern: '^_'` a szabályon. A MÉRT hatás jóval nagyobb,
+mint a kártya becsült ~185-ös célszáma: a valós szám 267-ről 84-re esett (a konvenció 16+ upstream
+köteg munkáján keresztül halmozódott fel, nem csak az egy regresszión). A baseline 84-re állítva
+(`store/lint-ratchet.sh --update`, SCOPED: a diffben csak ez az egy kulcs mozdult).
+
+Mellékhatás, amit NEM nyeltem le egy vak `--update`-del: az opció hozzáadása 10 korábbi,
+`@typescript-eslint/no-unused-vars`-ra szóló `eslint-disable-next-line` kommentet feleslegessé
+tett (a szabály már nem jelzi, amit azok elnémítottak), amit az ESLint saját
+"unused-disable-directive" ellenőrzése 0 -> 10-re ugrásként jelzett -- első pillantásra egy
+független, új regressziónak nézett ki, valójában ennek a fixnek a közvetlen, hatókörön belüli
+következménye. Mind a 10-et eltávolítottam, nem egy új baseline-kulcsként rögzítettem; a
+`(unused-disable-directive)` 0-ra való visszaállását a baseline-update ELŐTT ellenőriztem.
+
+A kártya saját mutáció-elfogadási kritériuma (egy új, nem-aláhúzásos unused változó pirosra
+fordítja a ratchet-et): kézzel igazolva (egy valódi ilyen változót hozzáadva majd eltávolítva, a
+ratchet 84->85-re ment és REFUSED-ot adott), majd tartósan rögzítve egy új tesztben
+(`src/__tests__/lint-ratchet-no-unused-vars-args-ignore.test.ts`) -- config-szöveg pin PLUSZ
+viselkedési teszt valódi ESLint-tel scratch-fixture-ökön. Mindkét ellenőrzést mutációval
+igazoltam (a valódi fix visszavonásával mindkettő pirosra ment).
+
+Mérve: `store/lint-ratchet.sh` tiszta (semelyik szabály nem romlott). `npx tsc --noEmit -p .`
+tiszta. Az új teszt-fájl 3/3 zöld. A 4 érintett teszt-fájl (124 teszt) és a 3 érintett modul
+saját teszt-fájlja (db/session-control/skill-quarantine, 93 teszt) mind zöld.
+
+Ki döntött: cybered/RedHat (N1 lelet, f3dd0c65 delta-gate); fullstack (implementáció).
+Végrehajtó: fullstack.
+Hivatkozás: kártya e94fea8e; forrás f3dd0c65 delta-gate komment 20564; `eslint.config.mjs`,
+`store/lint-baseline.json`.
