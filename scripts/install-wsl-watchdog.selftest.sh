@@ -76,7 +76,12 @@ case "\$1" in
       *) exit 1 ;;  # notfound: no stdout, non-zero rc -- the real schtasks shape for a missing task
     esac
     ;;
-  /Create) exit 0 ;;
+  /Create)
+    case "\${FAKE_CREATE_MODE:-ok}" in
+      fail) exit 1 ;;
+      *) exit 0 ;;
+    esac
+    ;;
 esac
 EOF
 cat > "$FAKEBIN/powershell.sh" <<'EOF'
@@ -236,7 +241,12 @@ else
 
   # --- N2 (cybered 17782, MikroB 17774): grace window is upper-bounded, a
   #     boot-loop under grace must eventually count toward $fails. ---------
-  check "N2: MaxFreshSkips bound declared (card d97659cb: re-expressed at the 1-min cadence, was 10 @ 5-min)" '$MaxFreshSkips = 50' "$PS1_CONTENT"
+  # CYBERSEC GO 39120 M1b (HARD CONDITION H-1): a substring needle like
+  # '$MaxFreshSkips = 50' is also a substring of '$MaxFreshSkips = 500' --
+  # check_line anchors the WHOLE line so 50->500 (and any other digit
+  # appended/prepended) is caught, not just a value that happens to share no
+  # digits with the real one.
+  check_line "N2: MaxFreshSkips bound declared (card d97659cb: re-expressed at the 1-min cadence, was 10 @ 5-min, whole-line pin)" '$MaxFreshSkips = 50' "$PS1_CONTENT"
   check_line "N2: exceeding MaxFreshSkips falls through to normal counting" \
     '  }' "$(printf '%s\n' "$PS1_CODE" | sed -n '/if (\$freshSkips -lt \$MaxFreshSkips)/,/^  }/p')"
   check "N2: boot-loop case is logged distinctly" "treating as a boot-loop" "$PS1_CONTENT"
@@ -315,14 +325,33 @@ else
   # 12 @ 5-min) and now charged per HOLDER PROCESS (a tick can need 2 at
   # once from the zero-holder state), so the cap value and compare also
   # changed shape (-ge count -> count+needed -gt cap).
-  check "F-2 fix: holder relaunch cap variable declared (re-expressed for the 1-min cadence + per-process charging, was 6)" '$MaxHolderRelaunchesPerWindow = 30' "$PS1_CONTENT"
-  check "F-2 fix: holder relaunch window variable declared" '$HolderRelaunchWindowSec = 3600' "$PS1_CONTENT"
+  # CYBERSEC GO 39120 M1b (HARD CONDITION H-1): whole-line pins, not
+  # substring needles -- 30->300 and 3600->36000 are both substrings of the
+  # old needle and used to survive.
+  check_line "F-2 fix: holder relaunch cap variable declared (re-expressed for the 1-min cadence + per-process charging, was 6)" '$MaxHolderRelaunchesPerWindow = 30' "$PS1_CONTENT"
+  check_line "F-2 fix: holder relaunch window variable declared" '$HolderRelaunchWindowSec = 3600' "$PS1_CONTENT"
   check "F-2 fix: cap-notify command declared" '$HolderCapNotifyCmd' "$PS1_CONTENT"
-  check "d97659cb: need= is parsed from the holder-ensure output" "if (\$holderOut -match 'need=([0-9]+)') { \$holderNeeded = [int]\$matches[1] }" "$PS1_CONTENT"
+  # CYBERED GO 39119 F-1 / CYBERSEC GO 39120 L-5: the need= parse now joins
+  # $holderOut to a plain string FIRST (PowerShell -match on an array does
+  # not populate $matches), so the pin follows the real two-line shape
+  # instead of the single-line form that bug fix replaced.
+  check_line "d97659cb L-5/F-1 fix: holderOut is joined to a string before the need= match (array -match does not populate \$matches)" \
+    "\$holderOutJoined = (\$holderOut -join ' ')" "$PS1_CONTENT"
+  check "d97659cb: need= is parsed from the joined holder-ensure output" "if (\$holderOutJoined -match 'need=([0-9]+)') { \$holderNeeded = [int]\$matches[1] }" "$PS1_CONTENT"
+  check_absent "d97659cb L-5/F-1 regression: the raw unjoined \$holderOut is no longer matched directly for need=" \
+    "if (\$holderOut -match 'need=([0-9]+)')" "$PS1_CONTENT"
   check_line "F-2 fix (d97659cb): cap check happens before relaunching, charged by needed count not by tick" \
     '  if (($holderRelaunchCount + $holderNeeded) -gt $MaxHolderRelaunchesPerWindow) {' "$PS1_CODE"
   check_line "F-2 fix: cap-reached branch alerts instead of relaunching" \
-    '    & wsl.exe -d $Distro -u $WslUser -e bash -lc $HolderCapNotifyCmd 2>$null' "$PS1_CONTENT"
+    '      & wsl.exe -d $Distro -u $WslUser -e bash -lc $HolderCapNotifyCmd 2>$null' "$PS1_CONTENT"
+  # CYBERSEC GO 39120 L-2 / CYBERED GO 39119 F-2: the notify is throttled to
+  # once per window (the 1-min cadence can otherwise send ~45/hour once the
+  # cap is hit, versus ~6/hour at the old 5-min cadence) -- pin the dedupe
+  # key and that the window-start value is what's persisted as "notified".
+  check_line "d97659cb L-2/F-2 fix: cap-notify only fires when this window hasn't been notified yet" \
+    '    if ($lastNotifiedWindow -ne $holderRelaunchWindowStart) {' "$PS1_CODE"
+  check_line "d97659cb L-2/F-2 fix: the notified window is persisted so the NEXT tick in the same window skips the alert" \
+    '      Set-Content -Path $HolderCapNotifiedWindowFile -Value "$holderRelaunchWindowStart"' "$PS1_CODE"
   check_line "F-2 fix: a confirmed-present holder resets the relaunch cap" \
     '  Set-Content -Path $HolderRelaunchCountFile -Value "0"' "$PS1_CODE"
   check_line "d97659cb: the relaunch counter is incremented by the NEEDED count, not by a fixed 1" \
@@ -544,6 +573,17 @@ CREATE_CALLS_NOTFOUND="$(grep -c '^schtasks /Create' "$CALL_LOG")"
 [ "$CREATE_CALLS_NOTFOUND" = "1" ] && echo "  ok   F1: exactly one /Create call for a non-existent task" \
   || { echo "  FAIL F1: expected exactly 1 /Create call for a non-existent task, got $CREATE_CALLS_NOTFOUND"; fail=1; }
 
+# CYBERSEC GO 39120 M1/HARD CONDITION H-1 (card d97659cb): the success
+# MESSAGE text ("registered (every 1 min") is a fixed echo that does not
+# depend on the argument actually handed to schtasks -- a regression that
+# keeps that message but registers at the OLD 5-minute cadence (MaxFails=15
+# would then mean a ~75-minute restart threshold, not ~15) would pass every
+# check above. Pin the REAL argument in the REAL /Create call, read back
+# from the fake schtasks' own call log.
+grep -qF 'SC MINUTE /MO 1' "$CALL_LOG" \
+  && echo "  ok   d97659cb H-1: the real /Create call for a fresh install carries '/SC MINUTE /MO 1' (not just the success message)" \
+  || { echo "  FAIL d97659cb H-1: real /Create call did not carry /SC MINUTE /MO 1 -- log: $(cat "$CALL_LOG")"; fail=1; }
+
 : > "$CALL_LOG"
 OUT_F1_ENABLED="$(FAKE_TASK_MODE=enabled WSL_DISTRO_NAME="Ubuntu" run_isolated)"
 check "F1: an existing, enabled task still re-registers (idempotent refresh)" "registered (every 1 min" "$OUT_F1_ENABLED"
@@ -555,6 +595,23 @@ OUT_F1_DISABLED="$(FAKE_TASK_MODE=disabled WSL_DISTRO_NAME="Ubuntu" run_isolated
 check "F1: an existing, disabled task still skips /Create (H1 unaffected by the F1 fix)" "skipping /Create" "$OUT_F1_DISABLED"
 [ "$(grep -c '^schtasks /Create' "$CALL_LOG")" = "0" ] && echo "  ok   F1: zero /Create calls for a disabled task" \
   || { echo "  FAIL F1: disabled-task case called /Create (should be 0)"; fail=1; }
+
+# CYBERSEC GO 39120 M1/HARD CONDITION H-1, remaining two of the three /MO
+# occurrences cybered's Q5 mutant flipped at once (the real /Create call is
+# pinned above): the dry-run echo, and the manual-fallback echo printed when
+# schtasks /Create itself fails.
+mkdir -p "$TMP/run_h1_dryrun"
+: > "$CALL_LOG"
+OUT_H1_DRYRUN="$(run_dry "$TMP/run_h1_dryrun")"
+check "d97659cb H-1: the dry-run echoed command carries the real schtasks argument, not just 'DRY-RUN: would register'" \
+  "/SC MINUTE /MO 1" "$OUT_H1_DRYRUN"
+
+: > "$CALL_LOG"
+OUT_CREATE_FAIL="$(FAKE_TASK_MODE=notfound FAKE_CREATE_MODE=fail WSL_DISTRO_NAME="Ubuntu" run_isolated)"
+check "d97659cb H-1: the manual-fallback message (schtasks /Create failed) also carries /SC MINUTE /MO 1" \
+  "/SC MINUTE /MO 1" "$OUT_CREATE_FAIL"
+check "d97659cb H-1: the manual-fallback path is actually reached on a /Create failure" \
+  "warn: schtasks registration failed" "$OUT_CREATE_FAIL"
 
 # --- N-iso (cybered NO-GO, comment 17806, incident 21:01:13): the real
 #     wslpath + mkdir path must ALSO refuse a /mnt/-resolving target when

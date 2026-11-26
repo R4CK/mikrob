@@ -244,6 +244,13 @@ cat > "$WATCHDOG_WSL" <<PS1EOF
 \$HolderRelaunchWindowStartFile = "\$StateDir\\wsl-watchdog-holder-relaunch-window-start.txt"
 \$MaxHolderRelaunchesPerWindow = 30
 \$HolderRelaunchWindowSec = 3600
+# CYBERSEC GO 39120 L-2 / CYBERED GO 39119 F-2 (d97659cb): at the 1-min
+# cadence the cap-reached branch would otherwise notify on EVERY tick for
+# the rest of the window once the cap is hit (up to ~45 messages/hour, was
+# ~6/hour at the old 5-min cadence) -- throttle to at most ONE notify per
+# relaunch window (keyed on the same window-start value the cap itself
+# uses), logging every tick regardless so the state is still visible on disk.
+\$HolderCapNotifiedWindowFile = "\$StateDir\\wsl-watchdog-holder-cap-notified-window.txt"
 \$LogFile     = "\$StateDir\\wsl-watchdog.log"
 New-Item -ItemType Directory -Force -Path \$StateDir | Out-Null
 function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf8 \$LogFile }
@@ -293,8 +300,17 @@ function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf
 # wsl-watchdog-holder-ensure.sh's TARGET_HOLDERS). An unparseable need=
 # (should be impossible given the contract) is treated as 0 -- fail-closed,
 # never launch on a reading we cannot trust.
+#
+# CYBERED GO 39119 F-1 / CYBERSEC GO 39120 L-5: wsl.exe -e bash -lc can print
+# MORE THAN ONE stdout line (a login-profile banner), which makes \$holderOut
+# a PowerShell ARRAY -- `-match` against an array returns the matching
+# elements but does NOT populate \$matches, so the regex group below would
+# silently read nothing and \$holderNeeded would stay 0 even though the
+# single real line DOES contain need=<n>. Join to one string first so the
+# match always runs against a plain string, array or not.
 \$holderNeeded = 0
-if (\$holderOut -match 'need=([0-9]+)') { \$holderNeeded = [int]\$matches[1] }
+\$holderOutJoined = (\$holderOut -join ' ')
+if (\$holderOutJoined -match 'need=([0-9]+)') { \$holderNeeded = [int]\$matches[1] }
 if (\$holderCheckExit -eq 1 -and (\$holderOut -cmatch '^HOLDER_MISSING') -and \$holderNeeded -gt 0) {
   # CYBERSEC NO-GO F-2 / QA FAIL: a relaunch decision is capped per rolling
   # window BEFORE acting on it -- a holder that keeps dying right after
@@ -317,7 +333,14 @@ if (\$holderCheckExit -eq 1 -and (\$holderOut -cmatch '^HOLDER_MISSING') -and \$
     # NOT launch a partial 1 -- a half-satisfied need is indistinguishable
     # from a slow recovery and would mask the cap being hit.
     Log "holder-ensure: relaunch cap would be exceeded (\$holderRelaunchCount + need \$holderNeeded > \$MaxHolderRelaunchesPerWindow in the current \${HolderRelaunchWindowSec}s window) -- NOT relaunching, alerting instead"
-    & wsl.exe -d \$Distro -u \$WslUser -e bash -lc \$HolderCapNotifyCmd 2>\$null
+    # L-2/F-2 throttle: notify at most once per window, logging every tick
+    # regardless -- the window's own start value is the dedupe key.
+    \$lastNotifiedWindow = 0
+    if (Test-Path \$HolderCapNotifiedWindowFile) { \$lastNotifiedWindow = [long](Get-Content \$HolderCapNotifiedWindowFile -ErrorAction SilentlyContinue) }
+    if (\$lastNotifiedWindow -ne \$holderRelaunchWindowStart) {
+      & wsl.exe -d \$Distro -u \$WslUser -e bash -lc \$HolderCapNotifyCmd 2>\$null
+      Set-Content -Path \$HolderCapNotifiedWindowFile -Value "\$holderRelaunchWindowStart"
+    }
   } else {
     \$holderRelaunchCount += \$holderNeeded
     Set-Content -Path \$HolderRelaunchCountFile -Value "\$holderRelaunchCount"

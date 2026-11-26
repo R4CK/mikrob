@@ -33779,3 +33779,74 @@ msg 25024).
 Ki döntött: Peti (irány jóváhagyása, Telegram 14776); backend3 (mérés, implementáció, teszt).
 Hivatkozás: kártya d97659cb (szülő b736f51a), 3f6bb903 komment 39084; `scripts/wsl-watchdog-holder-ensure.sh`,
 `scripts/install-wsl-watchdog.sh`, `scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 -- Kártya d97659cb delta: gate-fix kör (QA PASS 39117, CYBERED GO 39119, CYBERSEC GO 39120 HARD CONDITION H-1)
+
+Mindhárom gate GO-t adott a 423ab578e sha-ra, de CYBERSEC egy HARD CONDITION-t (H-1) kötött az
+élő telepítés elé, CYBERED pedig két nem-blokkoló leletet (F-1, F-2) jelzett ugyanarra a hibára.
+MikroB döntése (msg 25049): mindhármat javítani, plusz L-3/L-4-et felmérni vagy indokolni, ÚJ
+Gate-SHA-val, mielőtt újra delta-gate megy.
+
+**H-1 (kötelező, mindkét gate ugyanazt mérte -- MaxFails=15 pin volt, a hozzá tartozó 1 PERCES
+cadence nem):** a `/SC MINUTE /MO 1` paramétert a selftest korábban SEHOL nem olvasta vissza a
+tényleges schtasks-híváshoz vagy a szöveges kimenethez -- a siker-szöveg ("registered (every 1
+min") egy FÜGGETLEN echo, nem a schtasks-nak átadott argumentumtól függ. Egy 15-ös `MaxFails`-t
+megtartó, de 5 perces cadence-re visszaállító mutáns (CYBERSEC mutánsa Q5, mind a 3 előfordulás)
+a teljes selftest-et zölden hagyta volna -- a valódi ~15 perces küszöböt csendben ~75 percre
+változtatva. Mind a 3 előfordulást (a valódi `/Create` hívás, a dry-run echo, a kézi fallback
+echo) most külön pin fedi: a valódi hívást a hamis schtasks saját hívás-logjából olvasva vissza
+(nem csak a siker-szöveget), a dry-run és a fallback esetet a parancs kimenetéből. A
+`MaxHolderRelaunchesPerWindow`/`HolderRelaunchWindowSec` pin is substring-ből whole-line
+(`check_line`) lett (CYBERSEC M1b: 30->300 és 3600->36000 is substringje volt a régi needle-nek).
+
+**L-5/CYBERED-F-1 (need= parse array-bug, LOW-MEDIUM, nem élesben mért, LEVEZETÉS a dokumentált
+PowerShell-viselkedésből, mindkét gate önállóan ugyanarra jutott):** a `$holderOut -match
+'need=([0-9]+)'` PowerShell-ben, ha `$holderOut` TÖBB soros kimenet miatt TÖMB (pl. egy
+login-profil banner-sor a `bash -lc` hívásban), a `-match` a tömb egyező elemeit adja vissza, de
+NEM tölti fel a `$matches` változót -- a `need=` csendben 0 marad, a tick a "inconclusive, NOT
+relaunching" ágra esik, a hiányzó holder nem indul újra, egyetlen nyom egy log-sor. Fix: `$holderOut`
+összevonása EGY string-gé (`-join ' '`) a match ELŐTT, függetlenül attól hogy tömb vagy string.
+A régi egysoros élő eset (ma mért, `HOLDER_MISSING count=0`) változatlanul működik.
+
+**L-2/CYBERED-F-2 (alert-fakadás, LOW, nem exploitable, csak egy már instabil állapotban
+számít):** a cap-elért ág minden tick-en értesítést küldött, amíg a cap-ablak le nem futott --
+az 1 perces cadence-nél ez ~45 Telegram-üzenet/óra lehetett volna Petinek (volt ~6/óra az 5
+perces cadence-nél). Fix: a notify legfeljebb EGYSZER fut egy ablakban (az ablak kezdő
+időbélyege a dedup-kulcs, egy új perzisztens fájlban), a Log-sor viszont minden tick-en megy.
+
+**L-3 (Startup-mappa Keepalive.vbs + 2 watchdog-holder = 3 = AMBIGUOUS örökre, INDOKOLVA, nem
+javítva):** a külön Windows Startup-mappás `MikroB-WSL-Keepalive.vbs` logon-kor saját "sleep
+infinity" holdert indít, amitől a 3f6bb903-as watchdog-holder-pár melletti steady state 3 lehet.
+3 holder BIZTONSÁGOS (a disztró életben marad), csak nem öngyógyuló (a HOLDER_AMBIGUOUS ág
+szándékosan nem indít semmit, 3f6bb903 F-2 fail-closed döntése). Ennek a kártyának a köre a
+2-holder cél, nem a két külön indítási mechanizmus (Startup-vbs + watchdog) összevonása -- az
+egy nagyobb, külön kártyát igénylő architektúra-döntés volna (melyik felel a holder-számért).
+Nem javítva ezen a körön; követő kártyát igényel, ha a log-növekedés (CYBERSEC mérése: kb.
+330 KB/nap egy már 575 KB-os, nem rotált fájlon) vagy a soha-nem-öngyógyuló 3-holder állapot
+önmagában problémává válik.
+
+**L-4 (tick átfedés 60 másodpercnél, INDOKOLVA, élő méréssel lezárva, nem ezen a körön):** mind
+CYBERED, mind CYBERSEC jelezte, hogy a valódi Scheduled Task `MultipleInstancesPolicy`-ja
+(IgnoreNew vs Queue/Parallel) és a tényleges tick-hossz (CYBERSEC mérése a valódi logból: 95.
+percentilis 10.7s, de a "connection attempt failed" wedge-ágban volt 32-52s-os tick is) statikus
+kóddal nem ellenőrizhető -- csak a valódi Windows-oldali `/Query /XML`-lel. Ez már a kártya saját
+Kész-ha listájának ÉLŐ MÉRÉS lépése (MikroB go-ja + a gate-ek PASS-a UTÁN): a `/Query /XML`
+olvasást (csak olvasás, nem írás) bele kell venni az élő lépés jegyzőkönyvébe, nem ezen a
+statikus körön.
+
+**Ellenőrzés (fa/sha: card/d97659cb worktree, új sha lentebb a kommiton):**
+`scripts/install-wsl-watchdog.selftest.sh` -- PASS, 124 ok, 0 FAIL (a meglévő ~116 eset + 8 új
+H-1/L-2/L-5 pin). Mutáció-teszt (kézzel, mindegyik RED, majd `sha256sum`-mal visszaellenőrzött
+visszaállítás az eredeti fájlra): a valódi `/Create`-hívás `/MO 1`->`/MO 5` (RED), mindhárom
+előfordulás egyszerre `/MO 1`->`/MO 5` (RED), `$MaxHolderRelaunchesPerWindow` 30->300 (RED),
+`$HolderRelaunchWindowSec` 3600->36000 (RED), a `-join` fix visszavonása (RED, 3 pin), az L-2
+throttle elhagyása (RED, 2 pin). `npx tsc --noEmit` -- tiszta, 0 hiba. Scoped vitest
+(`src/__tests__/wsl-watchdog-disable-flag-early-exit.test.ts`, szemafor-szkripten át) -- zöld.
+
+**Mi maradt ki:** élő telepítés/kill-teszt továbbra sem -- MikroB explicit go-ja és mindhárom
+gate ÚJ sha-ra adott PASS/GO-ja nélkül nem futhat (msg 25049).
+
+Ki döntött: MikroB (a fix-kör kötelező pontjai, msg 25049); backend3 (implementáció, teszt).
+Hivatkozás: kártya d97659cb; QA PASS 39117, CYBERED GO 39119, CYBERSEC GO 39120 (H-1 feltétel,
+F-1/F-2/L-2..L-5 leletek); `scripts/wsl-watchdog-holder-ensure.sh`, `scripts/install-wsl-watchdog.sh`,
+`scripts/install-wsl-watchdog.selftest.sh`.
