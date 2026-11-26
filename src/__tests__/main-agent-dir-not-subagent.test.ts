@@ -47,6 +47,8 @@ beforeEach(() => {
   mkdirSync(join(AGENTS, 'marveen', 'drafts'), { recursive: true })
   writeFileSync(join(AGENTS, 'marveen', 'SZABI-DONTESEK.md'), 'old notes\n')
   mkdirSync(join(AGENTS, 'samu'), { recursive: true })
+  // card 23a14ae1: listAgentNames requires CLAUDE.md to treat a dir as a real agent.
+  writeFileSync(join(AGENTS, 'samu', 'CLAUDE.md'), '# samu\n')
 })
 afterAll(() => rmSync(SANDBOX, { recursive: true, force: true }))
 

@@ -127,13 +127,15 @@ async function waitForLog(line: string): Promise<void> {
 }
 
 describe('skill directory operations run one at a time', () => {
+  // card 1535f7f9: agents-skills DELETE is human-only (same posture as the pending/fleet
+  // routes below) -- every call needs SESSION or it 403s before touching the queue.
   it('a delete of a global skill issued while the export zips takes effect after the zip ended', async () => {
     makeSkill('s1')
     process.env.FAKE_SLEEP = '1'
     process.env.PROBE_SKILL = 's1'
     const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
     await waitForLog('zip start')
-    const del = call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/s1')
+    const del = call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/s1', undefined, SESSION)
     const [e, d] = await Promise.all([exp, del])
     expect(e.status).toBe(200)
     expect(e.body.toString()).toBe('ZIPDATA')
@@ -171,7 +173,7 @@ describe('skill directory operations run one at a time', () => {
     // The approval reads its body before it queues; the delete must queue after it, while zip still holds the queue.
     await sleep(200)
     expect(readLog().some((l) => l.startsWith('zip end'))).toBe(false)
-    const del = call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/s4')
+    const del = call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/s4', undefined, SESSION)
     const [, a, d] = await Promise.all([exp, ap, del])
     expect(a.status).toBe(200)
     expect(d.status).toBe(200)
@@ -184,7 +186,7 @@ describe('skill directory operations run one at a time', () => {
     process.env.FAKE_FAIL = '1'
     const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
     await waitForLog('zip start')
-    const del = call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/s3')
+    const del = call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/s3', undefined, SESSION)
     const [e, d] = await Promise.all([exp, del])
     expect(e.status).toBe(500)
     expect(JSON.parse(e.body.toString())).toEqual({ error: 'Export failed' })
@@ -193,7 +195,7 @@ describe('skill directory operations run one at a time', () => {
   })
 
   it('a delete of a missing skill is still 404', async () => {
-    const r = await call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/nope')
+    const r = await call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/nope', undefined, SESSION)
     expect(r.status).toBe(404)
     expect(JSON.parse(r.body.toString())).toEqual({ error: 'Skill not found' })
   })
@@ -241,7 +243,7 @@ describe('skill directory operations run one at a time', () => {
     process.env.FAKE_SLEEP = '1'
     const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
     await waitForLog('zip start')
-    const del = call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/s6')
+    const del = call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/s6', undefined, SESSION)
     const asg = call(tryHandleSkills, 'POST', '/api/skills/s6/assign', { agents: ['a1'] })
     const [e, d, a] = await Promise.all([exp, del, asg])
     expect(e.status).toBe(200)
