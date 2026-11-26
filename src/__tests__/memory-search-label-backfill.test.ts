@@ -136,45 +136,47 @@ describe('ensureMemorySearchLabelSection', () => {
   })
 })
 
+// Card 01eb0d0c: the inline "-D tempfile + grep" recipe (and its per-agent /tmp path, the
+// percent-encoding warning, the raw X-Memory-Search header text) moved INTO
+// store/agent-memory-search.sh, which now does the encoding, the header read, and the
+// relaxed/strict distinction itself (pinned behaviourally by agent-memory-search.selftest.sh,
+// not by string-matching this generated prose). The failure modes those old assertions
+// guarded -- a shared /tmp path, a silent 400 read as a zero-hit search, relaxed=false
+// mistaken for "no hit" -- are now structurally impossible (the wrapper uses its own
+// mktemp file per invocation and a non-zero exit code for anything that isn't a verified
+// answer), so this body only has to tell the reader to USE the wrapper and what its exit
+// codes mean.
 describe('buildMemorySearchLabelBody', () => {
-  // Deterministic per-agent path. The scaffold copy is an LLM prompt carrying
-  // the literal AGENT_NAME for the model to substitute; if that substitution is
-  // ever missed, every agent dumps headers into ONE shared file and reads the
-  // neighbour's label. This body must not have that failure mode.
-  // Asserted as a SET, not as presence: the body names the dump file twice (the
-  // curl that writes it and the grep that reads it), so `toContain(per-agent
-  // path)` stays green while the OTHER occurrence points at a shared file --
-  // which is the whole failure mode. EVERY occurrence has to carry the name.
-  it('names the dump file after the agent, not a shared path', () => {
-    for (const name of ['agent-b', 'agent-c']) {
-      const paths = buildMemorySearchLabelBody(name).match(/\/tmp\/mem-fejlec[^\s`"']*/g) ?? []
-      expect(paths.length).toBeGreaterThan(1)
-      expect([...new Set(paths)]).toEqual([`/tmp/mem-fejlec-${name}.txt`])
-    }
-    expect(buildMemorySearchLabelBody('agent-b')).not.toContain('AGENT_NAME')
+  it('names the wrapper script with the agent and query filled in, not a literal placeholder', () => {
+    const b = buildMemorySearchLabelBody('agent-b')
+    expect(b).toMatch(/agent-memory-search\.sh agent-b "KULCSSZÓ"/)
+    expect(b).not.toContain('AGENT_NAME')
   })
 
-  it('hands the caller a way to SEE the label and the words to read it with', () => {
+  it('tells the reader what relaxed vs strict mean via the exit code', () => {
     const b = buildMemorySearchLabelBody('agent-b')
-    expect(b).toMatch(/curl[\s\S]{0,200}?-D /)
-    expect(b.toLowerCase()).toContain('x-memory-search')
     expect(b).toContain('relaxed=true')
     expect(b).toContain('relaxed=false')
+    expect(b).toMatch(/Kilépő kód 6[\s\S]{0,40}relaxed=true/)
   })
 
-  // The two corrections the #1380 review produced. Both are claims the endpoint
-  // was measured on, and both are easy to lose in a rewording.
-  it('says strict=1 is what an absence claim needs', () => {
-    expect(buildMemorySearchLabelBody('agent-b')).toContain('strict=1')
+  it('says a real, verified zero-hit search is a valid answer (exit 0), distinct from a failed request', () => {
+    const b = buildMemorySearchLabelBody('agent-b')
+    expect(b).toMatch(/Kilépő kód 0[\s\S]{0,80}valódi, ellenőrzött 0 találat/)
+    expect(b).toMatch(/Kilépő kód 5[\s\S]{0,120}ÜRES TALÁLATKÉNT SOHA ne olvasd/)
+  })
+
+  it('says --strict is what an absence claim needs', () => {
+    expect(buildMemorySearchLabelBody('agent-b')).toContain('--strict')
   })
 
   // Card f90928e3: the date filter and the searchable diary are part of the
-  // recipe every agent is given, in the generated block and in the template.
+  // recipe every agent is given.
   it('teaches the date filter and the diary mirror', () => {
     const b = buildMemorySearchLabelBody('agent-b')
-    expect(b).toContain('&date=tegnap')
-    expect(b).toContain('&since=')
-    expect(b).toContain('date=<tól>..<ig>')
+    expect(b).toContain('--date')
+    expect(b).toContain('--since')
+    expect(b).toContain('--until')
     expect(b).toContain('[Napló')
   })
 
@@ -186,31 +188,6 @@ describe('buildMemorySearchLabelBody', () => {
   it('the CLAUDE.md one-time prompt points at ensureMemorySearchLabelSection instead of duplicating the recipe', () => {
     const src = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
     expect(src).toContain('ensureMemorySearchLabelSection')
-  })
-
-  // There used to be an assertion here that the block warns the tier filter
-  // truncates after the limit. #1384 pushed that filter down into the search
-  // SQL, so the warning became false before this PR ever merged and the text it
-  // pinned is gone from the body. Measured on merged develop against a copy of
-  // the owner store: q=billingo&category=warm now answers 39 rows at limit=50
-  // and 39 at limit=200, converged, where before it was 9 and 39. The property
-  // lives in memory-search-tier-goes-into-the-query.test.ts now.
-
-  // `relaxed=false; hits=0` is a real answer: the pre-review wording called
-  // relaxed=false "a real hit" outright, which is false on an empty body.
-  it('does not equate relaxed=false with having a hit', () => {
-    expect(buildMemorySearchLabelBody('agent-b')).toContain('hits=0')
-  })
-
-  // A raw accented byte in q returns HTTP 400 with an empty body and NO
-  // X-Memory-Search header, so the grep prints nothing and it looks exactly
-  // like an empty hit though the search never ran. Measured 2026-09-19. The
-  // body must warn to percent-encode (or use -G --data-urlencode) so no agent
-  // reads a 400 as "no memory".
-  it('warns that a raw accented q is a silent 400, not an empty result', () => {
-    const b = buildMemorySearchLabelBody('agent-b')
-    expect(b).toContain('400')
-    expect(b).toContain('--data-urlencode')
   })
 })
 
@@ -224,12 +201,11 @@ describe('buildMemorySearchLabelBody', () => {
 // fixed placeholder before comparing, on both sides, instead of hardcoding either side's literal
 // PROJECT_ROOT.
 describe('the STATIC CLAUDE.md block matches the generator (card 5a15cd5a)', () => {
-  const TOKEN_PATH_RE = /cat [^)]+\/store\/\.dashboard-token/g
-  const AUTH_HEADER_HELPER_RE = /[^\s"'`]*\/store\/agent-auth-header\.sh/g
-  const normalize = (s: string) =>
-    s
-      .replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
-      .replace(AUTH_HEADER_HELPER_RE, '<PROJECT_ROOT>/store/agent-auth-header.sh')
+  // Card 01eb0d0c: the recipe no longer embeds tokenPath/agent-auth-header.sh inline (those
+  // moved inside store/agent-memory-search.sh), but it still embeds agentMemorySearchScriptPath
+  // itself, which is equally PROJECT_ROOT-derived -- normalise that one instead now.
+  const SCRIPT_PATH_RE = /[^\s"'`]*\/store\/agent-memory-search\.sh/g
+  const normalize = (s: string) => s.replace(SCRIPT_PATH_RE, '<PROJECT_ROOT>/store/agent-memory-search.sh')
 
   it("the committed section in THIS checkout's own CLAUDE.md equals the generator output, modulo PROJECT_ROOT", async () => {
     const { REPO_ROOT } = await import('./helpers/repo-location.js')
@@ -241,10 +217,10 @@ describe('the STATIC CLAUDE.md block matches the generator (card 5a15cd5a)', () 
     const committedBlock = claudeMd.slice(start + BEGIN.length, end).trim()
 
     // The committed block was generated for the REAL install's main agent, whatever THIS
-    // checkout currently names it in the "?agent=" query param -- read it back rather than
+    // checkout currently names it in the wrapper invocation -- read it back rather than
     // assume "mikrob", so a renamed install does not make this test lie about what it compares.
-    const agentMatch = committedBlock.match(/\?agent=([^&\s]+)&/)
-    expect(agentMatch, 'no ?agent=...& query param in the committed block -- did the wording change?').not.toBeNull()
+    const agentMatch = committedBlock.match(/agent-memory-search\.sh (\S+) "KULCSSZÓ"/)
+    expect(agentMatch, 'no "agent-memory-search.sh <name> ..." invocation in the committed block -- did the wording change?').not.toBeNull()
     const committedName = agentMatch![1]
 
     const generated = buildMemorySearchLabelBody(committedName).trim()

@@ -338,12 +338,22 @@ try:
     # mutation's own hash is one of three, not the only one.
     combined_refusal = rc_yes_only.stdout + rc_yes_only.stderr
     reword_hashes = re.findall(r"^\s+--accept (\S+)\s+#", combined_refusal, re.M)
+    # Card 01eb0d0c / CYBERSEC NO-GO 38468, F2: the real corpus can ALSO carry pre-existing
+    # REMOVAL-classified lines (no similar replacement found at all, not just a reworded one) --
+    # --update-baseline recomputes the full set every time and demands --allow-removal for each
+    # of those too, same as --accept for a reword. Harvesting only --accept here left this
+    # retry permanently refused ("Nothing written") the moment the real corpus ever contains
+    # one, which is exactly what happened the first time a change genuinely dropped prose
+    # instead of rewording it, rather than this test's own intentional reword.
+    removal_hashes = re.findall(r"^\s+--allow-removal (\S+)\s+#", combined_refusal, re.M)
     if not reword_hashes:
         bad("31319: the refusal did not print a usable --accept hash", combined_refusal)
     else:
         accept_args = []
         for h in reword_hashes:
             accept_args += ["--accept", h]
+        for h in removal_hashes:
+            accept_args += ["--allow-removal", h]
         rc_yes = subprocess.run(
             [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir),
              "--yes", *accept_args],
@@ -389,12 +399,17 @@ try:
 
     combined_refusal = rc_yes_only.stdout + rc_yes_only.stderr
     reword_hashes = re.findall(r"^\s+--accept (\S+)\s+#", combined_refusal, re.M)
+    # Card 01eb0d0c / CYBERSEC NO-GO 38468, F2: see the matching comment above -- a
+    # REMOVAL-classified line in the real corpus needs --allow-removal here too.
+    removal_hashes = re.findall(r"^\s+--allow-removal (\S+)\s+#", combined_refusal, re.M)
     if not reword_hashes:
         bad("31319: the inversion refusal did not print a usable --accept hash", combined_refusal)
     else:
         accept_args = []
         for h in reword_hashes:
             accept_args += ["--accept", h]
+        for h in removal_hashes:
+            accept_args += ["--allow-removal", h]
         rc_allowed = subprocess.run(
             [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir),
              "--yes", *accept_args],
@@ -500,13 +515,17 @@ try:
     else:
         bad("U3: --yes alone silently re-pinned the inverted bullet, or did not show the diff", combined)
 
-    # The two pre-existing real rewords (establish_clean_baseline) are STILL candidates on
+    # The pre-existing real rewords/removals (establish_clean_baseline) are STILL candidates on
     # this run too -- --update-baseline recomputes the full set every time, it does not merge
-    # with what is already on disk.
+    # with what is already on disk. Card 01eb0d0c / CYBERSEC NO-GO 38468, F2: a REMOVAL-
+    # classified line needs --allow-removal here too, same as the two reword-retry blocks above.
     reword_hashes = re.findall(r"^\s+--accept (\S+)\s+#", combined, re.M)
+    removal_hashes = re.findall(r"^\s+--allow-removal (\S+)\s+#", combined, re.M)
     extra_args = ["--allow-pin-change", "19"]
     for h in reword_hashes:
         extra_args += ["--accept", h]
+    for h in removal_hashes:
+        extra_args += ["--allow-removal", h]
     rc_allowed = subprocess.run(
         [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir),
          "--yes", *extra_args],

@@ -208,7 +208,7 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     expect(r.json.liveOutput).toBeNull()
   })
 
-  it('POST starts the tmux session with the prompt in a BG_PROMPT_FILE without stalling the loop', async () => {
+  it('POST starts the tmux session with the prompt reaching the pane via BG_PROMPT_FILE without stalling the loop', async () => {
     put('sleep', String(SLEEP_S))
     let r: { status: number; json: any } | undefined
     const stall = await stallDuring(async () => {

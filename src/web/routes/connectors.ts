@@ -15,7 +15,6 @@ import { readFileOr, AGENTS_BASE_DIR, listAgentNames , readJsonObjectForWrite } 
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
 import { rejectIfNotHumanAuth } from './auth.js'
-import { shellEscape } from '../sanitize.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'

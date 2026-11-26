@@ -5251,19 +5251,24 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "app.js, the feature was built (presumably by the Fron Ted card this entry flags), and this " +
       "test should be re-evaluated for adoption against the real implementation, not left refused.",
   },
-  // RE-DECIDED (card 2337e4b0, Koteg 19, 2026-10-25): flipped from 'absent' to 'present' -- the
-  // doc-text addition this watched is adopted now (see the text decision above), so the anchor's
-  // job changes from "watch for an unannounced adoption" to "watch for an unannounced regression"
-  // (buildMessageCloseBody() losing the sentence while the test that checks it still expects it).
+  // RE-DECIDED AGAIN (card 01eb0d0c, 2026-11-25): the needle moved, not the invariant. Card
+  // 01eb0d0c replaced the inline curl recipe in buildMessageCloseBody() with the
+  // agent-message-close.sh wrapper-script recipe, and rephrased the 409-is-a-no-op sentence as
+  // part of that (intentional, in-scope) rewrite -- the old literal '409-et ad' no longer appears
+  // anywhere in the generated doc. The underlying fact this anchor exists to protect is unchanged:
+  // the doc must still say a second close is a no-op, and message-close-section.test.ts's own
+  // 'says a second close ... is a no-op' case (its regex: /MÁR lezárt[\s\S]{0,120}NEM hiba/) still
+  // checks exactly that. Needle updated to the current wording instead of the historical one.
   'src/__tests__/message-close-section.test.ts': {
-    needle: '409-et ad',
+    needle: 'a script számára NEM hiba',
     file: 'src/web/agent-scaffold.ts',
     expect: 'present',
     because:
-      "the second-close-409 generated-doc phrase is adopted (card 2337e4b0, Koteg 19) -- " +
-      "buildMessageCloseBody() produces it and src/__tests__/message-close-section.test.ts's own " +
-      "'says a second close ... is a 409' case checks it directly. If this phrase disappears while " +
-      "that test still exists, the doc generator regressed; re-check both together.",
+      "the second-close-is-a-no-op generated-doc sentence is still adopted (now via the wrapper- " +
+      "script recipe, card 01eb0d0c) -- buildMessageCloseBody() produces it and " +
+      "src/__tests__/message-close-section.test.ts's own 'says a second close ... is a no-op' case " +
+      "checks it directly. If this sentence disappears while that test still exists, the doc " +
+      "generator regressed; re-check both together.",
   },
   'src/__tests__/message-router-fair-window.test.ts': {
     needle: 'export function selectFairBatch',

@@ -14,8 +14,16 @@
 # earlier npm-ci-in-a-shared-checkout incident, with a wider blast radius now that N agents share
 # one node_modules. Install in $CLEANCORE_MAIN, then re-run this script to top up any new links.
 #
-#   store/agent-worktree.sh <agent>            # create (or top up) the agent's worktree
-#   store/agent-worktree.sh <agent> --path     # print the path and exit (for scripting)
+#   store/agent-worktree.sh <agent>                          # create (or top up) the agent's worktree
+#   store/agent-worktree.sh <agent> --path                   # print the path and exit (for scripting)
+#   store/agent-worktree.sh <agent> --card <cardId>          # per-CARD worktree (card 380a5e16, F7,
+#   store/agent-worktree.sh <agent> --card <cardId> --path   # mirrors agent-worktree-marveen.sh --card):
+#                                                              # branch card/<cardId> off origin/main, own
+#                                                              # worktree keyed by card id, not by agent --
+#                                                              # so a card's commits can never ride along
+#                                                              # in a DIFFERENT card's landing. <agent> is
+#                                                              # still required (identity/attribution only,
+#                                                              # not part of the path or branch name).
 #
 # Exit: 0 ok | 2 bad usage | 3 setup failed
 set -euo pipefail
@@ -39,7 +47,8 @@ if [ "${1:-}" = "--check-links" ]; then
 else
   CHECK_LINKS_ONLY=0
   AGENT="${1:-}"
-  [ -n "$AGENT" ] || die 2 "usage: agent-worktree.sh <agent> [--path] | agent-worktree.sh --check-links"
+  [ -n "$AGENT" ] || die 2 "usage: agent-worktree.sh <agent> [--path | --card <cardId> [--path]] | agent-worktree.sh --check-links"
+  shift
 fi
 if [ "$CHECK_LINKS_ONLY" -eq 0 ]; then
 case "$AGENT" in
@@ -55,10 +64,34 @@ case "$AGENT" in
 esac
 fi
 
-TREE="$ROOT/${AGENT:-}"
-BRANCH="agent/${AGENT:-}/work"
+# --card (card 380a5e16, F7): same arg shape as agent-worktree-marveen.sh's --card mode. Only parsed
+# when an agent name was actually given above (CHECK_LINKS_ONLY=0) -- --check-links never reaches here.
+CARD=""
+PATH_ONLY=0
+if [ "$CHECK_LINKS_ONLY" -eq 0 ]; then
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --path) PATH_ONLY=1 ;;
+      --card) shift; CARD="${1:-}"; [ -n "$CARD" ] || die 2 "--card needs a card id" ;;
+      --card=*) CARD="${1#--card=}" ;;
+      *) die 2 "unknown option: $1" ;;
+    esac
+    shift
+  done
+fi
 
-if [ "${2:-}" = "--path" ]; then echo "$TREE"; exit 0; fi
+if [ -n "$CARD" ]; then
+  # Same shape agent-worktree-marveen.sh's --card mode validates with -- kept identical on purpose.
+  case "$CARD" in *[!0-9a-f]*|'') die 2 "card id must be hex (got: $CARD)" ;; esac
+  [ "${#CARD}" -ge 6 ] || die 2 "card id too short (got: $CARD)"
+  TREE="$ROOT/card/$CARD"
+  BRANCH="card/$CARD"
+else
+  TREE="$ROOT/${AGENT:-}"
+  BRANCH="agent/${AGENT:-}/work"
+fi
+
+if [ "$PATH_ONLY" = "1" ]; then echo "$TREE"; exit 0; fi
 
 # --- workspace-link integrity in the MAIN clone (card 67beaf74 follow-up, MikroB 14417) ----------
 #

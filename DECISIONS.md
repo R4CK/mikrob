@@ -32882,3 +32882,378 @@ nem parse-olja a kilépőkódot vagy a notify-szöveget).
 
 **Hivatkozás:** kártya 2d27b27b; `store/marveen-land.sh` (`land_one`, `land_notify_finish`);
 `store/marveen-land-card-branch.selftest.sh`.
+
+## 2026-11-23 16:15 -- fleet-resume.sh: Z1/Z2/Z3 follow-up on RedHat f22cf4f4 comment 19990 (card 39253062)
+
+**Döntés:** three fixes to store/fleet-resume.sh + its selftest:
+Z1 -- the selftest's section-B assertion ("cleanup is never invoked with --apply/--yes") grepped the
+human-readable OUTPUT for a literal substring the stub never echoes regardless of actual args, so it
+stayed green against 3 measured mutants (cleanup called with `--apply --yes`, with `--yes --apply`,
+or with section-C printing the HANDOFF.md body instead of its path). Replaced with: (a) logging the
+cleanup stub's real argv to a file and asserting it is empty (matches the production contract --
+CLEANUP_SCRIPT is invoked with zero args), which kills both argument-order mutants and any other arg
+a future mutant might add; (b) a new assertion that the HANDOFF.md body text never reaches stdout.
+Also confirmed (not a code change) that the card's "nothing runs the selftest at landing time" half
+of Z1 is already false: card 711a7e57's generic store-selftests-all-run.test.ts auto-discovery
+already picks up fleet-resume.selftest.sh by its `.selftest.sh` suffix (verified: `fleet-resume
+passes` in that suite), landed after RedHat's original finding.
+Z2 -- the GPU gate (vram-guard-check.sh) ran AFTER the ollama.service start decision, so an ADMIT/
+HOLD verdict was pure reporting and could never stop an --apply start. Reordered: the gate now runs
+first, and an --apply start is skipped (not attempted) when it reports HOLD; an ADMIT still starts as
+before. Declined the card's other ask -- a new "dmesg dxgvmbus" check -- after measuring: this host's
+live dmesg carries 3793 `dxgk: dxgkio_escape: Ioctl failed` lines right now on an otherwise-healthy
+GPU, so a naive dxg/dxgvmbus substring grep would be a false-positive generator, which is exactly the
+mistake scripts/gpu-crashloop-guard.sh already made and fixed (card 970a90c3: tightened from a bare
+`dxg` substring to a BUG/Oops/Call-Trace window with a `dxg<sym>+0x.../0x...` stack-frame SHAPE).
+That script already detects a real GPU/dxg crash-loop and masks ollama.service on it, and
+fleet-resume.sh's section A already refuses to start a masked unit -- so the protection Z2 asks for
+structurally exists via a better-tuned mechanism; a second, naive detector in fleet-resume.sh would
+regress, not improve, on it.
+Z3 -- the Authorization-header temp file for the /api/agents call relied on a bare `rm -f` after
+curl, which never runs if the script is SIGTERM'd mid-request, leaking a bearer token on disk. Added
+an EXIT trap right after the file is created (same pattern the selftest's own top-level trap uses).
+**Miért:** cybersec red-team follow-up on an already-landed card (f22cf4f4), explicitly not blocking
+that land; this is the tracking card for exactly these 3 items plus a 4th (readPerAgentExtraKeep
+coverage) from the SAME delta-gate round but on a DIFFERENT card (c69a8da2) -- do not confuse the two.
+**Ellenőrzés:** 24/24 selftest cases pass (was 17; +1 HANDOFF-content guard, +2 Z2 HOLD/ADMIT cases,
++1 Z3 SIGTERM case, net of renumbering). Mutation-proof, measured against BOTH the fixed script and
+the pre-fix script on origin/develop: all 3 Z1 mutants (cleanup `--apply --yes`, `--yes --apply`, and
+a HANDOFF-content-leak mutant) turn the fixed selftest red and the old one green; the Z2 HOLD case and
+the Z3 SIGTERM case both turn red against the pre-fix store/fleet-resume.sh and green against the
+fix. Verified through the real auto-discovery wiring: `npx vitest run
+src/__tests__/store-selftests-all-run.test.ts -t fleet-resume` -- 1 passed (`fleet-resume passes`).
+**Ki döntött:** fullstack (implementation + verification), gate: QA + WhiteHat (changes an
+ollama-start/GPU-gating decision path).
+**Hivatkozás:** card 39253062; comment 19990 on card f22cf4f4 (RedHat CYBERED GO, Gate-SHA
+2ec8de55); scripts/gpu-crashloop-guard.sh + card 970a90c3 (existing dxg-detection this decision
+defers to).
+
+## 2026-11-25 -- Kártya 2ba5fa66 (CYBERSEC LOW-1 follow-up a 2d27b27b-n): a rc=7 AGREE-refúziós
+pont (`store/marveen-land.sh` ~2011. sor) pinnelve
+
+**Döntés:** a 2d27b27b fenti bejegyzésében leírt rc=7 kódnak két kiadási pontja van: a "nincs
+használható verdikt" ág (~1989. sor, a ccc333 szcenárió fedi) és a "a kijelölt gate-ek nem
+AGREE-lnek" ág (~2011. sor). Csak az elsőt pinnelte teszt -- a második mutáns (7 -> 6 csak ezen a
+sor) minden korábbi futáson zölden maradt. Új szcenárió (`card/babe12`,
+`marveen-land-card-branch.selftest.sh`): a kártya "Gate: QA + CYBERSEC"-et jelöl ki, csak QA PASS
+érkezik, CYBERSEC egyáltalán nem posztol (nem FAIL, hanem hiányzik) -- így `gate_verdict_check`
+(QA-kötelező ág) átenged, de `card_designated_gates_agree` MISSING-et ad (nem AGREE, nem FAILED),
+ami pontosan a ~2011. sor saját `return 7`-jét váltja ki, nem az 1989. sorét.
+**Miért:** test-only pin, QA tier-döntés (LOW), nem funkcióváltozás.
+**Ellenőrzés:** `marveen-land-card-branch.selftest.sh` 82 -> 86/86 PASS. Mutáció-bizonyítva: a
+~2011. sor `return 7`-jét `return 6`-ra írva KIZÁRÓLAG az új eset bukik (rc=6,
+NOTHING-TO-LAND a REFUSED-GATE helyett), a többi 85 zöld marad; visszaállítva bájt-azonos (diff
+üres). Beágyazott `marveen-land.sh --selftest` 121/121 (érintetlen, csak a teszt-fájl változott).
+Nincs teljes fleet-test (delta szabály, Peti 13846): egyetlen bash teszt-fájl, nincs TypeScript.
+**Ki döntött:** cybersec2 (LOW-1 lelet, msg 24496), MikroB tier-döntés (kártya leírása). A
+végrehajtó backend.
+**Hivatkozás:** kártya 2ba5fa66; `store/marveen-land.sh` (`land_one`,
+`card_designated_gates_agree`); `store/marveen-land-card-branch.selftest.sh`.
+
+## 2026-11-25 -- wrapper scripts replace curl recipes in generated agent prompts (kártya 01eb0d0c)
+
+A `store/agent-message-close.sh` és `store/agent-memory-search.sh` wrapper-szkriptek VÉGZIK el a
+korábban minden egyes generált agent CLAUDE.md-be nyersen beírt curl-receptet (notify boolean,
+409-kezelés, URL-kódolás, X-Memory-Search fejléc-ellenőrzés relaxed/strict kilépő kódokkal), nem
+csak leírják. `agent-scaffold.ts` `buildMessageCloseBody`/`buildMemorySearchLabelBody` mostantól a
+parancsot nevezi meg, nem a receptet. A föderációs sub-agent reply/loop blokk (1352 byte) mostantól
+`cfg.peers.length > 0`-t is megköveteli, nem csak `cfg.enabled`-t -- az éles telepítésen `peers: []`
+mellett eddig minden sub-agent CLAUDE.md-jébe belement feleslegesen.
+
+**Miért:** Prompty teljes review-ja (kártya 13e25d1f, msg 24273) jelezte, hogy a generált
+boilerplate (12-30k karakter/ágens) túlnyomó részét determinisztikus curl-receptek teszik ki,
+amiket a hívó sosem rontott el máshogy, mint hogy elfelejtett egy flaget. Peti jóváhagyta az összes
+lelet kártyásítását (Telegram 14658).
+
+**Ellenőrzés:** mindkét wrapper saját selftesttel (mock HTTP szerver); minden érintett/új vitest
+fájl zöld (message-close-section, memory-search-recipe-reads-the-label,
+memory-search-label-backfill, federation-subagent-block-needs-a-peer, claude-md-split-reachability
+[élő CLAUDE.md eset], stb.); `tsc --noEmit` és `eslint` tiszta. Mérve `backend`-re: message-close
+body 1301→1135 byte, memory-search body 2235→1330 byte, föderációs sub-agent blokk 1352→0 byte
+(peers: [] mellett) -- összesen ~2423 byte/ágens a legközelebbi CLAUDE.md-regeneráláskor, a 17
+nem-mikrob ágensen ~41 KB / ~10,3k token.
+
+**Ki döntött:** fullstack (implementáció + verifikáció), gate: QA + CYBERSEC.
+**Hivatkozás:** kártya 01eb0d0c; forrás: Prompty review kártya 13e25d1f (msg 24273); Gate-SHA
+316a0f9b43fb58e1345a11d40ff6416a9dfdc7f2.
+
+## 2026-11-25 -- fleet-test.sh lock-log timestamp: end_ts/start_ts named explicitly (kártya 2c49a628)
+
+**Mi:** A `fleet_test_log_lock_event()` egyetlen, jelöletlen időbélyege a sor ÍRÁSÁNAK pillanata volt
+(a futás VÉGE, mert wait_s/run_s csak akkor ismert), nem a futás kezdete. Ezt olvasva kezdetként két,
+valójában egymás után, hézag nélkül futó run átfedőnek nézett ki -- pontosan ez okozott egy hamis
+"29 másodperces átfedés" leletet (backend3 inter-agent 24445/24448). A javítás a sort `end_ts=` és
+`start_ts=` mezőkre bontja (start_ts = end_ts - run_s, timeout eseten "-"), hogy az olvasó ne kelljen
+újra levezetnie, és ne keverje össze a kettőt.
+
+**Miért:** A kártya eredeti Kész, ha: pontja ("Overlap confirmed or refuted with evidence") a
+log-artifact ágat is megengedte -- ez lett az eredmény: a flock SOHA nem engedett valódi átfedést,
+a log formátuma tette félreérthetővé. MikroB döntése (24446/24449): a kártya nem zárható le csupán a
+cáfolattal, a mezőket explicit névvel kell ellátni, pinning teszttel.
+
+**Ellenőrzés:** `store/fleet-test-lock-log.selftest.sh` pass=20 fail=0 (közvetlen bash futással), két
+új eset: start_ts = end_ts - run_s aritmetika, és két egymást követő run start_ts/end_ts-e nem fedi
+egymást. Scoped fleet-test run (`store-selftests-all-run.test.ts`, mely minden `*.selftest.sh`-t
+lefuttat a generikus glob+runner-en át, így ezt is): Test Files 1 passed (1), Tests 175 passed (175),
+`dcd99f1446a66fd37f62c2518c335fd788d8f458` sha-n. A kártya 329bda2d (CLAUDE.md dirt) gyökérokát NEM ez
+a kártya oldja meg -- az egy másik, cross-worker írás-félreazonosítás, külön kártyán.
+
+**Ki döntött:** a split 329bda2d-ből MikroB (backend3 msg 24432/24433), a log-artifact gyanú
+tisztázása és a mezőnevesítés MikroB (msg 24446/24449). A végrehajtó backend3.
+
+**Hivatkozás:** kártya 2c49a628 (predecessor a 329bda2d-n); commit `eede187adcdcfb9b601068ade7d1741d37d205ca`;
+`store/fleet-test.sh` (`fleet_test_log_lock_event`), `store/fleet-test-lock-log.selftest.sh`.
+
+## 2026-11-25 -- Kártya 69f63a1a (F8a, MT-14 1. rész): promptonkénti KG-pointer injekció
+UserPromptSubmit hookon, csak a backend ügynök saját settings.json-jában, alapból OFF
+
+**Döntés:** a MODULTERV P3 szakaszának F8 tétele (Peti 11537, Graft-hirdetés nyomán) egy
+UserPromptSubmit hookot kér, ami minden promptnál a saját gráfunkból fűz egy szűk, pointer-szintű
+blokkot. Plan-grilling (komment 38630) egy terhelő nyitott kérdést talált: a "per-agent allowlist"
+kifejezés a kártya címében FÉLREVEZETŐ lehet, mert `agents/<név>/.claude/settings.json` NEM
+megosztott/symlinkelt fájl (mérve: backend vs backend3 eltérő md5) -- minden ügynök saját hook-
+drótozással él. MikroB döntése (komment 38632, option a): a pilot FIZIKAI drótozás, KIZÁRÓLAG a
+backend ügynök saját settings.json-jába, a backend2 kontrollként érintetlen marad az F9 A/B
+méréshez; a futásidejű allowlist (option b, minden ügynök settings.json-jába drótozva, a hook maga
+dönt egy KG_* kulcs alapján) elhalasztva, amíg az F9 nem mutatja, hogy megéri a szélesebb érintést.
+
+Új KG_PROMPT_HOOK_ENABLED kapcsoló (alapértelmezés OFF) + KG_PROMPT_HOOK_MAX_CHARS
+(config-registry.ts). Új `scripts/hooks/kg-prompt-pointer-hook.py`: a GET /api/kg/search-t hívja
+(project=mikrob -- a partíciókulcs a kanban kártya `project` mezője, "MikroB", kisbetűsítve, NEM a
+repó neve "marveen"; mérve: project=marveen 0 sort ad, project=mikrob a valós 842 node-os
+partíció), és csak azonosító+cím (POINTERS ONLY) megy a promptba, nem a teljes
+why/verdict/snippet, amit a kg-for-card-block.sh-féle, nehezebb F3 blokk hordoz. Saját,
+kis-markeres keretezés ([KG-POINTER ...]) és escape-elés (EK-MT-9 mintájára: control-karakterek
+levágva a marker-csere ELŐTT), KÜLÖN implementáció a kg-for-card-block-render.py-tól (sebészi
+változtatás -- nem nyúlt bele egy másik, már gate-elt fájlba egy közös modulért).
+
+Kikapcsolva (alapértelmezés) a hook a HÍVÁS ELŐTT kilép, nincs hálózati hívás, a prompt bájtra
+azonos a mai állapottal. Bekapcsolva: hiba/timeout/üres találat esetén csendben semmit nem ír ki
+és exit 0 -- sosem blokkolja a promptot (MikroB constraint). A hook maga nem ír semmit (csak a
+/api/kg/search szerver-oldali, best-effort aktivitás-log írása történik, UGYANÚGY mint bármely
+más hívónál -- ez nem a hook saját írása).
+
+**Megfigyelés, NEM ebbe a kártyába tartozik:** élesben több, egyértelműen releváns lekérdezés
+(pl. "land lock queueing fix", "gate-closure-check", egyszavas "land") is `hits:0`-t adott
+project=mikrob mellett, pedig 842 node él a gráfban és a backfill 258/983-at már feldolgozott.
+Ez a már leszállított F1b/F2 kereső (34c2d2a2) viselkedése, nem ezé a kártyáé -- jelezve, nem
+javítva, mert nincs benne a Kész, ha: körében.
+
+**Ellenőrzés:** `npx tsc --noEmit` tiszta. `config-registry.test.ts` 31/31. Saját
+`kg-prompt-pointer-hook.selftest.sh` (diszpozábilis lokális HTTP szerver, sosem az éles
+dashboard): 9/9 eset (kapcsoló off/on a platform-beállításon és env-override-on át, üres
+találat, escape-elés egy keret-záró-utánzatú címmel, csonkolás egyensúlyban tartott
+nyitó/záró markerrel, control-karakteres marker-rejtés mutáció-érzékenység). Mutáció-bizonyítva:
+az `_escape_frame` identitás-függvényre cserélve KIZÁRÓLAG az F7 eset bukott (a többi 8 zöld),
+visszaállítva bájt-azonos, 9/9 újra zöld. Nincs teljes fleet-test (delta szabály, Peti 13846):
+egy config-registry bejegyzés + két új, önálló szkript-fájl, a meglévő KG-útvonalakat nem
+módosítja.
+
+**Ki döntött:** Peti 11537 (eredeti ötlet), MikroB (plan-grilling válasz, komment 38632). A
+végrehajtó backend.
+
+**Hivatkozás:** kártya 69f63a1a; `scripts/hooks/kg-prompt-pointer-hook.py`,
+`scripts/hooks/kg-prompt-pointer-hook.selftest.sh`; `src/config-registry.ts`
+(`KG_PROMPT_HOOK_ENABLED`, `KG_PROMPT_HOOK_MAX_CHARS`); `agents/backend/.claude/settings.json`
+(nem git-követett, lásd a REVIEW-t a pontos belépésért).
+
+
+## 2026-11-25 -- F8a (MT-14 part 1) fix round: a KG-prompt-pointer hook sosem küldi a nyers promptot (kártya 69f63a1a)
+
+A CYBERSEC NO-GO (38647) és a CYBERED NO-GO (38650), mindkettő ugyanazt a Gate-SHA-t (15a68fc34)
+nézve, ugyanazt a blokkoló hibát találta: a hook a promptot (első 2000 karakter) szabad szöveges
+`q` paraméterként küldte a GET /api/kg/search-nek, amit a szerver szó szerint elment a
+kg_search_events táblába. Mérve a valós recordKgSearchEvent-en: egy Telegram-bot-token alakú
+string, egy `ghp_` token, egy `sk-ant-api03-...` kulcs, egy jelszó+telefonszám+email mondat
+MIND redaktálatlanul megmaradt. Ez megsértette MikroB saját kikötéseit (38632 "nem írhat
+semmit", 26011 "key on card id ... never the raw prompt head").
+
+**Javítás:** a hook most KIZÁRÓLAG egy, a promptban LITERÁLISAN megjelenő kanban kártya-azonosítót
+(ennek a flottának a [0-9a-f]{8} formátuma) keres, és erre hívja a GET /api/kg/for-card/<cardId>-t
+-- ugyanazt a végpontot, amit a kg-for-card-block.sh is használ, és amely a saját lekérdezését a
+KÁRTYA cím/leírás mezőjéből állítja elő szerver-oldalon, az aktivitás-logba pedig csak
+`for-card:<cardId>`-t ír, sosem a prompt szövegét. Ha nincs kártya-azonosító a promptban, a hook
+egyáltalán nem hív hálózatot a gráf felé (új selftest eset, F1b; mutáció-bizonyítva: a kapu
+visszaállítva a régi, feltétel nélküli alakra, a mutáns tényleg hálózatot hívott a prompt
+szövegével). Javítva egy másik, hamis állítás is (CYBERSEC F2 / CYBERED F5): kikapcsolt
+állapotban a NORMÁL eset (nincs env-override) továbbra is hív egy GET /api/settings-t
+promptonként -- csak egy explicit env-override vagy üres prompt ad valódi zéró hálózati hívást;
+a stdout bájtra azonos marad kikapcsolva, ettől függetlenül.
+
+**Ki döntött:** a gate-ek (cybersec, cybered) NO-GO-ja kötelezte a fix irányát; a végrehajtó
+backend.
+
+**Hivatkozás:** kártya 69f63a1a; `scripts/hooks/kg-prompt-pointer-hook.py`,
+`scripts/hooks/kg-prompt-pointer-hook.selftest.sh`; `src/config-registry.ts`
+(`KG_PROMPT_HOOK_ENABLED` leírás javítva).
+
+## 2026-11-25 -- F8a (MT-14 part 1) round 2: fail-open test matrix for kg-prompt-pointer-hook (card 69f63a1a)
+
+MikroB decision (comment 38677, answering CYBERED GO 38674 msg 24551) split the remaining
+26011 items: the fail-open timeout/exit1/exit2/crash matrix was declared NOT deferrable
+(CYBERED's surviving mutant E showed the settings-read fail-closed branch was unpinned), while
+per-session cap/dedupe and the offered-row audit moved to a follow-up card (35a0e556) that is
+now a blocker on eed988e7 (F9 A/B pilot) -- KG_PROMPT_HOOK_ENABLED/KG_INJECT stays OFF for the
+F9 pilot until 35a0e556 is done.
+
+Added to scripts/hooks/kg-prompt-pointer-hook.selftest.sh: F11 (/api/settings returns a
+malformed/non-JSON body), F12 (/api/settings returns HTTP 500), F13 (/api/settings times out
+past the hook's own hardcoded 5s urlopen timeout, actually measured >=5s elapsed, not
+short-circuited), F14 (total connectivity loss via a dead port). F11-F13 share one live stub
+server where /api/kg/for-card stays healthy, so any for-card hit in that run can only mean the
+hook wrongly treated the broken settings read as enabled -- this is what makes them sensitive to
+mutant E (settings-read except branch flipped from `return False, 800` to `return True, 800`).
+Mutation-proven: applied mutant E to a scratch copy, reran the selftest -- F11 failed exactly as
+predicted (for-card hit + non-empty output), 11 other cases stayed green; restored, 15/15 green
+again. No hook code change was needed: _effective_settings was already fail-closed
+(`except Exception: return False, 800`), only the test coverage was missing.
+
+Ki döntött: MikroB (constraint reading + deferral split, comment 38677); végrehajtó: backend.
+Hivatkozás: kártya 69f63a1a, 35a0e556, eed988e7; CYBERED GO 38674 (mutant E);
+scripts/hooks/kg-prompt-pointer-hook.selftest.sh (F11-F14).
+## 2026-11-18 -- 51c68eeb: Koteg 26 upstream szinkron (66d38ee45..a4545a8a0, 25 commit)
+
+A szülő-fázis e5c46e87 (Szotasz/marveen UPSTREAM-SYNC) következő kötege Köteg 25 (5dd0842a) után.
+`git merge --no-ff a4545a8a0` az `origin/develop@afe121d22`-re, 22 konfliktusos fájl feloldva
+(`6deef1741`). Fontosabb döntések: update.sh/watchdog.sh/background-tasks.ts/connectors.ts/
+updates.ts -- az upstream async/argv-alapú perf-fix-jei felvéve, a fork lazy-bin-resolver és
+rollback-guard mintái megtartva fölöttük; channel-mcp-reconnect.ts -- az upstream typed-command
+reconnect-átírása (#2179) felvéve a fork saját dokumentált elavult cursor-navigation kódja helyett;
+approvals.ts -- union mindkét security-check (owner-session gate #2156 + meglévő GPU-driver
+hard fail-closed); auth.ts -- az upstream mayIssueCredentials/OWNER_SESSION_REQUIRED alapfunkció
+NEM került át (bootstrap-kivétel, kártya 49960046), de a rá épülő nem-konfliktusos Köteg 26
+hívási helyekhez (#2175) a fork saját, session-only implementációja került be ugyanazokkal az
+exportált nevekkel; web/app.js + allowlist -- STUB (ours), a fájl és az allowlist byte-identikus
+a merge előtti HEAD-del (a fájl szabványos felbontási szabálya,
+`src/fork-upstream/acknowledged-conflicts.ts`). Két nem-portolt régió nevesítve: (1) upstream
+fleet-freeze frontend-drótozás (wireFleetFreeze/renderFleetFreeze) -- a style.css additív
+`.fleet-freeze-*` szabályai felkerültek (jelenleg holt CSS), a JS fél hiányzik, külön kártya kell;
+(2) upstream 4540f195f (SETUPTOKENWIZ1022, "log in" mód a Claude Plans panelhez) -- a backend fél
+tisztán felment (claude-plans-login.ts, setup-token-login.ts, web.ts drótozás, commitNewPlan a
+claude-plans.ts-ben), de a frontend a web/app-claude-plans.js-ben élő panelhez kötődne, aminek
+NINCS mode-selector/token-auth/edit-infrastruktúrája (a panel-port kártya, 1c810029, 2026-11-07-én
+lett kész, de csak a Köteg 3-korabeli egyszerű formát hozta át) -- a login-UI tesztjei
+(claude-plans-login-ui.test.ts) describe.skip-pel maradtak, a backend-drótozást ellenőrző
+leírás futva (lásd a src/fork-upstream/acknowledged-conflicts.ts bejegyzés 2026-11-18-i, javított
+szövegét és az 1c810029 kártyára tett kommentet, komment 33267).
+
+Két javítási kör a merge után: (f3f1ed7db) async-mock hiányok két meglévő teszt-fájlban,
+auth.ts mayIssueCredentials export-hiány, lint-ratchet alapvonal frissítés; (c325e2e6e) update.sh/
+update-finalize.sh natív-modul-rebuild gate visszaállítása az upstream multi-line retry formára
+(a saját egysoros || alakom törte az update-rebuild-gated.test.ts-t), pinolt szám/leltár-frissítés
+nyolc tesztfájlban (sync-child census, pane-writer census, hook-anchor leltár, KNOWN_SYNC_ROUTES),
+két hiányzó lang-leírás; (3f28b164b) három shebanges script tényleges `git update-index --chmod=+x`
+commitolása -- az első próbálkozás csak az indexet érintette commit nélkül, elveszett a fleet-test
+friss checkout-ján; (da460ff8f + 99b0ff860) claude-plans-login-ui.test.ts három web/app.js-függő
+describe blokkjának describe.skip-elése dátumozott jegyzettel, a jegyzet egy saját-köri javítással
+(a panel NEM hiányzik, csak a mode-selector-infrastruktúrája -- lásd fent).
+
+**Mérés:** `fleet-test.sh --ref 99b0ff860` (= `da460ff8f` + 2 kommentkülönbség, kód-identikus,
+`git diff` ellenőrizve) 1406 Test Files passed | 1 skipped (1407), 43795 Tests passed | 144 skipped
+(43940), 1 FAIL -- `store-selftests-all-run.test.ts`-ben, a "tracked tree dirtied: M CLAUDE.md"
+hiba, HÁROM egymást követő teljes futáson HÁROM KÜLÖNBÖZŐ, egymással össze NEM tartozó
+selftest-re esve (mopsion-suite-run, offload-dispatch, post-review -- none of these three scripts
+touched by this card commits). Önmagában (`npx vitest run` a saját card-worktree-ben, konkurens
+fleet-test nélkül) ugyanez a fájl 162/162 zöld. Ez egy ismert, megosztott `/home/neon/marveen-test`
+fa-kontenció alatti false-positive (lásd `shared-fleet-test-tree-contention-fakes-lint-ratchet-
+parse-errors` memória-minta, ugyanaz az osztály), nem ebből a kötegből eredő regresszió.
+`npx tsc --noEmit` ezen a shán: clean. `npm run build`: clean. `lint-ratchet.sh`: no rule got
+worse (443 finding, baseline tartja magát).
+
+**Ki döntött:** backend3 végezte. Gate-SHA: 99b0ff860d780a5e28da50356370749edf43bb75. Gate: QA +
+Cybersec (WhiteHat) + Cybered (RedHat) -- a kötegben trust-boundary fájl van (auth.ts, approvals.ts,
+claude-plans-login.ts, settings.ts érintett az upstream commitokban). `99b0ff860`
+`git merge-base --is-ancestor` origin/develop-nek NEM ancestor-je még (landolás előtt áll).
+
+
+## 2026-11-18 -- 51c68eeb: Koteg 26 delta -- RedHat C2 feloldva, a /stop es /resume valodi feloldasi utat mutat
+
+RedHat GO (komment 33311, Gate-SHA 4aeb9055694351cfcf15fe2397c9c9d9f7b3ef1b) ket landolasi
+feltetelt nevezett meg a mar kesz Koteg 26 batch mellett. C1 (nincs dashboard-felhasznalo
+az elesben) Peti/MikroB dontese, nem erre a kartyara tartozik. C2: a dashboard piros savjaban
+levo "Feloldas" gomb nulla bekotessel all a web/app.js-ben (grep: fleet, freeze, unfreeze,
+FleetFreeze mind 0), es az /stop + /resume Telegram-valaszok, valamint docs/fleet-freeze.md
+pont erre a nem-mukodo gombra kuldtek a gazdat -- telefonrol olvasva ez rosszabb, mint a
+csend.
+
+Javitas (nem a gomb portolasa -- az kulon kartyat/scope-ot igenyelne, lasd a REVIEW-ban
+nevesitve): a harom szoveg (src/web/builtin-commands.ts /stop + /resume valasz, docs/
+fleet-freeze.md) mind a ket tenylegesen mukodo utat nevezi meg: (1) store/fleet-freeze.json
+torlese a gepen (a fleet-freeze.ts modul sajat, mar dokumentalt "CLI-free way out"-ja),
+(2) hitelesitett POST /api/fleet/unfreeze hivas, ha mar van dashboard-bejelentkezes (C1
+felteve). fleet-freeze.test.ts: 37/37 zold, semelyik teszt nem fuggott a regi szoveg
+pontos szavaitol (grep-pelve ellenorizve).
+
+**Mertek:** npx tsc --noEmit ezen a shan: clean. npx vitest run fleet-freeze.test.ts: 37/37
+zold. Teljes fleet-test.sh ezen a delta-shan nincs lefuttatva kulon (bash-only + 2 TS/doc
+fajl, nem kodfuggo valtozas -- a QA/WhiteHat/RedHat delta-gate dontse, kell-e teljes kor).
+
+**Ki dontott:** backend3 vegezte. Gate-SHA: c13d691d05e7b2af03889a4214199a4480a56594. Delta scope: src/web/builtin-commands.ts
+(2 reply-string csere), docs/fleet-freeze.md (1 szakasz javitasa) -- a Koteg 26 batch tobbi
+resze (merge + korabbi fixupok) valtozatlan, lasd a korabbi 51c68eeb bejegyzeseket.
+
+## 2026-11-19 -- 51c68eeb: Koteg 26 land refused on develop drift, fixed (background-tasks.test.ts await), redone theirs-first after RedHat C33478
+
+First attempt at this fixup (merge beedd6369 + docs commit 567b13aa4, pushed and reviewed in
+comment 33469) resolved the DECISIONS.md conflict by hand, ours-first -- RedHat's delta re-gate
+(comment 33478) caught two problems: decisions_tail_append_ok returned rc=1 against develop (the
+card's own entry sat mid-file relative to develop's later history), and my REVIEW quoted a
+hand-retyped, truncated sha. Both are process mistakes already on file (always-copy-gate-sha-from-git-rev-parse-never-retype),
+now actually hit.
+
+Redone with the right tool: `store/decisions-sync-resolve.sh` in a fresh detached worktree off
+the still-gated ba1a3f7a8, merging origin/develop theirs-first (the script's own stated purpose,
+card edf9c837 -- an agent syncing onto its own branch must put the integration branch's content
+first so its own entry stays a clean tail-append relative to develop's history). The
+background-tasks.test.ts await fix from the first attempt is unchanged and re-verified.
+
+**Mérés:** `store/decisions-sync-resolve.sh --check-last-merge`: rc=0 (append-only invariant
+holds against develop both ways). `tsc --noEmit`: clean. `vitest run background-tasks.test.ts
+background-tasks-async-tmux.test.ts`: 2 Test Files passed (2), 33 Tests passed (33) -- same
+result as the first attempt, confirming RedHat's own measurement (33/33, production-await mutant
+red) independently.
+
+**Ki döntött:** backend3 végezte. Gate-SHA: 16be03fbe94a4dcaa84c3ba67fa71a67c17bbc54 (merge commit; sha copied via
+`git rev-parse HEAD`, not retyped). Supersedes beedd6369/567b13aa4 (force-pushed over, same
+card branch, no other agent had based work on them). Gate: QA + Cybersec (WhiteHat) + Cybered
+(RedHat) per the card's designated set -- needs a fresh verdict on this sha.
+
+## 2026-11-21 -- 51c68eeb merge-fixup: WATCHDOG_INSTALL_DIR not set in the bash-sandbox.test.ts fixture call
+
+**Mi tortent:** Koteg 26 (51c68eeb) land v3 REFUSED on fleet-test: `bash-sandbox.test.ts > watchdog.sh: a restart carries --settings exactly when the file exists` failed on the merge result only (not on either parent alone). Root cause: card 23a14ae1 (already on develop) changed `watchdog.sh`'s `INSTALL_DIR` derivation from `$(cd "$(dirname "$0")/.." && pwd)` to a fixed default (`/home/neon/marveen`) overridable only via `WATCHDOG_INSTALL_DIR`, to stop a phantom-agent bug (deriving from `$0` broke when invoked from an unexpected path). The test copies `scripts/watchdog.sh` into a tmp fixture dir and calls it via `execFileSync` without setting `WATCHDOG_INSTALL_DIR`, so after the merge the copied script no longer resolves `INSTALL_DIR` to the fixture dir -- it reads the real `/home/neon/marveen/store/bash-sandbox/soma.settings.json` state instead of the fixture's.
+
+**Javitas:** test-only fix, one line: `run()` in `bash-sandbox.test.ts` now passes `env: { ...process.env, WATCHDOG_INSTALL_DIR: fx }` to `execFileSync`, same pattern already used by `scripts/__tests__/watchdog-config-isolation.test.sh` (`export WATCHDOG_INSTALL_DIR="$FIXTURE_INSTALL"`). Neither side's substantive change is touched: `watchdog.sh`'s INSTALL_DIR hardening and the `agent_sandbox_flag`/`--settings` behaviour both stand unmodified.
+
+**Teszt:** `src/__tests__/bash-sandbox.test.ts` alone on the merge result: Test Files 1 passed (1), Tests 12 passed (12), 238ms.
+
+**Kontencio, nem regresszio (a masik 2 FAIL):** `store/local-llm-host-guard.selftest.sh` es `store/mopsion-suite-run.selftest.sh` mindketto PASS kulon futtatva a merge-eredmenyen (23 case PASS, ill. 77 passed/0 failed, 39.8s), tehat a v3 teljes fleet-test futasban latott FAIL-ek (host-guard command-failed, mopsion-suite-run SIGKILL) megosztott-fa/eroforras-kontencio voltak a parhuzamosan futo tobbi land/fleet-test alatt, nem valodi regresszio -- MikroB dontese (22930) alapjan igy rogzitve.
+
+**Ki dontott:** MikroB (22930), vizsgalat + javitas backend3-tol. Gate: QA + Cybersec (watchdog.sh biztonsagi felulet).
+
+## 2026-11-21 -- card 51c68eeb: stale-branch merge of origin/develop (v6 re-land, develop tip 68b2234ec)
+
+**Kontextus:** a gated sha (1d3cd7e57, QA PASS + QA2 PASS + CYBERED GO + CYBERSEC GO mind a negy designalt gate egyezik) ota harom mas kartya landolt (8ca1f91d, b7fe4a95, 52114c2f), ezert a `marveen-land.sh --card 51c68eeb --agent backend3` v6 futasa CONFLICTS-szal (exit 4) refuzalt. Ket utkozo fajl: DECISIONS.md es src/web/routes/connectors.ts.
+
+**Javitas:** `git merge origin/develop` a card/51c68eeb agon. DECISIONS.md: append-only konfliktus, mindket oldal uj bejegyzest fuzott a fajl vegehez, nem egymast modositotta -- a develop oldali (korabban landolt) bejegyzesek maradtak elobb, a kártya saját bejegyzései a tényleges fájlvégre kerültek. connectors.ts: a kártya saját változása (execFile/promisify-alapu async `claude mcp` hivas, a `shellEscape`/`execShellAsync` import+hasznalat teljes cserejevel) es az 52114c2f NO-GO-fix (`rejectIfNotHumanAuth` import + az egyik authz-ag csereje) kulonbozo, nem atfedo sorokat erintettek ugyanabban a fajlban -- a `shellEscape` import torolve (a kartya sajat valtozasa mar minden hasznalatat kicserelte, a merge utan egyetlen hivas sem maradt ra), a `rejectIfNotHumanAuth` import+hasznalat megtartva valtoztatas nelkul. Semelyik oldal erdemi valtozasa nem serult.
+
+**Teszt:** `npx tsc --noEmit` tiszta. `store/decisions-append-only-guard.sh DECISIONS.md` PASS. Celzott `connector-infobox-claudeai.test.ts`, `connectors-banner-module.test.ts`, `connectors-mcp-cli-async.test.ts`, `connectors-module.test.ts`, `connectors-project-stdio-auth-gate.test.ts`: 5 Test Files passed (5), 46 Tests passed (46), 12.73s.
+
+**Ki döntött:** a kártya saját gate-sorozata (1d3cd7e57) áll, csak a merge-feloldás technikai; backend3 végezte. Gate: a meglévő QA + QA2 + CYBERED + CYBERSEC verdiktek (1d3cd7e57) delta re-gate alá esnek a merge-sha-n.
+
+## 2026-11-25 21:00 -- F7 kezdő lépés: `agent-worktree.sh --card` mód mopsionhoz (kártya 380a5e16)
+
+**Döntés:** `store/agent-worktree.sh` kapott egy `--card <id>` módot mopsionhoz, ugyanazzal a
+mechanizmussal mint az F4 (marveen) kártya-módú worktree-je: a kártya saját, eldobható worktree-jét
+`card/<id>` ágon hozza létre/tartja karban, a kártyánkénti `node_modules`-linkeléssel együtt.
+Selftest hozzáadva (`store/agent-worktree.selftest.sh`).
+**Miért:** a kártya 1. követelménye (`agent-worktree.sh --card <id> for mopsion`); Peti 13099
+döntése szerint a t3code/kártya-worktree mechanizmus az EGYETLEN irány, nem opcionális párhuzamos
+út.
+**Ellenőrzés:** `store/agent-worktree.selftest.sh` zöld (a `--card` ágra épülő új esetekkel).
+**Nincs ebben a bejegyzésben:** a kártya 2. (`mopsion-land.sh --card <id>`) és 3. (egy valós
+mopsion kártya kártya-módban landolva) követelménye -- ez a bejegyzés csak az 1. követelményt
+fedi; a kártya emiatt `waiting`-re ment review-ra, de a cím `[0%]` jelzése szándékosan nem lett
+felülírva, amíg a 2-3. pont nincs kész.
+**Ki döntött:** DevO (fullstack), kártya leírása szerint.
+**Hivatkozás:** kártya 380a5e16; commit 39a412993 (`feat(mopsion): add --card mode to
+agent-worktree.sh`); `store/agent-worktree.sh`, `store/agent-worktree.selftest.sh`.
