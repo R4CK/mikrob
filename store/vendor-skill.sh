@@ -118,8 +118,7 @@ case "$src_real" in
 esac
 while IFS= read -r -d '' link; do
   resolved="$(realpath -- "$link" 2>/dev/null)"
-  # MUTATION-TEST-E: temporarily disabled existence check (to be reverted)
-  [[ -n "$resolved" ]] || {
+  [[ -n "$resolved" && -e "$resolved" ]] || {
     echo "vendor-skill: broken or cyclic symlink in upstream: $link" >&2
     exit 4
   }
