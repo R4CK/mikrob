@@ -17,6 +17,7 @@ import {
   gitSweepEdges,
   parseNameOnlyBatch,
   qualifyPath,
+  resolveFullSha,
   resolveShaRepos,
 } from '../kanban-relations-git.js'
 import {
@@ -113,6 +114,32 @@ describe('the merge trap -- the reason this card exists', () => {
     expect(files.get(A.merge!)).toEqual(['src/a.ts', 'src/b.ts'])
     expect(files.get(A.later!)).toEqual(['CHANGELOG.md'])
     expect(files.get(A.branch!)).toEqual(['src/a.ts', 'src/b.ts'])
+  })
+})
+
+// CYBERSEC NO-GO F-4 (card 5ecf6133, comment 39014): filesForCommits keys its result by the FULL
+// %H, so a caller that passes its original ABBREVIATED sha straight through to filesForCommits and
+// then looks its own input back up in the returned map finds nothing -- 22 of 47 "unresolved"
+// kg_anchors placeholder rows carried a short Gate-SHA that resolves fine in git. resolveFullSha is
+// the fix: resolve first, then look up by the resolved form.
+describe('resolveFullSha', () => {
+  it('resolves an abbreviated sha to its full 40-char form', () => {
+    const short = A.merge!.slice(0, 9)
+    expect(resolveFullSha(repoA, short)).toBe(A.merge)
+  })
+
+  it('a full sha resolves to itself', () => {
+    expect(resolveFullSha(repoA, A.later!)).toBe(A.later)
+  })
+
+  it('a sha that does not exist in this repo resolves to null, not a throw', () => {
+    expect(resolveFullSha(repoA, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef')).toBeNull()
+  })
+
+  it('composes with filesForCommits: short-sha lookup now finds its own files', () => {
+    const short = A.merge!.slice(0, 9)
+    const full = resolveFullSha(repoA, short)!
+    expect(filesForCommits(repoA, [full]).get(full)).toEqual(['src/a.ts', 'src/b.ts'])
   })
 })
 

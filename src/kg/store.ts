@@ -26,6 +26,20 @@ export const KG_DB_FILENAME = 'knowledge-graph.db'
 // below already applies to a kanban_relations re-run.
 export const PROTECTED_STATUSES = new Set(['archived', 'superseded'])
 
+// Card 5ecf6133 (CYBERSEC NO-GO F-1, comment 39014): a whole-file anchor on one of these paths is
+// touched by nearly every landing -- loadAnchors (search.ts) already treats DECISIONS.md as a
+// non-discriminator for display ORDER, but an anchor on it still flips the owning node to 'stale'
+// on the very next landing regardless of topic (measured: 195/298 backfilled nodes, active
+// 288->113). Both the forward fix and the backfill filter these out at write time, not just
+// deprioritize them, so no anchor on this list is ever created in the first place.
+export const NON_DISCRIMINATING_ANCHOR_PATHS = new Set([
+  'DECISIONS.md',
+  'README.md',
+  'CLAUDE.md',
+  'package.json',
+  'package-lock.json',
+])
+
 export class KgSecretError extends Error {
   constructor(public readonly field: string, public readonly patternName: string) {
     super(`kg write refused: ${field} matches secret pattern '${patternName}'`)

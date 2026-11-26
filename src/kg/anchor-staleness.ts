@@ -102,7 +102,11 @@ export function checkLandingAnchors(
 
       if (newState !== 'fresh') {
         const node = getNode(db, anchor.node_id) as { status: string } | undefined
-        if (node && node.status !== 'stale' && !PROTECTED_STATUSES.has(node.status)) {
+        // Card 5ecf6133 (CYBERSEC NO-GO F-1, comment 39014): 'draft' is NOT in search.ts's
+        // SEARCHABLE_STATUSES, but 'stale' IS -- so promoting a never-gate-approved draft node to
+        // 'stale' through this path made it searchable/injectable without ever clearing EK-MT-3's
+        // gate. A draft's anchors can still drift; it just must not become visible BECAUSE they did.
+        if (node && node.status !== 'stale' && node.status !== 'draft' && !PROTECTED_STATUSES.has(node.status)) {
           setNodeStatus(db, anchor.node_id, 'stale', input.actor)
           report.nodesMarkedStale += 1
         }
