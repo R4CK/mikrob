@@ -5483,7 +5483,12 @@ const MEMORY_SEARCH_LABEL_BLOCK_RE = new RegExp(
 // same time cannot read each other's label out of one shared /tmp path.
 export function buildMemorySearchLabelBody(name: string, strict = false): string {
   return [
-    '## Memória-keresés: a FEJLÉCET is olvasd el (KÖTELEZŐ)',
+    // #2232/card 1535f7f9: a strict agent's dontAsk mode cannot run the script directly
+    // through an unlisted path, so its heading points at the header-reading discipline
+    // instead of the script name (see the apiHelper branch below).
+    strict
+      ? '## Memória-keresés: a FEJLÉCET is olvasd el (KÖTELEZŐ)'
+      : '## Memória-keresés: a `agent-memory-search.sh` paranccsal (KÖTELEZŐ ezt használni)',
     '',
     'A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a',
     'maradék töltelékszavakra hozott sorokat adja vissza -- a body ilyenkor UGYANÚGY néz ki, mint',
@@ -5513,17 +5518,6 @@ export function buildMemorySearchLabelBody(name: string, strict = false): string
     '- Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), add meg a `--strict` flaget.',
     '',
     'A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).',
-    '',
-    // Non-strict agents may still need the raw header read (e.g. scripting around the
-    // helper's own exit code), so keep the `-H @-` recipe available alongside the script.
-    ...(strict ? [] : [
-      'Ha a nyers fejlécre is szükséged van a script helyett:',
-      '```bash',
-      `${agentAuthHeaderPath} ${name} | curl -s -H @- -D /tmp/mem-fejlec-${name}.txt \\`,
-      `  "${dashboardOrigin}/api/memories?agent=${name}&q=KULCSSZO"`,
-      `grep -i '^x-memory-search' /tmp/mem-fejlec-${name}.txt`,
-      '```',
-    ]),
   ].join('\n')
 }
 
@@ -6123,28 +6117,19 @@ export function buildMessageCloseBody(name: string, strict = false): string {
       `${agentMessageCloseScriptPath} ${name} <id>                                        # bejövő riport/értesítés`,
       `${agentMessageCloseScriptPath} ${name} <id> --notify true --result-file <path>      # delegált feladat eredménye`,
       '```',
-      '',
-      'Ha a nyers fejjel kell hívnod (pl. a helper nélkül):',
-      '```bash',
-      `${agentAuthHeaderPath} ${name} \\`,
-      `| curl -H @- -s -X PUT ${dashboardOrigin}/api/messages/<id> -H "Content-Type: application/json" \\`,
-      `  --data-binary '{"status":"done","notify":false}'`,
-      '```',
     ]),
     '',
     '- BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): alapértelmezés `--notify false`,',
     '  mert a nyugta itt csak a feladó sorát növeli (mérve 2026-09-27: három lezárás a feladó',
     '  várakozó sorát 1-ről 4-re vitte).',
-    ...(strict ? [] : [
-      '- DELEGÁLT FELADAT (a feladó az eredményre vár): írd ki az eredményt a Write toollal egy',
-      '  fájlba, majd `--notify true --result-file <path>` -- a nyugta maga az eredmény.',
-      '- SOHA ne írd `--result "..."` KÖZVETLENÜL a parancssorba dupla idézőjelben: egy backtick vagy',
-      '  egy, a szövegben szereplő parancs-behelyettesítés a TE saját héjadban fut le, mielőtt a script',
-      '  elindulna (CYBERSEC NO-GO 38468). A biztonságos forma a `--result-file <path>` (írd ki a Write',
-      '  toollal, add át az útvonalat) -- a `--result-stdin` CSAK egyszeres idézőjeles heredocból',
-      '  (`<<\'EOF\'`) biztonságos, mert egy dupla idézőjeles `echo`/`printf` ugyanúgy végrehajtja a',
-      '  behelyettesítést a HÍVÓ héjában, mielőtt a script látná a szöveget.',
-    ]),
+    '- DELEGÁLT FELADAT (a feladó az eredményre vár): írd ki az eredményt a Write toollal egy',
+    '  fájlba, majd `--notify true --result-file <path>` -- a nyugta maga az eredmény.',
+    '- SOHA ne írd `--result "..."` KÖZVETLENÜL a parancssorba dupla idézőjelben: egy backtick vagy',
+    '  egy, a szövegben szereplő parancs-behelyettesítés a TE saját héjadban fut le, mielőtt a script',
+    '  elindulna (CYBERSEC NO-GO 38468). A biztonságos forma a `--result-file <path>` (írd ki a Write',
+    '  toollal, add át az útvonalat) -- a `--result-stdin` CSAK egyszeres idézőjeles heredocból',
+    '  (`<<\'EOF\'`) biztonságos, mert egy dupla idézőjeles `echo`/`printf` ugyanúgy végrehajtja a',
+    '  behelyettesítést a HÍVÓ héjában, mielőtt a script látná a szöveget.',
     '- Egy MÁR lezárt üzenet újabb lezárása (409) a script számára NEM hiba: egy sort ír stderr-re és',
     '  0-val lép ki, NEM kell megismételni a lezárást, és NEM kell jelenteni.',
     '- A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',

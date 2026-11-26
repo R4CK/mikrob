@@ -213,6 +213,13 @@ describe('a non-strict agent keeps the curl recipes', () => {
     // literal `printf ... | curl -H @-` form upstream's $(cat tokenPath) pattern used to need is
     // no longer required everywhere -- both satisfy the same invariant.
     for (const part of file.split('<!-- BEGIN GENERATED: ').slice(1)) {
+      // card 01eb0d0c (develop sync): memory-search-label and message-close moved their
+      // header-reading recipe entirely into their own wrapper scripts (agent-memory-search.sh,
+      // agent-message-close.sh) for BOTH strict and non-strict agents -- neither block carries
+      // a curl example of its own any more, so the generic "-H @-" sanity check below (written
+      // while they still did) no longer applies to them; see those scripts' own selftests for
+      // the behavioural pin instead.
+      if (/^(memory-search-label|message-close)/.test(part)) continue
       expect(part, part.slice(0, 60)).not.toMatch(/curl[^\n]*-H ["']Authorization: Bearer \$\(/)
       expect(part, part.slice(0, 60)).toMatch(/-H @-/)
     }
