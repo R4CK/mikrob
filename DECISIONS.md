@@ -33956,3 +33956,11 @@ a Telegram-kizárás és a mixed_script_words-lelet felismerése és dokumentál
 Hivatkozás: kártya 1b4c566e (predecessor ee7bc2ba); `scripts/hooks/outgoing-copy-gate.py`,
 `scripts/__tests__/outgoing-copy-gate-outbound-union.test.py`,
 `scripts/__tests__/email-extract-parity.test.py`, `scripts/hooks/send-invocation-cases.json`.
+
+**Utókövetés (kártya 1b4c566e, ugyanazon a kártyán, fleet-test gate előtt talált lelet):**
+a `scripts/__tests__/outgoing-copy-gate-outbound-union.test.py` a shebang-executable-bit
+kapu (`shebang-files-executable.test.ts`) szerint git mode 100644-ként volt commitolva a
+`#!/usr/bin/env python3` shebangje mellett. Javítva `git update-index --chmod=+x`-szel
+(sima `chmod +x` ezen a fájlrendszeren nem marad meg az indexben), ugyanazon blob-sha mellett,
+commit 55be11a67d63f3c6b3a2b11f1d5e1b8f861d2bb5. Tartalmi változás nincs, csak a mód-bit.
+Hivatkozás: kártya 1b4c566e.
