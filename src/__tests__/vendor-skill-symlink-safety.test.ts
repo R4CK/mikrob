@@ -55,8 +55,13 @@ afterAll(() => {
 })
 
 const dirs: string[] = []
+// Use /tmp explicitly, not tmpdir(): fleet-test.sh overrides TMPDIR to a path under $HOME
+// (vendor-skill-sanctioned-exclusion.test.ts's beforeAll documents this), and vendor-skill.sh
+// normalises sanctioned-exclusion dest keys with ${dest/#"$HOME"/\~} -- a dest under $HOME
+// would be stored as ~/... in the JSON but this file's REALPATH924 test writes the raw
+// /home/... path as the key, causing a lookup miss and the exclusion silently not applying.
 function mkdtemp(prefix: string): string {
-  const d = mkdtempSync(join(tmpdir(), prefix))
+  const d = mkdtempSync(join('/tmp', prefix))
   dirs.push(d)
   return d
 }
