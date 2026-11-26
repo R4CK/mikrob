@@ -33370,17 +33370,7 @@ Post-merge, a merge-től független hiba: `context-guard-hard-busy-handoff.test.
 
 **Ki döntött:** a kártya saját gate-sorozata (bd7fecb23e) áll, csak a merge-feloldás technikai; backend3 végezte. Gate: a meglévő QA + CYBERSEC + CYBERED verdiktek delta re-gate alá esnek az új merge-sha-n (rule 4d).
 
-## 2026-11-26 -- egress-gate maradék SSRF bypass-osztályok (kártya 8f1c9795, 9529d46e/WhiteHat 25728 follow-up)
-
-**Kontextus:** WhiteHat GO 25728 a 9529d46e-n (f0fc7a59, scripts/hooks/egress-gate.mjs) egy HARD felsorolást hagyott maradék SSRF bypass-osztályokról, egyet élőben reprodukálva (ip6-localhost/ip6-loopback egy ::-re kötött figyelőt ér el). A kártya 7 követelményt (0-6) sorolt fel, MikroB kiegészítésével: minden 0-3 osztály saját `it`-et kap.
-
-**Javítás:** `scripts/hooks/egress-gate.mjs` -- (0) `decodeEmbeddedV4` segédfüggvény, az elavult IPv4-kompatibilis `::/96` forma (pl. `::7f00:1`) dekódolva és `isPrivateIPv4`-fel ellenőrizve; (1) a záró pont-levágás `.replace(/\.$/, '')` -> `.replace(/\.+$/, '')` (TÖBB záró pontot is levág); (2) `isPrivateIPv6` számtartomány-alapú `fe80::/10`, `fec0::/10`, `ff00::/8` ellenőrzéssel bővült (nem csak a `"fe80"` literál-string), `2002::/16` (6to4) dekódolva+ellenőrizve, `64:ff9b:1::` (RFC 8215 local-use NAT64) kifejezetten tiltva, külön a meglévő globális `64:ff9b::/96` ágtól; (3) `QUARANTINE_DENY_HOSTS` bővült: `ip6-localhost`, `ip6-loopback`, `ip6-localnet`, `ip6-allnodes`, `ip6-allrouters`, `168.63.129.16`; `isPrivateIPv4` bővült `192.0.0.0/24`-fel; (4) egy-címkés hostname (pont és kettőspont nélküli) tiltva, hacsak nincs allowlist-elve -- ma semmi nincs, mert minden `QUARANTINE_DOMAINS`/`ALLOWED_PREFIXES` bejegyzés pontozott név; (5) a két fail-closed, ismeretlen-farkú ág (SIIT/`::ffff:`, `64:ff9b::`) külön teszttel rögzítve (pin, nem bugfix -- a pre-fix fán is zöld maradt, ellenőrizve `git stash`-sel); (6) a KNOWN LIMIT komment kibővült: `nip.io`/`sslip.io` nevesítve a DNS-rebinding mellett.
-
-**Teszt:** `src/__tests__/egress-gate.test.ts` 26 -> 34 teszt, 8 új, egy mindegyik 0-5 osztályra. 7/8 RED a pre-fix fán (`git stash`), GREEN a fix után; a req 5 mindkét állapotban GREEN (szándékosan, pin). `fleet-test.sh --ref ab5e316e19e4e986af970d60d44d24745fcd4cc3`: **1467 test file zöld, 1 bukott (store-selftests-all-run.test.ts, mopsion-suite-run selftest timing, nem a jelen kártya fájljai), 52870 teszt zöld, 161 skip.** `lint-ratchet.sh`: nincs romlás (459 lelet, baseline tart). A WhiteHat 25728 saját 4 kontroll-URL-je (example.com, docs.anthropic.com, 93.184.216.34, [2606:4700::1111]) továbbra sem tiltott, közvetlen Node-hívással ellenőrizve.
-
-**Nincs benne:** élő hook (`/home/neon/marveen/scripts/hooks/egress-gate.mjs`) változatlan, update.sh Peti jóváhagyása kell (D1).
-
-**Ki döntött:** a követelmények WhiteHat 25728-ból jönnek; fullstack (DevO) implementálta. Gate: a kártya szövege szerint RedHat vagy WhiteHat2 (nem WhiteHat, mert a WhiteHat-követelményeket maga a WhiteHat sorolta fel), MikroB/gate-pool dönt melyik.
+## 2026-11-26 -- card 1124f53f (Koteg 27): harmadik develop-sync (origin/develop @ ddbed7c0) a második land-refuzálás után
 
 **Kontextus:** a fenti második sync (e022fe25-alapú) után a `marveen-land.sh --card 1124f53f --agent backend3` ismét REFUZÁLTA: `origin/develop` eközben tovább ment (e022fe250 -> ddbed7c0c, a backend ágens eed988e7 kártyájának landolása), és a kártya DECISIONS.md-je már nem tiszta tail-append a develop LEGÚJABB állapotára.
 
@@ -33744,3 +33734,15 @@ Végrehajtó: backend.
 Hivatkozás: kártya 5ecf6133, 01b10349, dbd2e272, d7acff99 (usefulness cards that need to land
 first for a higher held-out recall); `src/web/routes/settings.ts`, `src/kg/search.ts`,
 `src/config-registry.ts` (`KG_MIN_SCORE`).
+
+## 2026-11-26 -- egress-gate maradék SSRF bypass-osztályok (kártya 8f1c9795, 9529d46e/WhiteHat 25728 follow-up)
+
+**Kontextus:** WhiteHat GO 25728 a 9529d46e-n (f0fc7a59, scripts/hooks/egress-gate.mjs) egy HARD felsorolást hagyott maradék SSRF bypass-osztályokról, egyet élőben reprodukálva (ip6-localhost/ip6-loopback egy ::-re kötött figyelőt ér el). A kártya 7 követelményt (0-6) sorolt fel, MikroB kiegészítésével: minden 0-3 osztály saját `it`-et kap.
+
+**Javítás:** `scripts/hooks/egress-gate.mjs` -- (0) `decodeEmbeddedV4` segédfüggvény, az elavult IPv4-kompatibilis `::/96` forma (pl. `::7f00:1`) dekódolva és `isPrivateIPv4`-fel ellenőrizve; (1) a záró pont-levágás `.replace(/\.$/, '')` -> `.replace(/\.+$/, '')` (TÖBB záró pontot is levág); (2) `isPrivateIPv6` számtartomány-alapú `fe80::/10`, `fec0::/10`, `ff00::/8` ellenőrzéssel bővült (nem csak a `"fe80"` literál-string), `2002::/16` (6to4) dekódolva+ellenőrizve, `64:ff9b:1::` (RFC 8215 local-use NAT64) kifejezetten tiltva, külön a meglévő globális `64:ff9b::/96` ágtól; (3) `QUARANTINE_DENY_HOSTS` bővült: `ip6-localhost`, `ip6-loopback`, `ip6-localnet`, `ip6-allnodes`, `ip6-allrouters`, `168.63.129.16`; `isPrivateIPv4` bővült `192.0.0.0/24`-fel; (4) egy-címkés hostname (pont és kettőspont nélküli) tiltva, hacsak nincs allowlist-elve -- ma semmi nincs, mert minden `QUARANTINE_DOMAINS`/`ALLOWED_PREFIXES` bejegyzés pontozott név; (5) a két fail-closed, ismeretlen-farkú ág (SIIT/`::ffff:`, `64:ff9b::`) külön teszttel rögzítve (pin, nem bugfix -- a pre-fix fán is zöld maradt, ellenőrizve `git stash`-sel); (6) a KNOWN LIMIT komment kibővült: `nip.io`/`sslip.io` nevesítve a DNS-rebinding mellett.
+
+**Teszt:** `src/__tests__/egress-gate.test.ts` 26 -> 34 teszt, 8 új, egy mindegyik 0-5 osztályra. 7/8 RED a pre-fix fán (`git stash`), GREEN a fix után; a req 5 mindkét állapotban GREEN (szándékosan, pin). `fleet-test.sh --ref ab5e316e19e4e986af970d60d44d24745fcd4cc3`: **1467 test file zöld, 1 bukott (store-selftests-all-run.test.ts, mopsion-suite-run selftest timing, nem a jelen kártya fájljai), 52870 teszt zöld, 161 skip.** `lint-ratchet.sh`: nincs romlás (459 lelet, baseline tart). A WhiteHat 25728 saját 4 kontroll-URL-je (example.com, docs.anthropic.com, 93.184.216.34, [2606:4700::1111]) továbbra sem tiltott, közvetlen Node-hívással ellenőrizve.
+
+**Nincs benne:** élő hook (`/home/neon/marveen/scripts/hooks/egress-gate.mjs`) változatlan, update.sh Peti jóváhagyása kell (D1).
+
+**Ki döntött:** a követelmények WhiteHat 25728-ból jönnek; fullstack (DevO) implementálta. Gate: a kártya szövege szerint RedHat vagy WhiteHat2 (nem WhiteHat, mert a WhiteHat-követelményeket maga a WhiteHat sorolta fel), MikroB/gate-pool dönt melyik.
