@@ -7,14 +7,11 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const APP_JS = readFileSync(join(ROOT, 'web', 'app-kanban.js'), 'utf-8')
 const INDEX_HTML = readFileSync(join(ROOT, 'web', 'index.html'), 'utf-8')
-const LANG = {
-  en: readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf-8'),
-  hu: readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf-8'),
-}
 
 function slice(src: string, startMarker: string, endMarker: string): string {
   const a = src.indexOf(startMarker)
@@ -201,8 +198,8 @@ describe('wiring', () => {
       ...[...APP_JS.matchAll(/t\('(kanban\.filter\.search_[a-z_]+)'/g)].map((m) => m[1]),
     ])
     expect(used.size).toBe(13)
-    for (const [lang, src] of Object.entries(LANG)) {
-      for (const key of used) expect(src, `${lang}: ${key}`).toContain(`'${key}':`)
+    for (const lang of ['hu', 'en'] as const) {
+      for (const key of used) expect(langHasKey(lang, key), `${lang}: ${key}`).toBe(true)
     }
   })
 })

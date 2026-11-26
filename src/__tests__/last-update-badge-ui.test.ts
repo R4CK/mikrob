@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_CORE = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
@@ -14,8 +15,6 @@ const APP_LAST_UPDATE = readFileSync(join(__dirname, '../../web/app-last-update.
 const APP = APP_CORE + '\n' + APP_LAST_UPDATE
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
-const HU = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
-const EN = readFileSync(join(__dirname, '../../web/lang/en.js'), 'utf-8')
 
 function fnBody(source: string, startMarker: string): string {
   const start = source.indexOf(startMarker)
@@ -88,8 +87,8 @@ describe('last-update sidebar badge UI wiring', () => {
       'lastUpdate.shaTitle',
     ]
     for (const key of keys) {
-      expect(HU, `HU missing ${key}`).toContain(`'${key}':`)
-      expect(EN, `EN missing ${key}`).toContain(`'${key}':`)
+      expect(langHasKey('hu', key), `HU missing ${key}`).toBe(true)
+      expect(langHasKey('en', key), `EN missing ${key}`).toBe(true)
     }
   })
 })

@@ -21,14 +21,13 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_KG     = readFileSync(join(__dirname, '../../web/app-kg.js'), 'utf-8')
 const APP_PAGESW = readFileSync(join(__dirname, '../../web/app-page-switch.js'), 'utf-8')
 const HTML       = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS        = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
-const HU         = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
-const EN         = readFileSync(join(__dirname, '../../web/lang/en.js'), 'utf-8')
 
 function fnBody(source: string, startMarker: string, maxLen = 4000): string {
   const start = source.indexOf(startMarker)
@@ -685,8 +684,8 @@ describe('kg: i18n parity (hu.js / en.js)', () => {
     for (const m of APP_KG.matchAll(/t\('(kg\.[a-zA-Z0-9_.]+)'\s*[,)]/g)) refs.add(m[1])
     expect(refs.size).toBeGreaterThan(10)
     for (const key of refs) {
-      expect(HU).toContain(`'${key}'`)
-      expect(EN).toContain(`'${key}'`)
+      expect(langHasKey('hu', key)).toBe(true)
+      expect(langHasKey('en', key)).toBe(true)
     }
   })
 
@@ -695,29 +694,29 @@ describe('kg: i18n parity (hu.js / en.js)', () => {
     for (const m of HTML.matchAll(/data-i18n(?:-placeholder)?="(kg\.[a-zA-Z0-9_.]+)"/g)) refs.add(m[1])
     expect(refs.size).toBeGreaterThan(5)
     for (const key of refs) {
-      expect(HU).toContain(`'${key}'`)
-      expect(EN).toContain(`'${key}'`)
+      expect(langHasKey('hu', key)).toBe(true)
+      expect(langHasKey('en', key)).toBe(true)
     }
   })
 
   it('nav.kg exists in both languages', () => {
-    expect(HU).toContain("'nav.kg':")
-    expect(EN).toContain("'nav.kg':")
+    expect(langHasKey('hu', 'nav.kg')).toBe(true)
+    expect(langHasKey('en', 'nav.kg')).toBe(true)
   })
 
   it('the three anchor states and five node types all have an hu+en label', () => {
     for (const state of ['fresh', 'drifted', 'gone']) {
-      expect(HU).toContain(`'kg.anchor.state.${state}'`)
-      expect(EN).toContain(`'kg.anchor.state.${state}'`)
+      expect(langHasKey('hu', `kg.anchor.state.${state}`)).toBe(true)
+      expect(langHasKey('en', `kg.anchor.state.${state}`)).toBe(true)
     }
     for (const ty of ['solution', 'anti_pattern', 'decision', 'finding', 'lesson']) {
-      expect(HU).toContain(`'kg.type.${ty}'`)
-      expect(EN).toContain(`'kg.type.${ty}'`)
+      expect(langHasKey('hu', `kg.type.${ty}`)).toBe(true)
+      expect(langHasKey('en', `kg.type.${ty}`)).toBe(true)
     }
   })
 
   it('kg.disabled (the honest "backend not landed" state, rule 12) exists in both languages', () => {
-    expect(HU).toContain("'kg.disabled'")
-    expect(EN).toContain("'kg.disabled'")
+    expect(langHasKey('hu', 'kg.disabled')).toBe(true)
+    expect(langHasKey('en', 'kg.disabled')).toBe(true)
   })
 })

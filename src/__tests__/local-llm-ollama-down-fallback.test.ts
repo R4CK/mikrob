@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -97,8 +98,8 @@ describe('local-llm Ollama-down fallback: CSS (rule 13)', () => {
 describe('local-llm Ollama-down fallback: i18n parity', () => {
   for (const key of NEW_KEYS) {
     it(`hu.js and en.js both define ${key}`, () => {
-      expect(HU).toContain(`'${key}':`)
-      expect(EN).toContain(`'${key}':`)
+      expect(langHasKey('hu', key)).toBe(true)
+      expect(langHasKey('en', key)).toBe(true)
     })
   }
   it('the banner text names the two facts the operator needs: switches work, activation waits', () => {

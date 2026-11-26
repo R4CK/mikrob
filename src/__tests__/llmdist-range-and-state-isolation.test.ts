@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 // Card 4c5c540c, both halves.
 //
@@ -68,7 +69,7 @@ describe('swimlane time-window slider', () => {
   it('has the label keys in both locales, and the meta string carries no stray unit', () => {
     for (const [name, src] of [['hu', HU], ['en', EN]] as const) {
       for (const k of ['overview.llmDist.range_label', 'overview.llmDist.range_minutes', 'overview.llmDist.range_hours']) {
-        expect(src, `${name} missing ${k}`).toContain(`'${k}':`)
+        expect(langHasKey(name, k), `${name} missing ${k}`).toBe(true)
       }
       // meta now receives a COMPLETE label ("30 perc"), so a trailing unit would render
       // "utolsó 30 perc óra".

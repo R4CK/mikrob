@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -267,8 +268,8 @@ describe('CSS (rule 13) and i18n parity', () => {
 
   for (const key of NEW_KEYS) {
     it(`hu.js and en.js both define ${key}`, () => {
-      expect(HU).toContain(`'${key}':`)
-      expect(EN).toContain(`'${key}':`)
+      expect(langHasKey('hu', key)).toBe(true)
+      expect(langHasKey('en', key)).toBe(true)
     })
   }
 
@@ -278,6 +279,6 @@ describe('CSS (rule 13) and i18n parity', () => {
       for (const m of src.matchAll(/t\('((?:localLlm\.routing|localLlm\.models\.(?:summary|route)|overview\.llmDist\.(?:lane_|tooltip\.routing))[^']*)'/g)) refs.add(m[1] ?? '')
     }
     expect(refs.size).toBeGreaterThan(10)
-    for (const k of refs) expect(HU, k).toContain(`'${k}':`)
+    for (const k of refs) expect(langHasKey('hu', k), k).toBe(true)
   })
 })

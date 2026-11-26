@@ -103,6 +103,7 @@ import { defaultOperatorAccess, OPERATOR_CAPABILITIES, type OperatorAccess } fro
 import { _clearOperatorSessionsForTest, OPERATOR_COOKIE_NAME } from '../web/operator-sessions.js'
 import { OPERATOR_AGENT_FIELDS, OPERATOR_COMMAND_TEXT, tryHandleOperator } from '../web/routes/operator.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 beforeAll(() => { initDatabase(':memory:') })
 beforeEach(() => {
@@ -530,9 +531,8 @@ describe('the owner section (web/app-settings-auth.js)', () => {
     const keys = [...new Set([...fn.matchAll(/t\('(auth\.operator\.[\w.]+)'/g)].map(m => m[1]!))].filter(k => !k.endsWith('.'))
     for (const c of ['agentControl', 'mainAgentRestart', 'update', 'vaultWrite', 'vaultOverwrite', 'paneView', 'commands']) keys.push(`auth.operator.cap.${c}`)
     expect(keys.length).toBeGreaterThan(10)
-    for (const lang of ['hu', 'en']) {
-      const L = readFileSync(join(__dirname, `../../web/lang/${lang}.js`), 'utf-8')
-      for (const k of keys) expect(L, `${lang}: ${k}`).toContain(`'${k}':`)
+    for (const lang of ['hu', 'en'] as const) {
+      for (const k of keys) expect(langHasKey(lang, k), `${lang}: ${k}`).toBe(true)
     }
   })
 })

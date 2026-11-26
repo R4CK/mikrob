@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SRC = readFileSync(join(ROOT, 'web', 'app-freellm.js'), 'utf8')
@@ -358,8 +359,8 @@ const FREELLM_CALLS_I18N_KEYS = [
 describe('freellm calls panel: i18n parity', () => {
   for (const key of FREELLM_CALLS_I18N_KEYS) {
     it(`key "${key}" exists in both hu.js and en.js`, () => {
-      expect(HU).toContain(`'${key}':`)
-      expect(EN).toContain(`'${key}':`)
+      expect(langHasKey('hu', key)).toBe(true)
+      expect(langHasKey('en', key)).toBe(true)
     })
   }
 })

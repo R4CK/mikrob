@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_CORE     = readFileSync(join(__dirname, '../../web/app.js'),          'utf-8')
@@ -19,8 +20,6 @@ const APP_PAGE_SWITCH = readFileSync(join(__dirname, '../../web/app-page-switch.
 const APP = APP_CORE + '\n' + APP_OVERVIEW + '\n' + APP_PAGE_SWITCH
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
-const HU = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
-const EN = readFileSync(join(__dirname, '../../web/lang/en.js'), 'utf-8')
 
 function fnBody(source: string, startMarker: string): string {
   const start = source.indexOf(startMarker)
@@ -172,8 +171,8 @@ describe('overview spectrum: responsive + i18n', () => {
     for (const m of (APP + HTML).matchAll(/overview\.spectrum\.[a-zA-Z_]+/g)) keys.add(m[0])
     expect(keys.size).toBeGreaterThan(0)
     for (const key of keys) {
-      expect(HU).toContain(`'${key}'`)
-      expect(EN).toContain(`'${key}'`)
+      expect(langHasKey('hu', key)).toBe(true)
+      expect(langHasKey('en', key)).toBe(true)
     }
   })
 })

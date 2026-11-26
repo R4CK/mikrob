@@ -12,13 +12,12 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_OVERVIEW = readFileSync(join(__dirname, '../../web/app-overview.js'), 'utf-8')
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
-const HU = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
-const EN = readFileSync(join(__dirname, '../../web/lang/en.js'), 'utf-8')
 
 function fnBody(source: string, startMarker: string, maxLen = 4000): string {
   const start = source.indexOf(startMarker)
@@ -136,8 +135,8 @@ describe('LLM today tile: CSS and i18n', () => {
     'overview.llmToday.error',
   ]) {
     it(`hu.js and en.js both define ${key}`, () => {
-      expect(HU).toContain(`'${key}':`)
-      expect(EN).toContain(`'${key}':`)
+      expect(langHasKey('hu', key)).toBe(true)
+      expect(langHasKey('en', key)).toBe(true)
     })
   }
 
@@ -148,8 +147,8 @@ describe('LLM today tile: CSS and i18n', () => {
     for (const m of APP_OVERVIEW.matchAll(/'(overview\.llmToday\.[a-zA-Z_]+)'/g)) refs.add(m[1] ?? '')
     expect(refs.size).toBeGreaterThan(5)
     for (const k of refs) {
-      expect(HU, k).toContain(`'${k}':`)
-      expect(EN, k).toContain(`'${k}':`)
+      expect(langHasKey('hu', k), k).toBe(true)
+      expect(langHasKey('en', k), k).toBe(true)
     }
   })
 })
