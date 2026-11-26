@@ -33913,8 +33913,7 @@ Hivatkozás: kártya d97659cb; QA PASS 39117, CYBERED GO 39119, CYBERSEC GO 3912
 F-1/F-2/L-2..L-5 leletek); `scripts/wsl-watchdog-holder-ensure.sh`, `scripts/install-wsl-watchdog.sh`,
 `scripts/install-wsl-watchdog.selftest.sh`.
 
-## card e99c3dc1 -- FLEET_TEST_PRIORITY=land ancestor-lock verification + distinguishable
-## LAND-queue timeout message (2026-11-26)
+## 2026-11-26 -- card e99c3dc1: FLEET_TEST_PRIORITY=land ancestor-lock verification + distinguishable LAND-queue timeout message
 
 Előzmény: a gate-store-selftests vs. land starvation kártyán (e99c3dc1) a per-tree lock
 exemption-kísérlet 4 egymást követő NO-GO/FAIL után bounce-olt (39178/39179); MikroB döntése
