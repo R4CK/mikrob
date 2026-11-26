@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { langHasKey } from './helpers/lang-overlay-key.js'
+import { langHasKey, langSource } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -19,8 +19,6 @@ const HTML = readFileSync(join(WEB, 'index.html'), 'utf8')
 const JS = readFileSync(join(WEB, 'app-local-llm.js'), 'utf8')
 const OVW = readFileSync(join(WEB, 'app-overview.js'), 'utf8')
 const CSS = readFileSync(join(WEB, 'style.css'), 'utf8')
-const HU = readFileSync(join(WEB, 'lang', 'hu.js'), 'utf8')
-const EN = readFileSync(join(WEB, 'lang', 'en.js'), 'utf8')
 
 const NEW_KEYS = [
   'localLlm.routing.title',
@@ -124,7 +122,7 @@ describe('routing data: loaded contract-first, absence is said out loud (rule 12
     const fn = slice(JS, 'function llmRoutingSummaryHtml(', 'function llmRoutingAlwaysOnlineHtml(')
     expect(fn).toContain("'localLlm.routing.endpoint_missing'")
     expect(fn).toContain("'localLlm.routing.endpoint_error'")
-    expect(HU).toMatch(/'localLlm\.routing\.endpoint_missing': '[^']*ecf38e5a/)
+    expect(langSource('hu')).toMatch(/'localLlm\.routing\.endpoint_missing': '[^']*ecf38e5a/)
   })
 
   it('routing is loaded BEFORE the first status render so model rows can wear their chips', () => {
@@ -183,10 +181,10 @@ describe('(2) the preset table: switch + routed model + why', () => {
     expect(d).toContain("t('localLlm.routing.summary_decomposed'")
     expect(d).toContain("t('localLlm.routing.verdict_decomposed')")
     expect(d).toContain("t('localLlm.routing.decision_decompose'")
-    for (const lang of [HU, EN]) {
-      expect(lang).toContain("'localLlm.routing.verdict_decomposed':")
-      expect(lang).toContain("'localLlm.routing.summary_decomposed':")
-      expect(lang).toContain("'localLlm.routing.decision_decompose':")
+    for (const lang of ['hu', 'en'] as const) {
+      expect(langHasKey(lang, 'localLlm.routing.verdict_decomposed')).toBe(true)
+      expect(langHasKey(lang, 'localLlm.routing.summary_decomposed')).toBe(true)
+      expect(langHasKey(lang, 'localLlm.routing.decision_decompose')).toBe(true)
     }
     expect(CSS).toContain('.llm-verdict--decomposed')
   })

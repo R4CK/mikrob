@@ -10,14 +10,12 @@ import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { langHasKey } from './helpers/lang-overlay-key.js'
+import { langHasKey, langSource } from './helpers/lang-overlay-key.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SRC = readFileSync(join(ROOT, 'web', 'app-freellm.js'), 'utf8')
 const HTML = readFileSync(join(ROOT, 'web', 'index.html'), 'utf8')
 const CSS = readFileSync(join(ROOT, 'web', 'style.css'), 'utf8')
-const EN = readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf8')
-const HU = readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf8')
 const APP_JS = readFileSync(join(ROOT, 'web', 'app.js'), 'utf8')
 
 function extract(name: string): string {
@@ -371,7 +369,7 @@ describe('freellm calls panel: i18n parity', () => {
 // card d96f1418 for the same bug class on the Settings page).
 function makeRealT(lang: 'en' | 'hu') {
   const win: Record<string, unknown> = { _lang: lang, _brandTokens: {} }
-  for (const l of ['en', 'hu'] as const) new Function('window', l === 'en' ? EN : HU)(win)
+  for (const l of ['en', 'hu'] as const) new Function('window', langSource(l))(win)
   const tStart = APP_JS.indexOf('window.t = function t(')
   const tEnd = APP_JS.indexOf('\n  }\n', tStart)
   if (tStart < 0 || tEnd < 0) throw new Error('window.t missing from web/app.js')

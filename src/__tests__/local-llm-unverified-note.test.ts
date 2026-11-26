@@ -8,16 +8,13 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { langHasKey } from './helpers/lang-overlay-key.js'
+import { langHasKey, langSource } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_CORE = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
 const LLM_MODULE = readFileSync(join(__dirname, '../../web/app-local-llm.js'), 'utf-8')
 const APP = APP_CORE + '\n' + LLM_MODULE
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
-// Still read directly (not via langHasKey): this checks the Hungarian TEXT VALUE of a specific
-// key, not just its presence, so it needs the base file's actual line, not a presence boolean.
-const HU = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
 
 function fnBody(source: string, startMarker: string): string {
   const start = source.indexOf(startMarker)
@@ -78,8 +75,9 @@ describe('i18n parity (rule 12)', () => {
     expect(langHasKey('en', key)).toBe(true)
   })
   it('the Hungarian note explains WHY the entries appear, not just that they exist', () => {
-    const idx = HU.indexOf("'localLlm.rec.unverified_note':")
-    const line = HU.slice(idx, HU.indexOf('\n', idx))
+    const hu = langSource('hu')
+    const idx = hu.indexOf("'localLlm.rec.unverified_note':")
+    const line = hu.slice(idx, hu.indexOf('\n', idx))
     expect(line).toContain('{count}')
     // "miért látszanak" / "nem maradt ellenőrzött" -- the reason, not just a bare count.
     expect(line).toMatch(/mi[eé]rt|nem maradt/i)

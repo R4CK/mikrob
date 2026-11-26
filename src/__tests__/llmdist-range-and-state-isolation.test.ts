@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { langHasKey } from './helpers/lang-overlay-key.js'
+import { langHasKey, langSource } from './helpers/lang-overlay-key.js'
 
 // Card 4c5c540c, both halves.
 //
@@ -18,8 +18,6 @@ import { langHasKey } from './helpers/lang-overlay-key.js'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const APP = readFileSync(join(ROOT, 'web', 'app-overview.js'), 'utf8')
 const INDEX = readFileSync(join(ROOT, 'web', 'index.html'), 'utf8')
-const HU = readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf8')
-const EN = readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf8')
 const VITEST_CFG = readFileSync(join(ROOT, 'vitest.config.ts'), 'utf8')
 const ROUTE = readFileSync(join(ROOT, 'src', 'web', 'routes', 'local-llm.ts'), 'utf8')
 
@@ -67,13 +65,13 @@ describe('swimlane time-window slider', () => {
   })
 
   it('has the label keys in both locales, and the meta string carries no stray unit', () => {
-    for (const [name, src] of [['hu', HU], ['en', EN]] as const) {
+    for (const name of ['hu', 'en'] as const) {
       for (const k of ['overview.llmDist.range_label', 'overview.llmDist.range_minutes', 'overview.llmDist.range_hours']) {
         expect(langHasKey(name, k), `${name} missing ${k}`).toBe(true)
       }
       // meta now receives a COMPLETE label ("30 perc"), so a trailing unit would render
       // "utolsó 30 perc óra".
-      const meta = src.split('\n').find((l) => l.includes("'overview.llmDist.meta':")) ?? ''
+      const meta = langSource(name).split('\n').find((l) => l.includes("'overview.llmDist.meta':")) ?? ''
       expect(meta.trim(), `${name} meta still appends a unit`).toMatch(/\{hours\}',?$/)
     }
   })

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { langHasKey } from './helpers/lang-overlay-key.js'
+import { langHasKey, langSource } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -16,8 +16,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const WEB = join(__dirname, '..', '..', 'web')
 const JS = readFileSync(join(WEB, 'app-local-llm.js'), 'utf8')
 const CSS = readFileSync(join(WEB, 'style.css'), 'utf8')
-const HU = readFileSync(join(WEB, 'lang', 'hu.js'), 'utf8')
-const EN = readFileSync(join(WEB, 'lang', 'en.js'), 'utf8')
 
 const NEW_KEYS = ['localLlm.models.ollama_down_banner']
 
@@ -103,10 +101,10 @@ describe('local-llm Ollama-down fallback: i18n parity', () => {
     })
   }
   it('the banner text names the two facts the operator needs: switches work, activation waits', () => {
-    const hu = /'localLlm\.models\.ollama_down_banner': '([^']+)'/.exec(HU)?.[1] ?? ''
+    const hu = /'localLlm\.models\.ollama_down_banner': '([^']+)'/.exec(langSource('hu'))?.[1] ?? ''
     expect(hu).toMatch(/kapcsolók működnek/)
     expect(hu).toMatch(/aktiválás/i)
-    const en = /'localLlm\.models\.ollama_down_banner': '([^']+)'/.exec(EN)?.[1] ?? ''
+    const en = /'localLlm\.models\.ollama_down_banner': '([^']+)'/.exec(langSource('en'))?.[1] ?? ''
     expect(en).toMatch(/switches work/)
     expect(en).toMatch(/activation/i)
   })

@@ -16,13 +16,12 @@ import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SRC = readFileSync(join(ROOT, 'web', 'app-freellm.js'), 'utf8')
 const HTML = readFileSync(join(ROOT, 'web', 'index.html'), 'utf8')
 const CSS = readFileSync(join(ROOT, 'web', 'style.css'), 'utf8')
-const EN = readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf8')
-const HU = readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf8')
 
 function extract(name: string): string {
   let start = SRC.indexOf(`function ${name}(`)
@@ -164,8 +163,8 @@ describe('freellm error section: static wiring in the shipped page', () => {
   })
 
   it('freellm.error.retry exists in both hu.js and en.js', () => {
-    expect(HU).toContain("'freellm.error.retry':")
-    expect(EN).toContain("'freellm.error.retry':")
+    expect(langHasKey('hu', 'freellm.error.retry')).toBe(true)
+    expect(langHasKey('en', 'freellm.error.retry')).toBe(true)
   })
 })
 

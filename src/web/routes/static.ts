@@ -264,8 +264,9 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
 
   if (path.startsWith('/lang/')) {
     const langFile = path.replace('/lang/', '')
-    // Allowlist: only the two known language files (no path traversal).
-    if (langFile === 'hu.js' || langFile === 'en.js') {
+    // Allowlist: the base language files plus their fork-overlay files (card ee132dfc; no path
+    // traversal -- every entry is a fixed literal, not a pattern).
+    if (langFile === 'hu.js' || langFile === 'en.js' || langFile === 'fork-hu.js' || langFile === 'fork-en.js') {
       serveFile(req, res, join(webDir, 'lang', langFile))
       return true
     }
