@@ -189,9 +189,7 @@ const ROUTE_FILES = readdirSync(ROUTES).filter((f) => f.endsWith('.ts')).sort()
 /** Route files that legitimately call a sync child TODAY, measured. Gate-reviewed as local and bounded. */
 const KNOWN_SYNC_ROUTES = [
   'integrated-repos.ts',
-  'onboarding.ts',
   'updates.ts',
-  'vault-ssh-keys.ts',
 ] as const
 
 describe('scheduler tick stays off the blocking path (card 92e2bb1b)', () => {

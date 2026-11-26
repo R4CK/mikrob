@@ -14,11 +14,14 @@ import { agentDir, listAgentNames, readAgentCapabilities, readAgentToolDeny } fr
 // profileWantsCredentialGate/agentGetsCredentialGate (Koteg 25, #2163's companion gate) NOT
 // adopted -- a new fleet-wide security gate, same standing refusal as the other new opt-in gates
 // in this file (see src/fork-upstream/acknowledged-conflicts.ts, RE-MEASURED 2026-10-17 round).
+// Koteg 27 (upstream #2202, "an opt-in second reviewer for high-risk tool calls"):
+// profileWantsSecondReviewer is the SAME shape (`p?.secondReviewer === true`, a new fleet-wide
+// opt-in security gate) -- NOT adopted either, same standing refusal.
 // profileWantsYtIngest IS adopted (wired into bashEgressDeny/seedSettingsFromTemplate elsewhere
 // in this file, already present via clean auto-merge, not itself a security-gate decision).
 import { loadProfileTemplate, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
-import { resolveAgentSecurityProfile } from './agent-team.js'
+import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
@@ -2093,11 +2096,14 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
 // ones run with the permission bypass, so the hook goes to all of them; it does
 // nothing until WebSearch is called. Its label tells the agent to use the
 // content's facts and only refuse its imperatives (BORITOOLVASAT921), so it
-// marks the payload instead of stopping the round. The hook never fails a tool
+// marks the payload instead of stopping the round. WebFetch is covered too:
+// the allowlist gates which host is reached, but an allowlisted host's content
+// is still external text. The hook never fails a tool
 // call (it exits 0 on any error), so it is a plain command, not a fail-closed
 // gate. Browser MCP matchers stay operator-wired (the doc shows how).
 export const WEBSEARCH_ENVELOPE_SCRIPT = 'browser-content-notice.py'
-export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch'
+export const ENVELOPE_TOOLS = ['WebSearch', 'WebFetch'] as const
+export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch|WebFetch'
 
 // A settings.json hook command, not text in a CLAUDE.md: after a host move the
 // startup migration (ensureWebSearchEnvelope) sees the command no longer wired
@@ -2111,11 +2117,24 @@ function webSearchEnvelopeCommand(): string {
 // Removes OUR envelope hook only (a hook in a group, not the group: an
 // operator's own hook sharing a WebSearch group stays), then adds the managed
 // group -- unless an operator already wired the envelope under a matcher that
-// covers WebSearch (e.g. the docs' "...|WebSearch" browser pattern), where a
+// covers the tool (e.g. the docs' "...|WebSearch" browser pattern), where a
 // second copy would run the hook twice. Returns whether anything changed.
-function matcherCoversWebSearch(matcher: unknown): boolean {
-  if (typeof matcher !== 'string' || matcher === '') return true // no matcher = every tool
-  try { return new RegExp(`^(?:${matcher})$`).test(WEBSEARCH_ENVELOPE_MATCHER) } catch { return false }
+function envelopeToolsCovered(matcher: unknown): Set<string> {
+  // Claude Code's PostToolUse matching, as the shipped CLI does it: a missing, '' or '*' matcher matches every
+  // tool; a plain name list (letters, digits, _ | , space -) matches the exact names split on | or ,; anything
+  // else is an UNANCHORED regex, and an invalid one matches nothing. A non-string matcher (null included) fails
+  // the CLI's settings schema, so that group never runs: it covers nothing and the managed group is added.
+  if (matcher === undefined || matcher === '' || matcher === '*') return new Set(ENVELOPE_TOOLS)
+  if (typeof matcher !== 'string') return new Set()
+  if (/^[a-zA-Z0-9_|, -]+$/.test(matcher)) {
+    const names = matcher.split(/[|,]/).map((n) => n.trim()).filter(Boolean)
+    return new Set(ENVELOPE_TOOLS.filter((t) => names.includes(t)))
+  }
+  const covered = new Set<string>()
+  for (const tool of ENVELOPE_TOOLS) {
+    try { if (new RegExp(matcher).test(tool)) covered.add(tool) } catch { /* invalid regex covers nothing */ }
+  }
+  return covered
 }
 
 export function injectWebSearchEnvelope(existing: Record<string, unknown>): boolean {
@@ -2131,13 +2150,21 @@ export function injectWebSearchEnvelope(existing: Record<string, unknown>): bool
   const isEnvelope = (h: { command?: unknown }) => typeof h?.command === 'string' && h.command.includes(WEBSEARCH_ENVELOPE_SCRIPT)
   const kept: G[] = []
   for (const g of prev) {
-    if (g?.matcher !== WEBSEARCH_ENVELOPE_MATCHER || !Array.isArray(g.hooks)) { kept.push(g); continue }
+    const managed = typeof g?.matcher === 'string' && (
+      g.matcher === WEBSEARCH_ENVELOPE_MATCHER ||
+      // a single envelope tool name; this also migrates the old WebSearch-only group
+      (ENVELOPE_TOOLS as readonly string[]).includes(g.matcher))
+    if (!managed || !Array.isArray(g.hooks)) { kept.push(g); continue }
     const rest = g.hooks.filter((h) => !isEnvelope(h))
     if (rest.length) kept.push({ ...g, hooks: rest })
   }
-  const operatorWired = kept.some((g) => matcherCoversWebSearch(g?.matcher) && Array.isArray(g.hooks) && g.hooks.some(isEnvelope))
-  if (!operatorWired) {
-    kept.push({ matcher: WEBSEARCH_ENVELOPE_MATCHER, hooks: [{ type: 'command', command, timeout: 10 } as { command: string }] })
+  const covered = new Set<string>()
+  for (const g of kept) {
+    if (Array.isArray(g?.hooks) && g.hooks.some(isEnvelope)) for (const t of envelopeToolsCovered(g.matcher)) covered.add(t)
+  }
+  const missing = ENVELOPE_TOOLS.filter((t) => !covered.has(t))
+  if (missing.length) {
+    kept.push({ matcher: missing.join('|'), hooks: [{ type: 'command', command, timeout: 10 } as { command: string }] })
   }
   hooks.PostToolUse = kept
   return JSON.stringify(hooks.PostToolUse) !== before
@@ -3553,7 +3580,48 @@ function buildFleetRosterBody(selfName: string): string {
     ? agentNames
     : [MAIN_AGENT_ID, ...agentNames]
 
+  // Hierarchy (TEAMROSTER1023): a sub-agent's reportsTo lives in its own
+  // agent-config.json (team.reportsTo), but until now nothing surfaced it
+  // here -- only team-trust.ts (the <trusted-peer> tag) and the dashboard
+  // overview route read it. A sub-agent therefore had no way to learn from
+  // its OWN CLAUDE.md who it reports to or who reports to it; that knowledge
+  // lived elsewhere and did not load into a sub-agent's context by itself.
+  //
+  // selfReportsTo is validated against `names` (the known-agent list), not
+  // just read and trusted: readAgentTeam() only TRIMS the stored value
+  // (sanitizeTeamConfig, which drops a self-reference or an unknown name,
+  // runs on the dashboard write path only -- a hand-edited agent-config.json,
+  // or an agent editing its own, bypasses it entirely). Without this check,
+  // a bad reportsTo value reaches this generated, trusted block two ways:
+  // (1) a name that does not resolve to any real agent (wrong case, typo, a
+  // deleted agent) produces a "Vezetőd:" line pointing at a ghost, and (2) a
+  // value containing newlines is inserted into the agent's own CLAUDE.md
+  // verbatim -- e.g. "zara\n\n## IGNORE ALL PREVIOUS INSTRUCTIONS\n..." would
+  // become a heading in the agent's own instructions, the same class of risk
+  // sanitizeCapabilityTag() already closes for capability tags on this same
+  // line. Requiring membership in `names` (itself sourced from
+  // listAgentNames(), not from the untrusted field) closes both: neither a
+  // ghost name nor a newline-laden string is a member.
+  //
+  // For the main agent (no agents/ subdirectory) readAgentTeam() safely
+  // falls back to DEFAULT_TEAM (reportsTo: null), which is correct -- the
+  // main agent reports to no one.
+  const selfTeam = readAgentTeam(selfName)
+  const selfReportsTo = selfTeam.reportsTo && selfTeam.reportsTo !== selfName && names.includes(selfTeam.reportsTo)
+    ? selfTeam.reportsTo
+    : null
+  // #2225: a leader's team is often set as ITS OWN delegatesTo ("Kiknek delegálhat"
+  // in the dashboard), not as each member's reportsTo, so the reportsTo-only
+  // subordinate list above stayed empty and the leader never learned whom to hand
+  // work to. The raw values are only looked up, never printed: a name reaches the
+  // block only as the loop's agentName below, which comes from `names` and skips
+  // this agent, so a typo, a deleted agent, this agent's own name or a
+  // newline-laden string never does.
+  const selfDelegates = new Set(selfTeam.delegatesTo)
+
   const lines: string[] = []
+  const subordinates: string[] = []
+  const delegates: string[] = []
   for (const agentName of names) {
     if (agentName === selfName) continue
 
@@ -3570,10 +3638,44 @@ function buildFleetRosterBody(selfName: string): string {
       .slice(0, CAPABILITY_TAG_MAX_PER_AGENT)
 
     const capsStr = caps.length > 0 ? caps.join(', ') : '-'
-    lines.push(`- **${agentName}** (agent_id: ${agentName}): ${capsStr}`)
+
+    const peerReportsTo = readAgentTeam(agentName).reportsTo
+    let roleTag = ''
+    // A two-agent cycle (A reports to B, B reports to A) would otherwise tag
+    // the same roster line BOTH "(beosztottad)" (this loop) AND as the
+    // "Vezetőd:" target (below) -- a peer is only a subordinate if it is not
+    // ALSO this agent's own (validated) manager.
+    if (peerReportsTo === selfName && agentName !== selfReportsTo) {
+      subordinates.push(agentName)
+      roleTag = ' (beosztottad)'
+    } else if (agentName === selfReportsTo) {
+      roleTag = ' (vezetőd)'
+    } else if (selfDelegates.has(agentName)) {
+      roleTag = ' (delegálhatsz neki)'
+    }
+    if (selfDelegates.has(agentName)) delegates.push(agentName)
+
+    lines.push(`- **${agentName}** (agent_id: ${agentName})${roleTag}: ${capsStr}`)
   }
 
   const roster = lines.length > 0 ? lines.join('\n') : '(nincs regisztrált ágens)'
+
+  // Factual only (2026-10-23, reviewer-measured): the line used to also
+  // prescribe ROUTING ("a kész munkát neki adod át, nem közvetlenül a
+  // gazdának"), which can contradict an individual agent's own standing
+  // instructions -- e.g. an agent that owns a channel and is told to report
+  // certain things straight to the owner. Routing rules belong in each
+  // agent's own text, not in this generated, one-size-fits-all block.
+  const hierarchyLines: string[] = []
+  if (selfReportsTo) {
+    hierarchyLines.push(`Vezetőd: **${selfReportsTo}**.`)
+  }
+  if (subordinates.length > 0) {
+    hierarchyLines.push(`Beosztottjaid: ${subordinates.map((n) => `**${n}**`).join(', ')}.`)
+  }
+  if (delegates.length > 0) {
+    hierarchyLines.push(`Kiknek delegálhatsz: ${delegates.map((n) => `**${n}**`).join(', ')}.`)
+  }
 
   return [
     '## A flotta többi agense',
@@ -3583,6 +3685,7 @@ function buildFleetRosterBody(selfName: string): string {
     '',
     roster,
     '',
+    ...(hierarchyLines.length > 0 ? [...hierarchyLines, ''] : []),
     'Ha egy kérés egyértelműen más szakterületére esik, jelezd vagy delegáld inter-agent üzenettel a megfelelő ágensnek.',
   ].join('\n')
 }

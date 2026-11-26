@@ -19,6 +19,18 @@ import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 
+// Assign removes and re-copies agents' skill directories across awaits (cp now
+// runs off the event loop). Overlapping assigns -- two tabs, a double submit --
+// must not interleave: they run one at a time, as they did while the copy was
+// synchronous.
+let assignQueue: Promise<unknown> = Promise.resolve()
+
+function serializeAssign<T>(op: () => Promise<T>): Promise<T> {
+  const run = assignQueue.then(op)
+  assignQueue = run.catch(() => {})
+  return run
+}
+
 function parseFrontmatterField(content: string, field: string): string {
   const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/)
   if (!fmMatch) return ''
@@ -531,27 +543,29 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { agents: targetAgents } = JSON.parse(body.toString()) as { agents: string[] }
 
-    const allAgentNames = listAgentNames()
+    await serializeAssign(async () => {
+      const allAgentNames = listAgentNames()
 
-    for (const agentName of targetAgents) {
-      if (!allAgentNames.includes(agentName)) continue
-      const agentSkillsDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills')
-      mkdirSync(agentSkillsDir, { recursive: true })
-      const destDir = join(agentSkillsDir, skillName)
-      if (existsSync(destDir)) rmSync(destDir, { recursive: true, force: true })
-      await execShellAsync(`cp -r ${shellEscape(globalSkillDir)} ${shellEscape(destDir)}`, { timeoutMs: 10000 })
-    }
-
-    for (const agentName of allAgentNames) {
-      if (targetAgents.includes(agentName)) continue
-      const agentSkillDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills', skillName)
-      if (existsSync(agentSkillDir)) {
-        rmSync(agentSkillDir, { recursive: true, force: true })
+      for (const agentName of targetAgents) {
+        if (!allAgentNames.includes(agentName)) continue
+        const agentSkillsDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills')
+        mkdirSync(agentSkillsDir, { recursive: true })
+        const destDir = join(agentSkillsDir, skillName)
+        if (existsSync(destDir)) rmSync(destDir, { recursive: true, force: true })
+        await execShellAsync(`cp -r ${shellEscape(globalSkillDir)} ${shellEscape(destDir)}`, { timeoutMs: 10000 })
       }
-    }
 
-    logger.info({ skillName, agents: targetAgents }, 'Skill assignment updated')
-    json(res, { ok: true })
+      for (const agentName of allAgentNames) {
+        if (targetAgents.includes(agentName)) continue
+        const agentSkillDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills', skillName)
+        if (existsSync(agentSkillDir)) {
+          rmSync(agentSkillDir, { recursive: true, force: true })
+        }
+      }
+
+      logger.info({ skillName, agents: targetAgents }, 'Skill assignment updated')
+      json(res, { ok: true })
+    })
     return true
   }
 
