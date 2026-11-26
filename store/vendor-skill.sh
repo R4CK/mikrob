@@ -149,7 +149,8 @@ done
 # CYBERED NO-GO 39256, F-2 (LICENSE_FILE route): found by NAME above with zero symlink
 # validation -- if it is itself a symlink to a local file outside the clone, its content was
 # copied verbatim into dest/UPSTREAM-LICENSE below, bypassing the $src-scoped walk entirely.
-if [[ -n "$LICENSE_FILE" ]]; then
+# MUTATION-TEST-G: temporarily disabled LICENSE_FILE validation (to be reverted)
+if false && [[ -n "$LICENSE_FILE" ]]; then
   license_real="$(realpath -- "$LICENSE_FILE" 2>/dev/null)"
   [[ -n "$license_real" && -e "$license_real" ]] || {
     echo "vendor-skill: broken or cyclic LICENSE symlink: $LICENSE_FILE" >&2
