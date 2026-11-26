@@ -130,9 +130,21 @@ function clampLines(text: string | null, maxLines: number): string | null {
   return lines.slice(0, maxLines).join('\n') + `\n...(${lines.length - maxLines} more lines)`
 }
 
+// Card 5ecf6133: now that a node can carry several real-path anchors (the backfill/forward-fix
+// writes one per Gate-SHA file, not one placeholder), ORDER matters -- for-card.ts only ever
+// shows anchors[0] per entry (the MT-07 contract's `anchor` field is singular). DECISIONS.md is
+// touched by nearly every card (the project's own ground-truth-exclusion convention already
+// treats it as a non-discriminator), so without this it kept winning the "first" slot and
+// starving the one useful anchor out of the dispatch package entirely -- measured: mean recall on
+// the eed988e7 12-card sample stuck at 0.208 with plain id order, because DECISIONS.md was
+// anchors[0] on 7 of 12 cards. Push it last, not drop it: it's still a real anchor, just the
+// least specific one when something more specific exists.
 function loadAnchors(db: Database.Database, nodeId: string): KgSearchAnchor[] {
   return db
-    .prepare('SELECT repo, path, symbol, line_start, line_end, sha, state FROM kg_anchors WHERE node_id = ?')
+    .prepare(
+      `SELECT repo, path, symbol, line_start, line_end, sha, state FROM kg_anchors
+       WHERE node_id = ? ORDER BY (path = 'DECISIONS.md') ASC, id ASC`,
+    )
     .all(nodeId) as KgSearchAnchor[]
 }
 

@@ -101,6 +101,22 @@ describe('hybridKgSearch', () => {
     db.close()
   })
 
+  // Card 5ecf6133: a node can now carry several real anchors (one per Gate-SHA file, not one
+  // placeholder), and for-card.ts's contract only ever shows anchors[0]. DECISIONS.md is touched
+  // by nearly every card -- without this it kept winning the id-ordering race and starving the
+  // one useful anchor out of the dispatch package (measured: stuck mean recall 0.208, see
+  // DECISIONS.md's own 5ecf6133 entry). It's still a real anchor, just always last among several.
+  it('a node with several anchors lists DECISIONS.md last, not by insertion order', async () => {
+    const db = freshDb()
+    seedBasic(db)
+    upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen', path: 'DECISIONS.md', sha: 'abc1234' })
+    upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen', path: 'src/web/other.ts', sha: 'abc1234' })
+    const { results } = await hybridKgSearch(db, { paths: ['src/db.ts'], project: 'mikrob' })
+    const sol1 = results.find((r) => r.id === 'sol:1')!
+    expect(sol1.anchors.map((a) => a.path)).toEqual(['src/db.ts', 'src/web/other.ts', 'DECISIONS.md'])
+    db.close()
+  })
+
   it('types filter restricts the result set to the requested node types', async () => {
     const db = freshDb()
     seedBasic(db)
