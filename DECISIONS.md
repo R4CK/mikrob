@@ -32653,3 +32653,29 @@ nem-mikrob ágensen ~41 KB / ~10,3k token.
 **Hivatkozás:** kártya 01eb0d0c; forrás: Prompty review kártya 13e25d1f (msg 24273); Gate-SHA
 316a0f9b43fb58e1345a11d40ff6416a9dfdc7f2.
 
+## 2026-11-25 -- fleet-test.sh lock-log timestamp: end_ts/start_ts named explicitly (kártya 2c49a628)
+
+**Mi:** A `fleet_test_log_lock_event()` egyetlen, jelöletlen időbélyege a sor ÍRÁSÁNAK pillanata volt
+(a futás VÉGE, mert wait_s/run_s csak akkor ismert), nem a futás kezdete. Ezt olvasva kezdetként két,
+valójában egymás után, hézag nélkül futó run átfedőnek nézett ki -- pontosan ez okozott egy hamis
+"29 másodperces átfedés" leletet (backend3 inter-agent 24445/24448). A javítás a sort `end_ts=` és
+`start_ts=` mezőkre bontja (start_ts = end_ts - run_s, timeout eseten "-"), hogy az olvasó ne kelljen
+újra levezetnie, és ne keverje össze a kettőt.
+
+**Miért:** A kártya eredeti Kész, ha: pontja ("Overlap confirmed or refuted with evidence") a
+log-artifact ágat is megengedte -- ez lett az eredmény: a flock SOHA nem engedett valódi átfedést,
+a log formátuma tette félreérthetővé. MikroB döntése (24446/24449): a kártya nem zárható le csupán a
+cáfolattal, a mezőket explicit névvel kell ellátni, pinning teszttel.
+
+**Ellenőrzés:** `store/fleet-test-lock-log.selftest.sh` pass=20 fail=0 (közvetlen bash futással), két
+új eset: start_ts = end_ts - run_s aritmetika, és két egymást követő run start_ts/end_ts-e nem fedi
+egymást. Scoped fleet-test run (`store-selftests-all-run.test.ts`, mely minden `*.selftest.sh`-t
+lefuttat a generikus glob+runner-en át, így ezt is): Test Files 1 passed (1), Tests 175 passed (175),
+`dcd99f1446a66fd37f62c2518c335fd788d8f458` sha-n. A kártya 329bda2d (CLAUDE.md dirt) gyökérokát NEM ez
+a kártya oldja meg -- az egy másik, cross-worker írás-félreazonosítás, külön kártyán.
+
+**Ki döntött:** a split 329bda2d-ből MikroB (backend3 msg 24432/24433), a log-artifact gyanú
+tisztázása és a mezőnevesítés MikroB (msg 24446/24449). A végrehajtó backend3.
+
+**Hivatkozás:** kártya 2c49a628 (predecessor a 329bda2d-n); commit `eede187adcdcfb9b601068ade7d1741d37d205ca`;
+`store/fleet-test.sh` (`fleet_test_log_lock_event`), `store/fleet-test-lock-log.selftest.sh`.

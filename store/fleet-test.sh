@@ -64,12 +64,29 @@ LOCK_FILE="${ROOT}-test.lock"
 # run is over (wait_s + run_s both known by then), plus one line for a run that times out waiting
 # and never gets to run at all. Append-only, best-effort (a logging failure must never fail or
 # slow down a real test run -- hence `|| true` and redirecting its own errors away).
+#
+# card 2c49a628: the leading timestamp used to be bare and unlabeled, which a reader (including
+# this script's own author, backend3 msg 24448) can misread as the run's START -- it is actually
+# the instant this line is WRITTEN, i.e. the run's END (wait_s + run_s are only known then, see
+# the comment above). A genuine two-run overlap was "found" purely from that misreading: treating
+# an END timestamp as a START made two back-to-back, non-overlapping runs look like they raced.
+# Both ends are now named explicitly -- end_ts (when this line was written) and start_ts (derived:
+# end_ts - run_s, the instant the flock was actually acquired) -- so a reader computes the true
+# window without re-deriving it, and timeout events (which never acquired the lock) report
+# start_ts=- rather than a fabricated time.
 LOCK_LOG="${FLEET_TEST_LOCK_LOG:-${ROOT}-fleet-test-lock.log}"
 fleet_test_log_lock_event() { # $1=event(run|timeout) $2=wait_s $3=run_s(or -) $4=status(or -)
   local scope="full"
   [ "${#ARGS[@]}" -gt 0 ] && scope="scoped:${#ARGS[@]}"
-  printf '%s pid=%s event=%s rank=%s priority=%s scope=%s ref=%s wait_s=%s run_s=%s status=%s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$1" "${PRIORITY_RANK:--}" "${FLEET_TEST_PRIORITY:--}" \
+  local end_epoch end_ts start_ts
+  end_epoch="$(date -u +%s)"
+  end_ts="$(date -u -d "@$end_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+  start_ts="-"
+  if [ "$1" = run ] && [ "$3" != "-" ]; then
+    start_ts="$(date -u -d "@$((end_epoch - $3))" +%Y-%m-%dT%H:%M:%SZ)"
+  fi
+  printf 'end_ts=%s start_ts=%s pid=%s event=%s rank=%s priority=%s scope=%s ref=%s wait_s=%s run_s=%s status=%s\n' \
+    "$end_ts" "$start_ts" "$$" "$1" "${PRIORITY_RANK:--}" "${FLEET_TEST_PRIORITY:--}" \
     "$scope" "${REF:--}" "$2" "${3:--}" "${4:--}" \
     >>"$LOCK_LOG" 2>/dev/null || true
 }

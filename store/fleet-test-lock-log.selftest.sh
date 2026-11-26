@@ -40,7 +40,8 @@ fleet_test_log_lock_event run 42 613 0
 line="$(cat "$LOCK_LOG")"
 check "one line written" '^[^
 ]*$' "$line"
-check "ISO timestamp present" '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z ' "$line"
+check "end_ts is an explicitly-named ISO timestamp, at line start" '^end_ts=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z ' "$line"
+check "start_ts is an explicitly-named ISO timestamp" 'start_ts=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' "$line"
 check "pid field present" 'pid=[0-9]+' "$line"
 check "event=run" 'event=run' "$line"
 check "scope=scoped:2 for a 2-file ARGS" 'scope=scoped:2' "$line"
@@ -48,6 +49,36 @@ check "ref echoed verbatim" 'ref=deadbeef123' "$line"
 check "wait_s echoed" 'wait_s=42' "$line"
 check "run_s echoed" 'run_s=613' "$line"
 check "status echoed" 'status=0' "$line"
+
+# --- Test A2 (card 2c49a628): start_ts must be end_ts - run_s, not a copy of end_ts -- a reader
+# needs the ACTUAL lock-held window, and card 2c49a628 was opened because two back-to-back runs
+# looked like they overlapped when both were (wrongly) read as starting at their own end_ts.
+end_ts_a="$(sed -n 's/.*end_ts=\([0-9TZ:-]*\).*/\1/p' <<<"$line")"
+start_ts_a="$(sed -n 's/.*start_ts=\([0-9TZ:-]*\).*/\1/p' <<<"$line")"
+end_epoch_a="$(date -u -d "$end_ts_a" +%s)"
+start_epoch_a="$(date -u -d "$start_ts_a" +%s)"
+check "start_ts = end_ts - run_s (613s)" "^$((end_epoch_a - 613))$" "$start_epoch_a"
+
+# --- Test A3 (card 2c49a628): two back-to-back runs (second's start_ts == first's end_ts) must
+# NOT be mistaken for an overlap -- this is the exact misreading that produced the false "29s
+# overlap" finding. A correct reader compares [start_ts, end_ts] windows, not [end_ts, end_ts+run_s].
+LOCK_LOG="$TMP/lock-a3.log"
+ARGS=()
+REF="first"
+fleet_test_log_lock_event run 0 100 0
+first_line="$(tail -n1 "$LOCK_LOG")"
+first_end="$(sed -n 's/.*end_ts=\([0-9TZ:-]*\).*/\1/p' <<<"$first_line")"
+sleep 1
+REF="second"
+# run_s=1 models a run that acquired the lock the instant the first one released it (sleep 1
+# above advanced end_ts by ~1s, so start_ts = end_ts - 1 lands back on the first run's end_ts).
+fleet_test_log_lock_event run 0 1 0
+second_line="$(tail -n1 "$LOCK_LOG")"
+second_start="$(sed -n 's/.*start_ts=\([0-9TZ:-]*\).*/\1/p' <<<"$second_line")"
+first_end_epoch="$(date -u -d "$first_end" +%s)"
+second_start_epoch="$(date -u -d "$second_start" +%s)"
+no_overlap=$(( second_start_epoch >= first_end_epoch ? 1 : 0 ))
+check "second run's start_ts is not before the first run's end_ts (no overlap)" '^1$' "$no_overlap"
 
 # --- Test B: a full run (ARGS empty) logs scope=full, not scoped:0.
 LOCK_LOG="$TMP/lock-b.log"
@@ -65,6 +96,7 @@ REF="timedout01"
 fleet_test_log_lock_event timeout 900 - 3
 check "timeout event recorded" 'event=timeout' "$(cat "$LOCK_LOG")"
 check "run_s is the n/a marker for a timeout (never ran)" 'run_s=-' "$(cat "$LOCK_LOG")"
+check "start_ts is the n/a marker for a timeout (lock never acquired, no start)" 'start_ts=-( |$)' "$(cat "$LOCK_LOG")"
 
 # --- Test D: append-only -- two calls add two lines, never truncate.
 LOCK_LOG="$TMP/lock-d.log"
