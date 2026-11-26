@@ -33169,7 +33169,7 @@ Végrehajtó: backend.
 Hivatkozás: kártya eed988e7, comments 38977 (CYBERSEC NO-GO), 38978 (CYBERED NO-GO), 38964 (the
 per-card measurement table); card 5ecf6133 (point 5 above folded into its scope).
 
-## KG node embedding coverage: upsertNode auto-embed + backfill (kártya 6d542dc9)
+## 2026-11-26 -- KG node embedding coverage: upsertNode auto-embed + backfill (kártya 6d542dc9)
 
 Root cause: `upsertNode` (src/kg/store.ts) never generated an embedding on write, even though the
 `kg_nodes.embedding` column and `hybridKgSearch`'s semantic read branch already existed -- measured
