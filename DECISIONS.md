@@ -32983,3 +32983,83 @@ spec); végrehajtó: backend.
 Hivatkozás: kártya 35a0e556, 69f63a1a, eed988e7; CYBERED 38674 KC2/BLOCKER-1 (kg_search_events/
 kg_usage already hold only the 8-hex card id, never prompt text); `scripts/hooks/
 kg-prompt-pointer-hook.py`, `scripts/hooks/kg-prompt-pointer-hook.selftest.sh`.
+
+## 2026-11-26 -- 5ecf6133: kg_anchors.path real-file backfill, minScore 0.35->0.01, DECISIONS.md-last anchor ordering
+
+Root cause (found while root-causing eed988e7's 0.0-recall F8 baseline, carried into this card
+by MikroB): `src/kg/capture-pipeline.ts:541` wrote every solution anchor's `path` as
+`kanban_comments:<id>` instead of a real file -- 343/344 of 343/344 live `kg_anchors` rows (100%).
+Separately, `hybridKgSearch`'s RRF fusion (`src/kg/search.ts`) scored each branch's contribution
+as `1/(60+rank+1)`, capped at `k*4` candidates per branch -- with the default `minScore` of 0.35,
+even two branches agreeing at rank 0 (max ~0.033) could never clear it. Together, for-card search
+could only ever surface a result via the anchor-exact-match exemption, and that exemption was
+also dead (every anchor was the placeholder). Peti widened this card's scope (14753, 2026-11-26):
+"the knowledge graph must be usable by the agents ... make its knowledge useful" -- not just a
+forward fix, but the 343/344 existing rows backfilled with real paths too.
+
+**Decision 1 (forward fix): anchor each solution on the Gate-SHA's real changed files, not the
+review-comment id.** Implementation: a new injected `filesForSha` dependency on
+`runCapture` (`src/kg/capture-pipeline.ts`), default `filesForCommits` against `MARVEEN_MAIN` --
+the SAME merge-aware `-m --first-parent` git call `src/kanban-relations-git.ts`'s fork-upstream
+sweep already proved correct for marveen-land MERGE Gate-SHAs (a naive `git show --name-only`
+prints an empty combined diff on a clean merge). Capped at 20 files/solution. An unresolvable sha
+(gc'd, wrong repo, test fixture) skips the file anchor rather than writing a fake one -- the
+commit node and `implemented_in` edge are still written regardless.
+
+**Decision 2: backfill the existing 343/344 rows, with tested rollback, rather than leave them
+broken.** A new module (`src/kg/anchor-path-backfill.ts`) plans (group placeholders by sha, one
+`filesForSha` call per distinct sha, not per row) and applies the same fix retroactively,
+ALWAYS writing a full backup (every row about to be deleted, plus every row the run creates)
+before mutating a single row, inside one transaction. A CLI
+(`scripts/kg-anchor-path-backfill.ts`) refuses a real run without `--backup` and ships
+`--dry-run`/`--restore`. **Caught a real bug testing restore against a full COPY of the live
+`store/knowledge-graph.db` before ever running this against the actual live file**: the backup
+wrongly included unresolved placeholder rows too (never deleted, so re-inserting them on restore
+hit `SQLITE_CONSTRAINT_PRIMARYKEY`). Fixed before any live write -- only rows the run actually
+deletes belong in a backup meant to undo those deletions.
+
+**Decision 3: lower `KG_MIN_SCORE` from 0.35 to 0.01, not raise the RRF contributions.** Chosen
+over rescaling the RRF constant because the 0.35 threshold (and the registry default string) is
+the only place the old scale assumption lived, and lowering it to just under the worst achievable
+single-branch pool contribution (`1/(60+k*4+1)`, >= ~0.0109 even at `KG_TOPK`'s max of 8) makes
+any FTS/embedding hit that reached a branch's own candidate pool clear the filter -- matching
+`src/db.ts`'s `hybridSearch` for memories, which fuses the identical way with no absolute floor
+at all. Changed in three places that must agree: `src/kg/search.ts`'s inline default,
+`src/web/routes/kg.ts`'s two `numberSetting('KG_MIN_SCORE', ...)` call sites, and the
+`config-registry.ts` registry default string.
+
+**Decision 4 (found during measurement, not predicted): order a node's anchors so `DECISIONS.md`
+is never the one anchor shown.** Measured on a COPY of the live graph (never touched live --
+`sqlite3 .backup` + `PRAGMA integrity_check` ok before and after, per MikroB's own plan, msg
+24804): after the real-path backfill, the eed988e7 12-card F8 recall sample was STILL stuck at
+mean recall 0.208, unchanged from before. Cause: a node can now carry several real anchors (one
+per Gate-SHA file), but `for-card.ts`'s own contract only ever shows `anchors[0]` per entry, and
+`DECISIONS.md` -- touched by nearly every card, already treated as a non-discriminator by this
+project's own ground-truth-exclusion convention -- kept winning that single slot by plain id
+order on 7 of 12 sampled cards, starving the one useful anchor out of the dispatch package
+entirely. Fix: `loadAnchors` (`src/kg/search.ts`) orders `DECISIONS.md` last among a node's
+anchors, never dropping it, just never first when something more specific exists.
+
+**Measured result:** mean recall 0.3083 (card's own target >= 0.3, MET), mean precision 0.4444
+(up from 0.2917 before decision 4, up from 0.0 before any of this card's fixes). 6/12 cards still
+score 0.0 -- mostly FTS/embedding text matches pulling in a DIFFERENT card's node on shared title
+keywords, a real limit of pure text/embedding matching when a card's own title/description names
+no file path, not something this card's scope can fully close. Known_pitfalls/decisions arrays
+stay empty regardless of any fix here: the live graph has zero nodes of those types today (only
+card/commit/solution) -- a separate gap MikroB split into a new child card after this one.
+
+**Explicitly deferred to AFTER this lands (MikroB's own plan, msg 24804, step 4):** the real
+backfill against the LIVE `store/knowledge-graph.db` (ran only against the copy so far, with the
+restore bug caught and fixed before it could reach live), and the live-dispatch proof (a real
+agent's `UserPromptSubmit` hook injecting a relevant node, visible in the transcript or
+`kg_usage`). Reason given: other agents read the live graph on every prompt, and the injection
+path is exactly what the gates must see before it changes.
+
+Ki döntött: Peti (14753, widened scope + urgency); MikroB (msg 24804, copy-first measurement
+plan + live-backfill sequencing); backend (root cause, implementation, decision 4 found during
+measurement). Végrehajtó: backend.
+Hivatkozás: kártya 5ecf6133, eed988e7 (origin of the root cause + the 12-card sample reused
+unchanged), 6d542dc9 (embedding coverage, coordinated, no file overlap); `src/kg/
+capture-pipeline.ts`, `src/kg/anchor-path-backfill.ts`, `src/kg/anchor-path-backfill-cli.ts`,
+`scripts/kg-anchor-path-backfill.ts`, `src/kg/search.ts`, `src/web/routes/kg.ts`,
+`src/config-registry.ts`.
