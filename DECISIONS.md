@@ -33454,3 +33454,72 @@ mutation checks + the rendered-size measurement).
 Végrehajtó: backend.
 Hivatkozás: kártya 5ecf6133; `src/kg/anchor-path-backfill-cli.ts`, `store/kg-for-card-block-render.py`,
 `store/kg-for-card-block.selftest.sh`.
+
+## 2026-11-26 -- 5ecf6133 (round 5): CYBERED GO 39052, develop-sync, KG_MIN_SCORE land-value
+recommendation (MikroB decision, msg 24949).
+
+1. **CYBERED GO 39052 on 27cf33ea1** (round 4's sha), closing CYBERED's own round-1 MEDIUMs
+   (39018 F-1/F-2). QA and CYBERSEC carry-forward onto 27cf33ea1 from 5a95cc0a8 still needed per
+   cybered's own condition (c). Cybered's own 300-most-recent-cards measurement (own backfilled
+   scratch copy): current default (0.01) = 300/300 non-empty packages, 900 entries; old
+   (unreachable) 0.35 = 60/300, 143 entries; rendered median with titles 613 chars (matches
+   backend's own 609.5 within rounding). Cybered flagged 5 LOW findings (L-1..L-6), none
+   blocking -- noted for a future round, not acted on this round (scope: this round answers only
+   MikroB's 3 land-condition asks below).
+
+2. **MikroB decision on the fleet-wide effect (msg 24949):** with minScore 0.01, every pickup
+   gets ~3 entries (~613 chars) while held-out recall is 0.068 -- i.e. the injected block is
+   mostly noise today. Decision: on landing, inject only anchor-exact hits until the usefulness
+   cards (01b10349, dbd2e272, d7acff99) raise held-out recall -- as a PLATFORM SETTING
+   (`KG_MIN_SCORE` in the registry/DB), not a code revert; the code default stays 0.01.
+   Reasoning behind the chosen value: `hybridKgSearch`'s RRF branch contribution is
+   `1/(60+rank+1)`, max 1/61 ~= 0.01639 at best rank for a single branch (FTS or embedding); if
+   the SAME node scores at best rank in BOTH branches (the worst case for pure-noise, no real
+   anchor), the combined score is ~2/61 ~= 0.03279. An anchor-exact match always scores >= 1 and
+   bypasses minScore entirely (`search.ts`'s seed filter: `e.score >= minScore ||
+   e.why.startsWith('horgony-egyezés')`); its 1-hop graph neighbors decay to 0.5*1 = 0.5 (hop=1,
+   `expandHops` default). **KG_MIN_SCORE = 0.05** sits safely above the ~0.0328 noise ceiling and
+   safely below the 0.5 hop-decay floor, so it excludes every FTS/embedding-only hit while
+   keeping every anchor-exact hit and its immediate graph neighbors. Measured on cybered's own
+   "300 most recent cards" set (`buildForCardPackage(k=3, maxChars=3000)`, same backfilled
+   scratch copy of `store/knowledge-graph.db` used throughout this card, never the live db):
+   at 0.05, **59/300 non-empty packages, 140 entries** -- matches cybered's own old-0.35 number
+   (60/300, 143 entries) almost exactly, confirming 0.05 reproduces the intended "anchor-exact
+   only" effect without relying on an accidentally-unreachable threshold.
+
+3. **Cannot be set by this agent.** `POST /api/settings` calls `rejectIfNotHumanAuth(ctx)`
+   (`src/web/routes/settings.ts`) -- by design, the shared fleet token cannot change a setting
+   that loosens/tightens a platform-wide control; only a dashboard owner session can. So this
+   round does NOT set `KG_MIN_SCORE` itself (code default stays 0.01, nothing reverted) -- it
+   reports the recommended value and its measured effect for MikroB/Peti to apply via the
+   dashboard before or at the moment of landing, per MikroB's own instruction to implement this
+   as a platform setting rather than a code change.
+
+4. **Develop-sync (CYBERED land condition (a), item 6 of 39052): DECISIONS.md tail-append guard
+   now passes.** `git merge origin/develop` into `card/5ecf6133` conflicted only in DECISIONS.md
+   (every other file auto-merged cleanly). Resolved by reconstructing the file as
+   [the 3-way merge's unchanged common prefix] + [develop's own unique tail additions] +
+   [this branch's own round-3/round-4 entries], verified programmatically that the result has
+   `origin/develop`'s full current `DECISIONS.md` as a byte-exact prefix before committing (merge
+   commit below). `bash store/decisions-tail-append-guard.sh --check-branch <worktree>
+   origin/develop HEAD` exits 0 after the merge. Full suite re-run after the merge:
+   461/461 still green (no file outside DECISIONS.md overlapped with this card's own changes).
+
+**Verification (this round):** `npx vitest run src/__tests__/kg-*.test.ts
+src/__tests__/kanban-relations-git.test.ts` on the post-merge tip: 30 files, 461 passed (unchanged
+-- the merge touched no test or source file of this card's own). `decisions-tail-append-guard.sh
+--check-branch`: exit 0 against `origin/develop`.
+
+**Still open before landing:** (a) MikroB/Peti set `KG_MIN_SCORE` = 0.05 via the dashboard (owner
+session), or explicitly accept the current 0.01 default knowingly -- this agent cannot do either
+side of that choice; (b) QA and CYBERSEC carry-forward their verdicts onto this round's sha; (c)
+the land hold from msg 24863 (card 1124f53f, upstream batch 27) is not yet confirmed lifted --
+`git merge-base --is-ancestor 1124f53f origin/develop` does not even resolve the sha in this
+worktree's fetched history yet, so no `marveen-land.sh` run has been attempted.
+
+Ki döntött: cybered (GO 39052); MikroB (msg 24949, KG_MIN_SCORE land-value decision); backend
+(measurement, develop-sync merge, reporting the cannot-self-set constraint).
+Végrehajtó: backend.
+Hivatkozás: kártya 5ecf6133, 01b10349, dbd2e272, d7acff99 (usefulness cards that need to land
+first for a higher held-out recall); `src/web/routes/settings.ts`, `src/kg/search.ts`,
+`src/config-registry.ts` (`KG_MIN_SCORE`).
