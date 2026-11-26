@@ -197,7 +197,12 @@ cat > "$WATCHDOG_WSL" <<PS1EOF
 \$UnplannedRestartNotifyCmd = "$INSTALL_DIR/scripts/wsl-watchdog-unplanned-restart-notify.sh"
 \$HolderEnsureCmd = "$INSTALL_DIR/scripts/wsl-watchdog-holder-ensure.sh"
 \$HolderCapNotifyCmd = "$INSTALL_DIR/scripts/wsl-watchdog-holder-cap-notify.sh"
-\$MaxFails    = 3   # consecutive fails (~15 min @ 5-min cadence) before a restart
+# Card d97659cb: tick cadence dropped 5-min -> 1-min (see the schtasks
+# registration below), so MaxFails is re-expressed at the new cadence to
+# keep the SAME ~15-minute wall-clock restart threshold (15 ticks @ 1-min,
+# was 3 ticks @ 5-min) -- Peti's "sustained wedge" bar did not change, only
+# how finely it is sampled.
+\$MaxFails    = 15   # consecutive fails (~15 min @ 1-min cadence) before a restart
 # Peti 2026-08-05: "if you can't start on the first try, try 2 more times, then
 # restore yourself to the last working backup -- I shouldn't have to start WSL
 # myself." MaxRestarts bounds how many times this watchdog will blindly
@@ -214,9 +219,11 @@ cat > "$WATCHDOG_WSL" <<PS1EOF
 # the PID1-age clock (M1) resets to near-zero on every watchdog-issued
 # restart, so a genuine boot-loop (the distro dying and restarting faster
 # than the grace window) would otherwise skip forever and never reach
-# MaxFails. After MaxFreshSkips consecutive skips (~50 min @ 5-min cadence),
-# this read counts toward \$fails like any other, instead of being skipped.
-\$MaxFreshSkips = 10
+# MaxFails. After MaxFreshSkips consecutive skips (~50 min @ 1-min cadence,
+# re-expressed from the old 5-min cadence by card d97659cb to keep the same
+# wall-clock boundary: 50 ticks @ 1-min, was 10 ticks @ 5-min), this read
+# counts toward \$fails like any other, instead of being skipped.
+\$MaxFreshSkips = 50
 \$StateDir    = "\$env:LOCALAPPDATA\\MikroB"
 \$StateFile   = "\$StateDir\\wsl-watchdog-fails.txt"
 \$RestartCountFile = "\$StateDir\\wsl-watchdog-restart-count.txt"
@@ -225,14 +232,25 @@ cat > "$WATCHDOG_WSL" <<PS1EOF
 # CYBERSEC NO-GO F-2 / QA FAIL (card 3f6bb903): cap holder relaunches per
 # rolling window so a misfiring check (or a holder that keeps dying right
 # after being launched) cannot pile up hidden wsl.exe+sleep processes
-# forever. \$MaxHolderRelaunchesPerWindow=6 in a \$HolderRelaunchWindowSec=3600
-# window is roughly half the 12 ticks/hour the 5-min cadence would otherwise
-# allow -- generous enough for a real, repeated recovery, tight enough to
-# catch a genuine loop well before it accumulates double-digit processes.
+# forever. Counted per HOLDER PROCESS launched, not per tick (card
+# d97659cb: a single tick can now launch up to 2 at once, from zero
+# holders, so counting ticks would silently double the real cap).
+# \$MaxHolderRelaunchesPerWindow=30 in a \$HolderRelaunchWindowSec=3600 window
+# is roughly half the 60 ticks/hour the 1-min cadence allows (was 6 of 12
+# ticks/hour at the old 5-min cadence, same ~50% ratio) -- generous enough
+# for a real, repeated recovery, tight enough to catch a genuine loop well
+# before it accumulates double-digit processes.
 \$HolderRelaunchCountFile = "\$StateDir\\wsl-watchdog-holder-relaunch-count.txt"
 \$HolderRelaunchWindowStartFile = "\$StateDir\\wsl-watchdog-holder-relaunch-window-start.txt"
-\$MaxHolderRelaunchesPerWindow = 6
+\$MaxHolderRelaunchesPerWindow = 30
 \$HolderRelaunchWindowSec = 3600
+# CYBERSEC GO 39120 L-2 / CYBERED GO 39119 F-2 (d97659cb): at the 1-min
+# cadence the cap-reached branch would otherwise notify on EVERY tick for
+# the rest of the window once the cap is hit (up to ~45 messages/hour, was
+# ~6/hour at the old 5-min cadence) -- throttle to at most ONE notify per
+# relaunch window (keyed on the same window-start value the cap itself
+# uses), logging every tick regardless so the state is still visible on disk.
+\$HolderCapNotifiedWindowFile = "\$StateDir\\wsl-watchdog-holder-cap-notified-window.txt"
 \$LogFile     = "\$StateDir\\wsl-watchdog.log"
 New-Item -ItemType Directory -Force -Path \$StateDir | Out-Null
 function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf8 \$LogFile }
@@ -268,18 +286,37 @@ function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf
 # script invoked the SAME way the rollback/notify scripts already are
 # (bash -lc on a plain path, nothing left for wsl.exe to mis-quote), and it
 # reports a precise exit code rather than an ambiguous LASTEXITCODE: 0 =
-# exactly one holder, 1 = zero holders (relaunch), 2 = ambiguous/error (do
-# NOT relaunch, to avoid piling up duplicates on top of an already-odd
-# state -- the F-2 fix). Checking the HOLDER_MISSING marker in addition to
-# exit=1 guards against a wsl.exe-level failure (VM wedge) coincidentally
-# also returning 1 and being mistaken for a clean "zero holders" answer.
+# TARGET_HOLDERS present, 1 = fewer (relaunch the `need=<n>` from the
+# HOLDER_MISSING line), 2 = more than target / ambiguous/error (do NOT
+# relaunch, to avoid piling up duplicates on top of an already-odd state --
+# the F-2 fix). Checking the HOLDER_MISSING marker in addition to exit=1
+# guards against a wsl.exe-level failure (VM wedge) coincidentally also
+# returning 1 and being mistaken for a clean "fewer than target" answer.
 \$holderOut = & wsl.exe -d \$Distro -u \$WslUser -e bash -lc \$HolderEnsureCmd 2>\$null
 \$holderCheckExit = \$LASTEXITCODE
-if (\$holderCheckExit -eq 1 -and (\$holderOut -cmatch '^HOLDER_MISSING')) {
+# Card d97659cb: the target is now 2 holders, so a missing-holder tick can
+# need to launch 1 OR 2, never guessed -- parsed straight from the script's
+# own `need=<n>` field (the single source of truth already enforced by
+# wsl-watchdog-holder-ensure.sh's TARGET_HOLDERS). An unparseable need=
+# (should be impossible given the contract) is treated as 0 -- fail-closed,
+# never launch on a reading we cannot trust.
+#
+# CYBERED GO 39119 F-1 / CYBERSEC GO 39120 L-5: wsl.exe -e bash -lc can print
+# MORE THAN ONE stdout line (a login-profile banner), which makes \$holderOut
+# a PowerShell ARRAY -- `-match` against an array returns the matching
+# elements but does NOT populate \$matches, so the regex group below would
+# silently read nothing and \$holderNeeded would stay 0 even though the
+# single real line DOES contain need=<n>. Join to one string first so the
+# match always runs against a plain string, array or not.
+\$holderNeeded = 0
+\$holderOutJoined = (\$holderOut -join ' ')
+if (\$holderOutJoined -match 'need=([0-9]+)') { \$holderNeeded = [int]\$matches[1] }
+if (\$holderCheckExit -eq 1 -and (\$holderOut -cmatch '^HOLDER_MISSING') -and \$holderNeeded -gt 0) {
   # CYBERSEC NO-GO F-2 / QA FAIL: a relaunch decision is capped per rolling
   # window BEFORE acting on it -- a holder that keeps dying right after
   # launch (or a persistently misfiring check) must give up and alert
-  # instead of piling up hidden processes every tick forever.
+  # instead of piling up hidden processes every tick forever. The cap is
+  # charged by HOLDER PROCESS, not by tick: a tick that needs 2 charges 2.
   \$holderRelaunchWindowStart = 0
   if (Test-Path \$HolderRelaunchWindowStartFile) { \$holderRelaunchWindowStart = [long](Get-Content \$HolderRelaunchWindowStartFile -ErrorAction SilentlyContinue) }
   \$nowEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
@@ -291,14 +328,26 @@ if (\$holderCheckExit -eq 1 -and (\$holderOut -cmatch '^HOLDER_MISSING')) {
   \$holderRelaunchCount = 0
   if (Test-Path \$HolderRelaunchCountFile) { \$holderRelaunchCount = [int](Get-Content \$HolderRelaunchCountFile -ErrorAction SilentlyContinue) }
 
-  if (\$holderRelaunchCount -ge \$MaxHolderRelaunchesPerWindow) {
-    Log "holder-ensure: relaunch cap reached (\$holderRelaunchCount/\$MaxHolderRelaunchesPerWindow in the current \${HolderRelaunchWindowSec}s window) -- NOT relaunching again, alerting instead"
-    & wsl.exe -d \$Distro -u \$WslUser -e bash -lc \$HolderCapNotifyCmd 2>\$null
+  if ((\$holderRelaunchCount + \$holderNeeded) -gt \$MaxHolderRelaunchesPerWindow) {
+    # Fail-closed: a tick needing 2 but with only 1 left in the budget does
+    # NOT launch a partial 1 -- a half-satisfied need is indistinguishable
+    # from a slow recovery and would mask the cap being hit.
+    Log "holder-ensure: relaunch cap would be exceeded (\$holderRelaunchCount + need \$holderNeeded > \$MaxHolderRelaunchesPerWindow in the current \${HolderRelaunchWindowSec}s window) -- NOT relaunching, alerting instead"
+    # L-2/F-2 throttle: notify at most once per window, logging every tick
+    # regardless -- the window's own start value is the dedupe key.
+    \$lastNotifiedWindow = 0
+    if (Test-Path \$HolderCapNotifiedWindowFile) { \$lastNotifiedWindow = [long](Get-Content \$HolderCapNotifiedWindowFile -ErrorAction SilentlyContinue) }
+    if (\$lastNotifiedWindow -ne \$holderRelaunchWindowStart) {
+      & wsl.exe -d \$Distro -u \$WslUser -e bash -lc \$HolderCapNotifyCmd 2>\$null
+      Set-Content -Path \$HolderCapNotifiedWindowFile -Value "\$holderRelaunchWindowStart"
+    }
   } else {
-    \$holderRelaunchCount++
+    \$holderRelaunchCount += \$holderNeeded
     Set-Content -Path \$HolderRelaunchCountFile -Value "\$holderRelaunchCount"
-    Log "no keepalive holder found on this tick (out='\$holderOut') -- launching one (\$holderRelaunchCount/\$MaxHolderRelaunchesPerWindow this window)"
-    Start-Process -WindowStyle Hidden -FilePath "wsl.exe" -ArgumentList @("-d", \$Distro, "--exec", "/bin/sleep", "infinity")
+    Log "fewer than target keepalive holders on this tick (out='\$holderOut') -- launching \$holderNeeded (\$holderRelaunchCount/\$MaxHolderRelaunchesPerWindow this window)"
+    for (\$i = 0; \$i -lt \$holderNeeded; \$i++) {
+      Start-Process -WindowStyle Hidden -FilePath "wsl.exe" -ArgumentList @("-d", \$Distro, "--exec", "/bin/sleep", "infinity")
+    }
   }
 } elseif (\$holderCheckExit -eq 0) {
   # A holder is confirmed present -- reset the relaunch cap so a PAST
@@ -437,8 +486,13 @@ VBSEOF
 echo "Rendered hidden VBS launcher -> $LAUNCHER_WIN"
 
 # ----------------------------------------------------------------------------
-# 2) Register the Scheduled Task via schtasks.exe. Runs every 5 min as the
-#    interactive user (matches the working MikroB Autostart pattern, reliable
+# 2) Register the Scheduled Task via schtasks.exe. Runs every 1 min as the
+#    interactive user (card d97659cb: dropped from 5 min so the holder-ensure
+#    gap measured on 3f6bb903 -- a dead sole holder outliving WSL's own idle
+#    timeout before the next relaunch tick -- narrows to a 1-min window;
+#    `schtasks /SC MINUTE /MO 1` verified accepted on this Windows build with
+#    a throwaway probe task, per the card's own "verify, do not assume").
+#    Matches the working MikroB Autostart pattern otherwise, reliable
 #    per-user wsl.exe control). Notes: (a) schtasks is used instead of
 #    PowerShell's Register-ScheduledTask because the latter's
 #    RepetitionDuration=MaxValue emits out-of-range TaskXML that Task Scheduler
@@ -491,10 +545,10 @@ elif [ "$DRY_RUN" = "1" ]; then
   # Card 58badae1 incident: schtasks.exe is NEVER invoked in dry-run, not even
   # a stubbed one on PATH -- the real binary is called by its hardcoded
   # absolute path below, so faking PATH alone cannot intercept it.
-  echo "DRY-RUN: would register Scheduled Task '$TASK_NAME': schtasks /Create /TN \"$TASK_NAME\" /TR \"$TR\" /SC MINUTE /MO 5 /F"
-elif "$SCHTASKS" /Create /TN "$TASK_NAME" /TR "$TR" /SC MINUTE /MO 5 /F >/dev/null 2>&1; then
-  echo "Scheduled Task '$TASK_NAME' registered (every 5 min, as $WSL_USER)."
+  echo "DRY-RUN: would register Scheduled Task '$TASK_NAME': schtasks /Create /TN \"$TASK_NAME\" /TR \"$TR\" /SC MINUTE /MO 1 /F"
+elif "$SCHTASKS" /Create /TN "$TASK_NAME" /TR "$TR" /SC MINUTE /MO 1 /F >/dev/null 2>&1; then
+  echo "Scheduled Task '$TASK_NAME' registered (every 1 min, as $WSL_USER)."
 else
   echo "warn: schtasks registration failed. Register manually in a cmd/PowerShell:"
-  echo "  schtasks /Create /TN \"$TASK_NAME\" /TR \"$TR\" /SC MINUTE /MO 5 /F"
+  echo "  schtasks /Create /TN \"$TASK_NAME\" /TR \"$TR\" /SC MINUTE /MO 1 /F"
 fi

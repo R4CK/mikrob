@@ -76,7 +76,12 @@ case "\$1" in
       *) exit 1 ;;  # notfound: no stdout, non-zero rc -- the real schtasks shape for a missing task
     esac
     ;;
-  /Create) exit 0 ;;
+  /Create)
+    case "\${FAKE_CREATE_MODE:-ok}" in
+      fail) exit 1 ;;
+      *) exit 0 ;;
+    esac
+    ;;
 esac
 EOF
 cat > "$FAKEBIN/powershell.sh" <<'EOF'
@@ -189,7 +194,7 @@ elif [ ! -f "$PS1_PATH" ]; then
   fail=1
 else
   check "dry-run never calls the real scheduler" "DRY-RUN: would register" "$OUT"
-  check_absent "dry-run never claims real registration" "registered (every 5 min" "$OUT"
+  check_absent "dry-run never claims real registration" "registered (every 1 min" "$OUT"
   assert_no_real_calls "1: basic dry-run never touches a real binary"
 
   PS1_CONTENT="$(cat "$PS1_PATH")"
@@ -236,7 +241,12 @@ else
 
   # --- N2 (cybered 17782, MikroB 17774): grace window is upper-bounded, a
   #     boot-loop under grace must eventually count toward $fails. ---------
-  check "N2: MaxFreshSkips bound declared" '$MaxFreshSkips = 10' "$PS1_CONTENT"
+  # CYBERSEC GO 39120 M1b (HARD CONDITION H-1): a substring needle like
+  # '$MaxFreshSkips = 50' is also a substring of '$MaxFreshSkips = 500' --
+  # check_line anchors the WHOLE line so 50->500 (and any other digit
+  # appended/prepended) is caught, not just a value that happens to share no
+  # digits with the real one.
+  check_line "N2: MaxFreshSkips bound declared (card d97659cb: re-expressed at the 1-min cadence, was 10 @ 5-min, whole-line pin)" '$MaxFreshSkips = 50' "$PS1_CONTENT"
   check_line "N2: exceeding MaxFreshSkips falls through to normal counting" \
     '  }' "$(printf '%s\n' "$PS1_CODE" | sed -n '/if (\$freshSkips -lt \$MaxFreshSkips)/,/^  }/p')"
   check "N2: boot-loop case is logged distinctly" "treating as a boot-loop" "$PS1_CONTENT"
@@ -256,8 +266,8 @@ else
   check_line_absent "N2: boot-loop branch never resets the skip counter to 0 (the bug N2 closed)" \
     '  Set-Content -Path $FreshSkipCountFile -Value "0"' "$BOOTLOOP_BRANCH"
 
-  # --- unaffected behavior: MaxFails/MaxRestarts bound still intact --------
-  check_line "MaxFails bound intact (exact line)" '$MaxFails    = 3   # consecutive fails (~15 min @ 5-min cadence) before a restart' "$PS1_CONTENT"
+  # --- card d97659cb: 1-min cadence keeps the SAME ~15-min restart threshold
+  check_line "MaxFails re-expressed at the 1-min cadence (exact line, ~15 min wall-clock preserved)" '$MaxFails    = 15   # consecutive fails (~15 min @ 1-min cadence) before a restart' "$PS1_CONTENT"
   check_line "MaxRestarts bound intact (exact line)" '$MaxRestarts = 3' "$PS1_CONTENT"
 
   # --- card 3f6bb903: holder-ensure runs on EVERY tick, before either early
@@ -276,8 +286,8 @@ else
   check_line "3f6bb903: holder-ensure is invoked as a named script via bash -lc (same pattern as rollback/notify, nothing left for wsl.exe to mis-quote)" \
     '$holderOut = & wsl.exe -d $Distro -u $WslUser -e bash -lc $HolderEnsureCmd 2>$null' \
     "$PS1_CONTENT"
-  check_line "F-2 fix: a relaunch requires BOTH exit=1 AND the HOLDER_MISSING marker, not just a nonzero exit" \
-    "if (\$holderCheckExit -eq 1 -and (\$holderOut -cmatch '^HOLDER_MISSING')) {" \
+  check_line "F-2 fix (d97659cb: now also requires holderNeeded -gt 0): a relaunch requires exit=1 AND the HOLDER_MISSING marker AND a positive need, not just a nonzero exit" \
+    "if (\$holderCheckExit -eq 1 -and (\$holderOut -cmatch '^HOLDER_MISSING') -and \$holderNeeded -gt 0) {" \
     "$PS1_CODE"
   check_line "F-2 fix: any other inconclusive result explicitly does NOT relaunch (fail-closed)" \
     '} else {' "$(printf '%s\n' "$PS1_CODE" | sed -n '/holderCheckExit -eq 0/,/^}/p')"
@@ -311,15 +321,43 @@ else
   fi
 
   # --- CYBERSEC NO-GO F-2 / QA FAIL: relaunch cap + give-up alert -----------
-  check "F-2 fix: holder relaunch cap variable declared" '$MaxHolderRelaunchesPerWindow = 6' "$PS1_CONTENT"
-  check "F-2 fix: holder relaunch window variable declared" '$HolderRelaunchWindowSec = 3600' "$PS1_CONTENT"
+  # Card d97659cb: cap re-expressed at the 1-min cadence (60 ticks/hour, was
+  # 12 @ 5-min) and now charged per HOLDER PROCESS (a tick can need 2 at
+  # once from the zero-holder state), so the cap value and compare also
+  # changed shape (-ge count -> count+needed -gt cap).
+  # CYBERSEC GO 39120 M1b (HARD CONDITION H-1): whole-line pins, not
+  # substring needles -- 30->300 and 3600->36000 are both substrings of the
+  # old needle and used to survive.
+  check_line "F-2 fix: holder relaunch cap variable declared (re-expressed for the 1-min cadence + per-process charging, was 6)" '$MaxHolderRelaunchesPerWindow = 30' "$PS1_CONTENT"
+  check_line "F-2 fix: holder relaunch window variable declared" '$HolderRelaunchWindowSec = 3600' "$PS1_CONTENT"
   check "F-2 fix: cap-notify command declared" '$HolderCapNotifyCmd' "$PS1_CONTENT"
-  check_line "F-2 fix: cap check happens before relaunching (not after)" \
-    '  if ($holderRelaunchCount -ge $MaxHolderRelaunchesPerWindow) {' "$PS1_CODE"
+  # CYBERED GO 39119 F-1 / CYBERSEC GO 39120 L-5: the need= parse now joins
+  # $holderOut to a plain string FIRST (PowerShell -match on an array does
+  # not populate $matches), so the pin follows the real two-line shape
+  # instead of the single-line form that bug fix replaced.
+  check_line "d97659cb L-5/F-1 fix: holderOut is joined to a string before the need= match (array -match does not populate \$matches)" \
+    "\$holderOutJoined = (\$holderOut -join ' ')" "$PS1_CONTENT"
+  check "d97659cb: need= is parsed from the joined holder-ensure output" "if (\$holderOutJoined -match 'need=([0-9]+)') { \$holderNeeded = [int]\$matches[1] }" "$PS1_CONTENT"
+  check_absent "d97659cb L-5/F-1 regression: the raw unjoined \$holderOut is no longer matched directly for need=" \
+    "if (\$holderOut -match 'need=([0-9]+)')" "$PS1_CONTENT"
+  check_line "F-2 fix (d97659cb): cap check happens before relaunching, charged by needed count not by tick" \
+    '  if (($holderRelaunchCount + $holderNeeded) -gt $MaxHolderRelaunchesPerWindow) {' "$PS1_CODE"
   check_line "F-2 fix: cap-reached branch alerts instead of relaunching" \
-    '    & wsl.exe -d $Distro -u $WslUser -e bash -lc $HolderCapNotifyCmd 2>$null' "$PS1_CONTENT"
+    '      & wsl.exe -d $Distro -u $WslUser -e bash -lc $HolderCapNotifyCmd 2>$null' "$PS1_CONTENT"
+  # CYBERSEC GO 39120 L-2 / CYBERED GO 39119 F-2: the notify is throttled to
+  # once per window (the 1-min cadence can otherwise send ~45/hour once the
+  # cap is hit, versus ~6/hour at the old 5-min cadence) -- pin the dedupe
+  # key and that the window-start value is what's persisted as "notified".
+  check_line "d97659cb L-2/F-2 fix: cap-notify only fires when this window hasn't been notified yet" \
+    '    if ($lastNotifiedWindow -ne $holderRelaunchWindowStart) {' "$PS1_CODE"
+  check_line "d97659cb L-2/F-2 fix: the notified window is persisted so the NEXT tick in the same window skips the alert" \
+    '      Set-Content -Path $HolderCapNotifiedWindowFile -Value "$holderRelaunchWindowStart"' "$PS1_CODE"
   check_line "F-2 fix: a confirmed-present holder resets the relaunch cap" \
     '  Set-Content -Path $HolderRelaunchCountFile -Value "0"' "$PS1_CODE"
+  check_line "d97659cb: the relaunch counter is incremented by the NEEDED count, not by a fixed 1" \
+    '    $holderRelaunchCount += $holderNeeded' "$PS1_CODE"
+  check_line 'd97659cb: exactly $holderNeeded holders are launched (loop bound), never a hardcoded single Start-Process' \
+    '    for ($i = 0; $i -lt $holderNeeded; $i++) {' "$PS1_CODE"
 
   # --- CYBERED NO-GO round 3 (comment 39005, F-1 PowerShell side: P4/P6/P7/P9
   #     survived as unpinned text) -- the window-expiry compare, the count
@@ -329,14 +367,16 @@ else
     '  if ($holderRelaunchWindowStart -eq 0 -or ($nowEpoch - $holderRelaunchWindowStart) -gt $HolderRelaunchWindowSec) {' "$PS1_CODE"
   check_line "F-1 round3: new window start is persisted" \
     '    Set-Content -Path $HolderRelaunchWindowStartFile -Value "$holderRelaunchWindowStart"' "$PS1_CODE"
-  check_line "F-1 round3: relaunch count is actually incremented" \
-    '    $holderRelaunchCount++' "$PS1_CODE"
+  # F-1 round3's old fixed "++" increment is superseded by card d97659cb's
+  # "incremented by the NEEDED count" check above (+= $holderNeeded) -- that
+  # check already pins this line; keeping both would just duplicate it under
+  # a stale description.
   check_line "F-1 round3: incremented relaunch count is persisted" \
     '    Set-Content -Path $HolderRelaunchCountFile -Value "$holderRelaunchCount"' "$PS1_CODE"
   # The give-up alert must be reached only AFTER the counter would exceed the
   # cap, not before -- i.e. the cap check line precedes the relaunch
   # Start-Process line within the same branch.
-  CAP_CHECK_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n 'holderRelaunchCount -ge \$MaxHolderRelaunchesPerWindow' | head -1 | cut -d: -f1)"
+  CAP_CHECK_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n 'holderRelaunchCount + \$holderNeeded) -gt \$MaxHolderRelaunchesPerWindow' | head -1 | cut -d: -f1)"
   RELAUNCH_ACT_IDX="$(printf '%s\n' "$PS1_CODE" | grep -n 'ArgumentList @("-d", \$Distro, "--exec", "/bin/sleep", "infinity")' | head -1 | cut -d: -f1)"
   if [ -n "$CAP_CHECK_IDX" ] && [ -n "$RELAUNCH_ACT_IDX" ] && [ "$CAP_CHECK_IDX" -lt "$RELAUNCH_ACT_IDX" ]; then
     echo "  ok   F-2 fix: the cap is checked BEFORE the relaunch action (line $CAP_CHECK_IDX < $RELAUNCH_ACT_IDX)"
@@ -528,14 +568,25 @@ check "N9: escape refusal names the real path too" "resolves under /mnt/" "$OUT_
 OUT_F1_NOTFOUND="$(FAKE_TASK_MODE=notfound WSL_DISTRO_NAME="Ubuntu" run_isolated)"; RC_F1_NOTFOUND=$?
 [ "$RC_F1_NOTFOUND" -eq 0 ] && echo "  ok   F1: non-existent task (rc!=0, empty query) no longer aborts the installer" \
   || { echo "  FAIL F1: non-existent-task case exited $RC_F1_NOTFOUND (set -e abort regression?) -- $OUT_F1_NOTFOUND"; fail=1; }
-check "F1: non-existent task DOES register (self-heal/fresh-install path works)" "registered (every 5 min" "$OUT_F1_NOTFOUND"
+check "F1: non-existent task DOES register (self-heal/fresh-install path works)" "registered (every 1 min" "$OUT_F1_NOTFOUND"
 CREATE_CALLS_NOTFOUND="$(grep -c '^schtasks /Create' "$CALL_LOG")"
 [ "$CREATE_CALLS_NOTFOUND" = "1" ] && echo "  ok   F1: exactly one /Create call for a non-existent task" \
   || { echo "  FAIL F1: expected exactly 1 /Create call for a non-existent task, got $CREATE_CALLS_NOTFOUND"; fail=1; }
 
+# CYBERSEC GO 39120 M1/HARD CONDITION H-1 (card d97659cb): the success
+# MESSAGE text ("registered (every 1 min") is a fixed echo that does not
+# depend on the argument actually handed to schtasks -- a regression that
+# keeps that message but registers at the OLD 5-minute cadence (MaxFails=15
+# would then mean a ~75-minute restart threshold, not ~15) would pass every
+# check above. Pin the REAL argument in the REAL /Create call, read back
+# from the fake schtasks' own call log.
+grep -qF 'SC MINUTE /MO 1' "$CALL_LOG" \
+  && echo "  ok   d97659cb H-1: the real /Create call for a fresh install carries '/SC MINUTE /MO 1' (not just the success message)" \
+  || { echo "  FAIL d97659cb H-1: real /Create call did not carry /SC MINUTE /MO 1 -- log: $(cat "$CALL_LOG")"; fail=1; }
+
 : > "$CALL_LOG"
 OUT_F1_ENABLED="$(FAKE_TASK_MODE=enabled WSL_DISTRO_NAME="Ubuntu" run_isolated)"
-check "F1: an existing, enabled task still re-registers (idempotent refresh)" "registered (every 5 min" "$OUT_F1_ENABLED"
+check "F1: an existing, enabled task still re-registers (idempotent refresh)" "registered (every 1 min" "$OUT_F1_ENABLED"
 [ "$(grep -c '^schtasks /Create' "$CALL_LOG")" = "1" ] && echo "  ok   F1: exactly one /Create call for an enabled task" \
   || { echo "  FAIL F1: enabled-task case did not call /Create exactly once"; fail=1; }
 
@@ -544,6 +595,23 @@ OUT_F1_DISABLED="$(FAKE_TASK_MODE=disabled WSL_DISTRO_NAME="Ubuntu" run_isolated
 check "F1: an existing, disabled task still skips /Create (H1 unaffected by the F1 fix)" "skipping /Create" "$OUT_F1_DISABLED"
 [ "$(grep -c '^schtasks /Create' "$CALL_LOG")" = "0" ] && echo "  ok   F1: zero /Create calls for a disabled task" \
   || { echo "  FAIL F1: disabled-task case called /Create (should be 0)"; fail=1; }
+
+# CYBERSEC GO 39120 M1/HARD CONDITION H-1, remaining two of the three /MO
+# occurrences cybered's Q5 mutant flipped at once (the real /Create call is
+# pinned above): the dry-run echo, and the manual-fallback echo printed when
+# schtasks /Create itself fails.
+mkdir -p "$TMP/run_h1_dryrun"
+: > "$CALL_LOG"
+OUT_H1_DRYRUN="$(run_dry "$TMP/run_h1_dryrun")"
+check "d97659cb H-1: the dry-run echoed command carries the real schtasks argument, not just 'DRY-RUN: would register'" \
+  "/SC MINUTE /MO 1" "$OUT_H1_DRYRUN"
+
+: > "$CALL_LOG"
+OUT_CREATE_FAIL="$(FAKE_TASK_MODE=notfound FAKE_CREATE_MODE=fail WSL_DISTRO_NAME="Ubuntu" run_isolated)"
+check "d97659cb H-1: the manual-fallback message (schtasks /Create failed) also carries /SC MINUTE /MO 1" \
+  "/SC MINUTE /MO 1" "$OUT_CREATE_FAIL"
+check "d97659cb H-1: the manual-fallback path is actually reached on a /Create failure" \
+  "warn: schtasks registration failed" "$OUT_CREATE_FAIL"
 
 # --- N-iso (cybered NO-GO, comment 17806, incident 21:01:13): the real
 #     wslpath + mkdir path must ALSO refuse a /mnt/-resolving target when
@@ -611,37 +679,57 @@ run_holder_fixture() { # sets HOLDER_OUT / HOLDER_RC
   HOLDER_RC=$?
 }
 
-assert_holder() { # <want_rc> <want_marker_anchor_regex> <description>
+assert_holder() { # <want_rc> <want_marker_exact_line> <description>
   local want_rc="$1" want_marker="$2" desc="$3"
-  if [ "$HOLDER_RC" -eq "$want_rc" ] && printf '%s' "$HOLDER_OUT" | grep -q "$want_marker"; then
+  if [ "$HOLDER_RC" -eq "$want_rc" ] && printf '%s\n' "$HOLDER_OUT" | grep -qx "$want_marker"; then
     echo "  ok   holder-ensure (fixture): $desc (rc=$HOLDER_RC out='$HOLDER_OUT')"
   else
-    echo "  FAIL holder-ensure (fixture): $desc -- want rc=$want_rc marker=/$want_marker/, got rc=$HOLDER_RC out='$HOLDER_OUT'"
+    echo "  FAIL holder-ensure (fixture): $desc -- want rc=$want_rc line='$want_marker', got rc=$HOLDER_RC out='$HOLDER_OUT'"
     fail=1
   fi
 }
 
 if [ -x "$HOLDER_SCRIPT" ]; then
+  # Card d97659cb: target holder count raised 1 -> 2 (3f6bb903 follow-up --
+  # a single holder left a gap where WSL's own idle-shutdown could tear the
+  # distro down in the window between the holder dying and the next tick
+  # relaunching it, measured live on 2026-11-26). The marker line now
+  # carries `need=<n>` (how many MORE holders the caller should launch),
+  # exact-anchored (grep -qx on the whole line) so a mutant that gets the
+  # right exit code with a wrong need= cannot pass silently.
+  #
   # Zero holders: the decisive branch. Kills H1 (exit 1 -> 0), H8 (missing
   # branch returns 2), H6 (marker renamed HOLDER_GONE).
   reset_holder_fixture
   run_holder_fixture
-  assert_holder 1 '^HOLDER_MISSING' "zero holders -> MISSING, exit 1"
+  assert_holder 1 'HOLDER_MISSING count=0 need=2' "zero holders -> MISSING, need both, exit 1"
 
-  # Exactly one holder (exact argv ["sleep","infinity"]).
+  # Exactly one holder -> still missing one, need=1 (not need=2: must not
+  # over-launch on top of the one that already exists).
   reset_holder_fixture
   mkdir -p "$HOLDER_FIXTURE_ROOT/1"
   make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" sleep infinity
   run_holder_fixture
-  assert_holder 0 '^HOLDER_OK' "one holder -> OK, exit 0"
+  assert_holder 1 'HOLDER_MISSING count=1 need=1' "one holder -> MISSING, need one more, exit 1"
 
-  # Two holders -> ambiguous.
+  # Exactly two holders -> target met, nothing to launch.
   reset_holder_fixture
   mkdir -p "$HOLDER_FIXTURE_ROOT/1" "$HOLDER_FIXTURE_ROOT/2"
   make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" sleep infinity
   make_holder_cmdline "$HOLDER_FIXTURE_ROOT/2/cmdline" sleep infinity
   run_holder_fixture
-  assert_holder 2 '^HOLDER_AMBIGUOUS' "two holders -> AMBIGUOUS, exit 2"
+  assert_holder 0 'HOLDER_OK count=2' "two holders -> OK, exit 0"
+
+  # Three or more holders -> ambiguous / too many; never relaunch on top of
+  # an already-odd state (same fail-closed rule as the old 1-target design,
+  # just re-pointed at the new threshold).
+  reset_holder_fixture
+  mkdir -p "$HOLDER_FIXTURE_ROOT/1" "$HOLDER_FIXTURE_ROOT/2" "$HOLDER_FIXTURE_ROOT/3"
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" sleep infinity
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/2/cmdline" sleep infinity
+  make_holder_cmdline "$HOLDER_FIXTURE_ROOT/3/cmdline" sleep infinity
+  run_holder_fixture
+  assert_holder 2 'HOLDER_AMBIGUOUS count=3' "three holders -> AMBIGUOUS, no launch, exit 2"
 
   # Extra-arg shape ("sleep infinity 5", 3 argv elements) must NOT count --
   # kills H2 (argv length check loosened from -eq 2 to -ge 2).
@@ -649,7 +737,7 @@ if [ -x "$HOLDER_SCRIPT" ]; then
   mkdir -p "$HOLDER_FIXTURE_ROOT/1"
   make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" sleep infinity 5
   run_holder_fixture
-  assert_holder 1 '^HOLDER_MISSING' "3-arg 'sleep infinity 5' is not counted"
+  assert_holder 1 'HOLDER_MISSING count=0 need=2' "3-arg 'sleep infinity 5' is not counted"
 
   # Non-sleep argv[0] with argv[1]=infinity must NOT count -- kills H3
   # (basename-sleep check dropped).
@@ -657,7 +745,7 @@ if [ -x "$HOLDER_SCRIPT" ]; then
   mkdir -p "$HOLDER_FIXTURE_ROOT/1"
   make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" notsleep infinity
   run_holder_fixture
-  assert_holder 1 '^HOLDER_MISSING' "non-sleep argv[0] is not counted"
+  assert_holder 1 'HOLDER_MISSING count=0 need=2' "non-sleep argv[0] is not counted"
 
   # sleep with a different second argument must NOT count -- kills H4
   # (argv[1]=="infinity" check dropped).
@@ -665,7 +753,7 @@ if [ -x "$HOLDER_SCRIPT" ]; then
   mkdir -p "$HOLDER_FIXTURE_ROOT/1"
   make_holder_cmdline "$HOLDER_FIXTURE_ROOT/1/cmdline" sleep 5
   run_holder_fixture
-  assert_holder 1 '^HOLDER_MISSING' "sleep with a non-infinity second arg is not counted"
+  assert_holder 1 'HOLDER_MISSING count=0 need=2' "sleep with a non-infinity second arg is not counted"
 
   # Lookalike: a file literally named "sleep infinity" (its own bash/path
   # argv, never argv=["sleep","infinity"]) must not be counted either -- run
