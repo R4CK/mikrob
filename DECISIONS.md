@@ -32787,3 +32787,53 @@ again. No hook code change was needed: _effective_settings was already fail-clos
 Ki döntött: MikroB (constraint reading + deferral split, comment 38677); végrehajtó: backend.
 Hivatkozás: kártya 69f63a1a, 35a0e556, eed988e7; CYBERED GO 38674 (mutant E);
 scripts/hooks/kg-prompt-pointer-hook.selftest.sh (F11-F14).
+
+## 2026-11-26 -- F8a follow-up: per-session cap/dedupe + offered-row audit for kg-prompt-pointer-hook (card 35a0e556)
+
+Implements the two items MikroB's split (comment 38677, see the 2026-11-25 entry above) deferred
+off 69f63a1a onto this card: (1) at most one graph injection per (session_id, card_id) pair, so
+a long conversation that repeats a card id does not re-inject the same pointer block every turn;
+(2) every /api/kg/for-card lookup this hook makes is auditable by agent, which the server could
+not previously record for this caller.
+
+(1) Session cap/dedupe: the hook is a fresh subprocess per UserPromptSubmit event (no daemon),
+so an in-memory cache cannot work across invocations -- confirmed by reading the hook's own
+module docstring before designing anything. Used the same marker-file pattern already proven in
+scripts/hooks/blast-radius-guard.py's `_already_shown` (one empty marker file per key, under a
+uid-scoped tempdir, fail-open on write errors): here the key is (session_id, card_id), the
+marker holds no prompt text or card content, only the fact that the pair was already queried.
+The marker is written only AFTER a successful for-card call, not on the check itself, so a
+transient network failure stays retryable on a later prompt instead of being silently
+permanently suppressed.
+
+(2) Offered-row audit: kg_search_events/kg_usage already existed and already recorded
+agent+card_id+timestamp for every /api/kg/for-card call (src/web/routes/kg.ts), but the agent
+column requires `ctx.auth.agent`, which only resolves from a per-agent token or the
+self-asserted `X-Agent-Id` header (root CLAUDE.md convention) -- this hook authenticates with
+the shared dashboard token and sent no such header, so every row it caused was stamped
+agent='unknown'. Fix: added an X-Agent-Id header (resolved from cwd, same helper shape as
+scripts/hooks/activity_memory_capture.py's `_agent_id_from_cwd`) to the for-card call. No new
+table, no new log file -- reuses the existing audit trail exactly as the card required.
+
+Rejected the local-llm draft on this card (comment 38817, Draft-Review: ELUTASITVA, comment
+38857): it used a module-level Python dict for the session cache, which cannot survive the
+per-prompt subprocess model at all, and invented a new file-based audit log instead of reusing
+kg_search_events/kg_usage.
+
+Deferred (per the card's own text, explicitly non-blocking "optional ride-alongs"): survivor C
+(card-id cap unpinned beyond 2 -- already pinned at MAX_CARD_IDS=2, no action needed), survivor
+D (word-boundary on CARD_ID_PATTERN -- already present, `\b...\b`), survivor G (truncation
+char-cap length assertion), LOW-2 (8-hex lookalikes sent as ids that don't resolve to a real
+card). None of these block this card's own Kész-ha.
+
+Mutation-proven: (a) stashed the full .py change, reran the selftest -- the new X-Agent-Id
+assertion failed exactly as predicted, header empty; restored, 19/19 green. (b) separately
+mutated only the cap filter (`fresh_ids = card_ids` unconditionally) on a scratch copy -- G1
+failed exactly as predicted (second same-session call printed the block instead of suppressing
+it); restored, 19/19 green again.
+
+Ki döntött: backend (implementation against MikroB's comment 38677 split + the card's own
+spec); végrehajtó: backend.
+Hivatkozás: kártya 35a0e556, 69f63a1a, eed988e7; CYBERED 38674 KC2/BLOCKER-1 (kg_search_events/
+kg_usage already hold only the 8-hex card id, never prompt text); `scripts/hooks/
+kg-prompt-pointer-hook.py`, `scripts/hooks/kg-prompt-pointer-hook.selftest.sh`.
