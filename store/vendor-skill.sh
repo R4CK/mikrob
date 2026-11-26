@@ -202,8 +202,7 @@ fi
 # the shell's own `>` redirection. The -L copy above already dereferences such a symlink into a
 # plain file, so this is defense in depth: unlink first if, for any other reason, it is still a
 # symlink, so the write always lands on a fresh regular file under $dest.
-# MUTATION-TEST-C (temporary, to be reverted): WRITETHRU924 UPSTREAM-LICENSE guard disabled.
-: # [[ -L "$dest/UPSTREAM-LICENSE" ]] && rm -f "$dest/UPSTREAM-LICENSE"
+[[ -L "$dest/UPSTREAM-LICENSE" ]] && rm -f "$dest/UPSTREAM-LICENSE"
 [[ -n "$LICENSE_FILE" ]] && cp "$LICENSE_FILE" "$dest/UPSTREAM-LICENSE"
 
 # The two ${VAR:+...}${VAR:-...} halves cannot share one variable: when LICENSE_FILE is SET the
@@ -217,8 +216,7 @@ fi
 
 # See WRITETHRU924 above: the shell's `>` redirection follows an existing destination symlink
 # exactly like `cp` does.
-# MUTATION-TEST-C (temporary, to be reverted): WRITETHRU924 VENDORED.md guard disabled.
-: # [[ -L "$dest/VENDORED.md" ]] && rm -f "$dest/VENDORED.md"
+[[ -L "$dest/VENDORED.md" ]] && rm -f "$dest/VENDORED.md"
 cat > "$dest/VENDORED.md" <<EOF
 # VENDORED -- do not edit here
 
