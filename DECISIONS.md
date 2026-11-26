@@ -32679,3 +32679,111 @@ tisztázása és a mezőnevesítés MikroB (msg 24446/24449). A végrehajtó bac
 
 **Hivatkozás:** kártya 2c49a628 (predecessor a 329bda2d-n); commit `eede187adcdcfb9b601068ade7d1741d37d205ca`;
 `store/fleet-test.sh` (`fleet_test_log_lock_event`), `store/fleet-test-lock-log.selftest.sh`.
+
+## 2026-11-25 -- Kártya 69f63a1a (F8a, MT-14 1. rész): promptonkénti KG-pointer injekció
+UserPromptSubmit hookon, csak a backend ügynök saját settings.json-jában, alapból OFF
+
+**Döntés:** a MODULTERV P3 szakaszának F8 tétele (Peti 11537, Graft-hirdetés nyomán) egy
+UserPromptSubmit hookot kér, ami minden promptnál a saját gráfunkból fűz egy szűk, pointer-szintű
+blokkot. Plan-grilling (komment 38630) egy terhelő nyitott kérdést talált: a "per-agent allowlist"
+kifejezés a kártya címében FÉLREVEZETŐ lehet, mert `agents/<név>/.claude/settings.json` NEM
+megosztott/symlinkelt fájl (mérve: backend vs backend3 eltérő md5) -- minden ügynök saját hook-
+drótozással él. MikroB döntése (komment 38632, option a): a pilot FIZIKAI drótozás, KIZÁRÓLAG a
+backend ügynök saját settings.json-jába, a backend2 kontrollként érintetlen marad az F9 A/B
+méréshez; a futásidejű allowlist (option b, minden ügynök settings.json-jába drótozva, a hook maga
+dönt egy KG_* kulcs alapján) elhalasztva, amíg az F9 nem mutatja, hogy megéri a szélesebb érintést.
+
+Új KG_PROMPT_HOOK_ENABLED kapcsoló (alapértelmezés OFF) + KG_PROMPT_HOOK_MAX_CHARS
+(config-registry.ts). Új `scripts/hooks/kg-prompt-pointer-hook.py`: a GET /api/kg/search-t hívja
+(project=mikrob -- a partíciókulcs a kanban kártya `project` mezője, "MikroB", kisbetűsítve, NEM a
+repó neve "marveen"; mérve: project=marveen 0 sort ad, project=mikrob a valós 842 node-os
+partíció), és csak azonosító+cím (POINTERS ONLY) megy a promptba, nem a teljes
+why/verdict/snippet, amit a kg-for-card-block.sh-féle, nehezebb F3 blokk hordoz. Saját,
+kis-markeres keretezés ([KG-POINTER ...]) és escape-elés (EK-MT-9 mintájára: control-karakterek
+levágva a marker-csere ELŐTT), KÜLÖN implementáció a kg-for-card-block-render.py-tól (sebészi
+változtatás -- nem nyúlt bele egy másik, már gate-elt fájlba egy közös modulért).
+
+Kikapcsolva (alapértelmezés) a hook a HÍVÁS ELŐTT kilép, nincs hálózati hívás, a prompt bájtra
+azonos a mai állapottal. Bekapcsolva: hiba/timeout/üres találat esetén csendben semmit nem ír ki
+és exit 0 -- sosem blokkolja a promptot (MikroB constraint). A hook maga nem ír semmit (csak a
+/api/kg/search szerver-oldali, best-effort aktivitás-log írása történik, UGYANÚGY mint bármely
+más hívónál -- ez nem a hook saját írása).
+
+**Megfigyelés, NEM ebbe a kártyába tartozik:** élesben több, egyértelműen releváns lekérdezés
+(pl. "land lock queueing fix", "gate-closure-check", egyszavas "land") is `hits:0`-t adott
+project=mikrob mellett, pedig 842 node él a gráfban és a backfill 258/983-at már feldolgozott.
+Ez a már leszállított F1b/F2 kereső (34c2d2a2) viselkedése, nem ezé a kártyáé -- jelezve, nem
+javítva, mert nincs benne a Kész, ha: körében.
+
+**Ellenőrzés:** `npx tsc --noEmit` tiszta. `config-registry.test.ts` 31/31. Saját
+`kg-prompt-pointer-hook.selftest.sh` (diszpozábilis lokális HTTP szerver, sosem az éles
+dashboard): 9/9 eset (kapcsoló off/on a platform-beállításon és env-override-on át, üres
+találat, escape-elés egy keret-záró-utánzatú címmel, csonkolás egyensúlyban tartott
+nyitó/záró markerrel, control-karakteres marker-rejtés mutáció-érzékenység). Mutáció-bizonyítva:
+az `_escape_frame` identitás-függvényre cserélve KIZÁRÓLAG az F7 eset bukott (a többi 8 zöld),
+visszaállítva bájt-azonos, 9/9 újra zöld. Nincs teljes fleet-test (delta szabály, Peti 13846):
+egy config-registry bejegyzés + két új, önálló szkript-fájl, a meglévő KG-útvonalakat nem
+módosítja.
+
+**Ki döntött:** Peti 11537 (eredeti ötlet), MikroB (plan-grilling válasz, komment 38632). A
+végrehajtó backend.
+
+**Hivatkozás:** kártya 69f63a1a; `scripts/hooks/kg-prompt-pointer-hook.py`,
+`scripts/hooks/kg-prompt-pointer-hook.selftest.sh`; `src/config-registry.ts`
+(`KG_PROMPT_HOOK_ENABLED`, `KG_PROMPT_HOOK_MAX_CHARS`); `agents/backend/.claude/settings.json`
+(nem git-követett, lásd a REVIEW-t a pontos belépésért).
+
+
+## 2026-11-25 -- F8a (MT-14 part 1) fix round: a KG-prompt-pointer hook sosem küldi a nyers promptot (kártya 69f63a1a)
+
+A CYBERSEC NO-GO (38647) és a CYBERED NO-GO (38650), mindkettő ugyanazt a Gate-SHA-t (15a68fc34)
+nézve, ugyanazt a blokkoló hibát találta: a hook a promptot (első 2000 karakter) szabad szöveges
+`q` paraméterként küldte a GET /api/kg/search-nek, amit a szerver szó szerint elment a
+kg_search_events táblába. Mérve a valós recordKgSearchEvent-en: egy Telegram-bot-token alakú
+string, egy `ghp_` token, egy `sk-ant-api03-...` kulcs, egy jelszó+telefonszám+email mondat
+MIND redaktálatlanul megmaradt. Ez megsértette MikroB saját kikötéseit (38632 "nem írhat
+semmit", 26011 "key on card id ... never the raw prompt head").
+
+**Javítás:** a hook most KIZÁRÓLAG egy, a promptban LITERÁLISAN megjelenő kanban kártya-azonosítót
+(ennek a flottának a [0-9a-f]{8} formátuma) keres, és erre hívja a GET /api/kg/for-card/<cardId>-t
+-- ugyanazt a végpontot, amit a kg-for-card-block.sh is használ, és amely a saját lekérdezését a
+KÁRTYA cím/leírás mezőjéből állítja elő szerver-oldalon, az aktivitás-logba pedig csak
+`for-card:<cardId>`-t ír, sosem a prompt szövegét. Ha nincs kártya-azonosító a promptban, a hook
+egyáltalán nem hív hálózatot a gráf felé (új selftest eset, F1b; mutáció-bizonyítva: a kapu
+visszaállítva a régi, feltétel nélküli alakra, a mutáns tényleg hálózatot hívott a prompt
+szövegével). Javítva egy másik, hamis állítás is (CYBERSEC F2 / CYBERED F5): kikapcsolt
+állapotban a NORMÁL eset (nincs env-override) továbbra is hív egy GET /api/settings-t
+promptonként -- csak egy explicit env-override vagy üres prompt ad valódi zéró hálózati hívást;
+a stdout bájtra azonos marad kikapcsolva, ettől függetlenül.
+
+**Ki döntött:** a gate-ek (cybersec, cybered) NO-GO-ja kötelezte a fix irányát; a végrehajtó
+backend.
+
+**Hivatkozás:** kártya 69f63a1a; `scripts/hooks/kg-prompt-pointer-hook.py`,
+`scripts/hooks/kg-prompt-pointer-hook.selftest.sh`; `src/config-registry.ts`
+(`KG_PROMPT_HOOK_ENABLED` leírás javítva).
+
+## 2026-11-25 -- F8a (MT-14 part 1) round 2: fail-open test matrix for kg-prompt-pointer-hook (card 69f63a1a)
+
+MikroB decision (comment 38677, answering CYBERED GO 38674 msg 24551) split the remaining
+26011 items: the fail-open timeout/exit1/exit2/crash matrix was declared NOT deferrable
+(CYBERED's surviving mutant E showed the settings-read fail-closed branch was unpinned), while
+per-session cap/dedupe and the offered-row audit moved to a follow-up card (35a0e556) that is
+now a blocker on eed988e7 (F9 A/B pilot) -- KG_PROMPT_HOOK_ENABLED/KG_INJECT stays OFF for the
+F9 pilot until 35a0e556 is done.
+
+Added to scripts/hooks/kg-prompt-pointer-hook.selftest.sh: F11 (/api/settings returns a
+malformed/non-JSON body), F12 (/api/settings returns HTTP 500), F13 (/api/settings times out
+past the hook's own hardcoded 5s urlopen timeout, actually measured >=5s elapsed, not
+short-circuited), F14 (total connectivity loss via a dead port). F11-F13 share one live stub
+server where /api/kg/for-card stays healthy, so any for-card hit in that run can only mean the
+hook wrongly treated the broken settings read as enabled -- this is what makes them sensitive to
+mutant E (settings-read except branch flipped from `return False, 800` to `return True, 800`).
+Mutation-proven: applied mutant E to a scratch copy, reran the selftest -- F11 failed exactly as
+predicted (for-card hit + non-empty output), 11 other cases stayed green; restored, 15/15 green
+again. No hook code change was needed: _effective_settings was already fail-closed
+(`except Exception: return False, 800`), only the test coverage was missing.
+
+Ki döntött: MikroB (constraint reading + deferral split, comment 38677); végrehajtó: backend.
+Hivatkozás: kártya 69f63a1a, 35a0e556, eed988e7; CYBERED GO 38674 (mutant E);
+scripts/hooks/kg-prompt-pointer-hook.selftest.sh (F11-F14).

@@ -145,6 +145,10 @@ const EXEMPT: Record<string, string> = {
     'scheduled/CLI gate (--only / --notify / --json), not a settings hook: it compares the channels a session DECLARES against the plugin processes actually alive under it, which is a periodic check rather than a per-tool-call one',
   'mio-orszem-precheck.sh':
     'scheduler preCheck for the HOST-LOCAL marveen-io-kozosseg-orszem task (ORSICTX912): the mio community sentinel is this install\'s own and deliberately NOT seeded (a repo seed would ship it to every customer install), so its registration lives in the host ~/.claude/scheduled-tasks task-config -- outside this corpus by design. Wiring is gated on the ORSICTX912 activation order (host restart -> verify -> merge -> build+restart); the hermetic fail-direction tests are scripts/__tests__/mio-orszem-precheck.test.py.',
+  'kg-prompt-pointer-hook.py':
+    'card 69f63a1a: built as a feature-flagged capability (KG_PROMPT_HOOK_ENABLED default "0") -- deliberately NOT wired into settings.json in this landing; switch-on is gated on the per-session cap/dedupe + offered-row audit follow-up (card 35a0e556), itself a predecessor of the F9 KG_INJECT A/B pilot (card eed988e7). Same split as the activity_memory_capture.py / auto_obs_capture.py pattern above.',
+  'kg-prompt-pointer-hook.selftest.sh':
+    'selftest for kg-prompt-pointer-hook.py; the hook itself is unwired, see its own EXEMPT entry',
 }
 
 function readSurfaces(rels: readonly string[]): string {
