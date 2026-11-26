@@ -130,11 +130,8 @@ function execWithKillRetry(runner: string, args: readonly string[], file: string
   try {
     return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env })
   } catch (e) {
-    const err = e as { signal?: string | null; status?: number | null; stdout?: string; stderr?: string }
-    if (err.signal !== 'SIGKILL') {
-      console.error(`DEBUG-a1c38d36 ${file}: status=${err.status} signal=${err.signal}\n--- stdout ---\n${err.stdout}\n--- stderr ---\n${err.stderr}`)
-      throw e
-    }
+    const err = e as { signal?: string | null; status?: number | null }
+    if (err.signal !== 'SIGKILL') throw e
     console.error(`${file}: killed (SIGKILL) on first attempt, likely host-level memory contention -- retrying once`)
     return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env })
   }

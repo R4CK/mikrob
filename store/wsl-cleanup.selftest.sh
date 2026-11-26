@@ -35,15 +35,22 @@ CLEANCORE_MAIN_TEST="$TMP/no-git-here"
 # of them also run section 3's /tmp sweep against the REAL /tmp unless overridden -- measured
 # (CYBERED msg 25202/39219): ~4,726 real /tmp entries, ~27.7s per dry-run, 283.6s standalone PASS
 # at load 4-6, over the 180s vitest cap. Point every section-1 invocation at this empty, disposable
-# sandbox (cleaned up with the rest of $TMP) so section 3 still runs (no change to code paths
-# exercised) but scans nothing.
-WT_TMP_SANDBOX="$TMP/wt-tests-tmp-sandbox"
+# sandbox so section 3 still runs (no change to code paths exercised) but scans nothing.
+#
+# MUST resolve under the REAL /tmp, not just under $TMP: sweep_tmp()'s own fail-closed sanity
+# guard (card c9c1f159) refuses to sweep anything whose realpath isn't /tmp or /tmp/* -- and under
+# fleet-test.sh, $TMPDIR points at a run-scoped dir OUTSIDE /tmp, so a plain `mktemp -d` (hence
+# anything nested under that $TMP) resolves outside /tmp too. Measured: with the sandbox nested
+# under $TMP, fleet-test.sh's own harness made sweep_tmp refuse every call ("REFUSING /tmp sweep"),
+# find() was never invoked, and the SANDBOX-LEAK guard below correctly caught this as vacuous --
+# it passed standalone only because that shell's $TMPDIR is unset and mktemp -d falls back to
+# /tmp. Forcing the sandbox explicitly under /tmp (independent of $TMPDIR) satisfies the guard in
+# both environments.
+WT_TMP_SANDBOX="$(mktemp -d /tmp/wt-cleanup-sandbox.XXXXXX)"
 # MikroB (msg 25245, Peti-approved 14795): the sandbox must be removed when the selftest ends,
-# including on failure. Nested under $TMP rather than a separate mktemp -d so the EXISTING
-# `trap cleanup EXIT` below (which already does `rm -rf "$TMP"`) removes it unconditionally --
-# verified by hand: an `exit 1` placed right after that trap is registered still leaves no TMP
-# dir behind. No separate trap/cleanup needed.
-mkdir -p "$MARVEEN_MAIN_TEST" "$CLEANCORE_MAIN_TEST" "$WT_TMP_SANDBOX"
+# including on failure -- it is NOT nested under $TMP (see above), so the existing
+# `trap cleanup EXIT` below needs its own explicit rm -rf for it (added there).
+mkdir -p "$MARVEEN_MAIN_TEST" "$CLEANCORE_MAIN_TEST"
 
 git init -q "$MARVEEN_MAIN_TEST"
 git -C "$MARVEEN_MAIN_TEST" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
@@ -59,7 +66,7 @@ cleanup() {
   for d in "$LIVE_DIR" "$DEAD_DIR"; do
     [ -n "$d" ] && [ -d "$d" ] && git -C "$MARVEEN_MAIN_TEST" worktree remove --force "$d" 2>/dev/null
   done
-  rm -rf "$TMP"
+  rm -rf "$TMP" "$WT_TMP_SANDBOX"
 }
 trap cleanup EXIT
 
