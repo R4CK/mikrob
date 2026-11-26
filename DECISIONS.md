@@ -32983,3 +32983,76 @@ spec); végrehajtó: backend.
 Hivatkozás: kártya 35a0e556, 69f63a1a, eed988e7; CYBERED 38674 KC2/BLOCKER-1 (kg_search_events/
 kg_usage already hold only the 8-hex card id, never prompt text); `scripts/hooks/
 kg-prompt-pointer-hook.py`, `scripts/hooks/kg-prompt-pointer-hook.selftest.sh`.
+
+## 2026-11-26 -- MT F9: Graft/Trail-code A/B pilot, offline retrieval comparison (kártya eed988e7)
+
+**Döntés: keep our own F8 hook, do NOT adopt trailhq/Trail-Code (Graft), do NOT proceed to a
+phase 2 (live-session) pilot.**
+
+MikroB's design (card eed988e7 comment thread): offline retrieval comparison only, no live Claude
+session per card, phase 2 gated on phase 1 showing trail "clearly ahead" plus Peti's token-cost
+approval. Sampled 12 landed cards with a full REVIEW + Gate-SHA, mixed store/ scripts and src/ TS
+(c9c1f159, b5d19a32, 89e8cb90, e2368d0a, 2d27b27b, 2d5ad4d2, 771c1219, cb178dbf, 4e9ad774, 03dff487,
+f19cb1e1, 3e59d70e). Input per card: title+description as of dispatch. Ground truth per card:
+`git diff --name-only` of the merge-base..feature-tip for that card's actual landed merge (NOT a
+naive two-commit diff against the develop tip at merge time, which pulled in hundreds of unrelated
+files from everything else landed in between -- caught and corrected before scoring). DECISIONS.md
+excluded from ground truth in all cards (append-only, touched by nearly every card, not a useful
+discriminator).
+
+Our F8 hook: queried `GET /api/kg/for-card/<cardId>` for each of the 12 card ids directly (this is
+literally how the hook calls it in production). Result: **empty solutions/pitfalls/decisions on
+all 12 of 12 cards** -- ~38 tokens of pure envelope overhead per call, 0.0 recall/precision on
+every sample. Checked this isn't a bug: `kg_nodes` has 359 solution nodes and a `card:`/`sol:` node
+exists for several of the sampled cards, so for-card's own matching (by anchor overlap with other
+cards' files/symbols) legitimately found no sibling history for these particular files -- plausible
+for first-touch infra scripts, not independently verified further given the card's own scope
+(offline comparison, not an audit of for-card's matching logic). Flagging as a finding worth a
+separate look, not fixed here.
+
+trailhq/Trail-Code (`graft ask`, no API key configured so it ran in lexical/graph-rank mode, not
+semantic): installed pinned at 0.30.5 (npm registry's actual `latest` dist-tag, shasum
+9211bcd95f4e13764039a47b0fe78e819addba00) into a throwaway npm --prefix dir, --ignore-scripts,
+DO_NOT_TRACK=1. `trail init --dry-run` read first (per MikroB's instruction): listed exactly 5
+repo-scoped writes, nothing outside the target repo. Ran for real against a disposable
+`git clone /home/neon/marveen` at sha `83b6b0d619da1ea2374c9afac82dffdb6d2d66f3` (same sha for all
+12 cards), HOME + CLAUDE_CONFIG_DIR both pointed at an empty fake-home, `--just-me --no-global
+--no-mcp --agents claude`. Built a graph of 18,844 nodes / 46,685 edges over 2,886 files. Mean
+recall across the 12 cards: **0.208** (1.0 on one single-file-ground-truth card, 0.5 on three,
+0.0 on eight), mean output size ~900 tokens (chars/4 approximation) per query vs our hook's ~38 --
+roughly 24x the context cost for a weak, inconsistent retrieval signal. Wall time per query
+1.0-2.2s (CLI process startup included, not isolated graph-query time). No secret-shaped content
+in either system's output (`store/secret-shape-scan.py`, clean on both). Tool-call count and
+gate-result are genuinely unmeasurable offline, as MikroB's own design anticipated -- recorded as
+ISMERETLEN, not estimated.
+
+**Why not adopt, why not phase 2:** 0.208 mean recall with 8/12 cards at zero is not "clearly
+ahead" of our 0.0 by MikroB's own stated bar -- it is a weak, noisy signal, not a demonstrated win,
+and it comes with real adoption costs this pilot measured directly: a third-party MIT dependency,
+a ~24x per-query token cost, and registered Claude Code hooks (UserPromptSubmit, PreToolUse x2,
+PostToolUse x3, Stop, SessionStart, SessionEnd) plus a statusLine that would need their own ongoing
+review if ever wired for real (this pilot never executed them -- written into the disposable
+repo's `.claude/settings.json` only, no session was opened pointed at that repo). Keeping our own
+F8 hook; the 0-recall finding above is the more actionable lead from this pilot, separate from the
+adopt/build question this card asked.
+
+**Near-miss during this card (self-caught, corrected):** a failed `cd` inside a `bash -c` block
+(no `set -e`) let a first `npm install --ignore-scripts @trailhq/trail-code@0.30.5` attempt run in
+the shared live main clone instead of the intended throwaway dir, touching its package.json/
+package-lock.json and node_modules. My own revert (git checkout on the two tracked files + manual
+rm of the two package paths I could see) was INCOMPLETE -- MikroB's own `npm ls` found 20+
+extraneous transitive packages and an unrelated `@anthropic-ai/sdk` version drift still left behind
+in node_modules, which `git checkout` cannot touch (gitignored). MikroB restored the live clone with
+`npm ci` after the then-running fleet-tests finished. Lesson recorded to my own memory
+(`git-checkout-does-not-restore-node-modules.md`): a stray write into a shared node_modules needs
+`npm ci` or an explicit `npm ls` diff to actually undo, not a spot-check of the one package noticed.
+Disposable clone, fake HOME and throwaway npm --prefix dir all deleted at the end of this pilot.
+
+**Gate:** QA + WhiteHat + RedHat (RedHat added mid-card: `trail init` registered multiple Claude
+Code hooks, per MikroB's own stated trigger -- "add RedHat if trail init registers any hook, even
+in the fake HOME").
+
+Ki döntött: MikroB (design, go-ahead, adopt/build threshold); végrehajtó: backend.
+Hivatkozás: kártya eed988e7, c65add5a (MT FÁZIS), 3f6fc4ce (F0, independent security-scanner flag
+on Graft/Trail-Code that did not reproduce against current `main` -- see this card's own earlier
+FINDING comment for the two-pass README search); `store/secret-shape-scan.py`.
