@@ -92,12 +92,42 @@ describe('hybridKgSearch', () => {
     db.close()
   })
 
+  // Card 5ecf6133 (CYBERSEC NO-GO F-3, comment 39014): why used to echo the WHOLE query text
+  // (opts.q), which for a for-card.ts call is the dispatched card's own title+description -- on
+  // the backfilled copy this alone pushed 29/40 recent cards past the 3000-char package cap.
+  it('an FTS text match gets a short fixed why, not an echo of the whole query', async () => {
+    const db = freshDb()
+    seedBasic(db)
+    const longQuery = `Fail-closed regression fix ${'x'.repeat(500)}`
+    const { results } = await hybridKgSearch(db, { q: longQuery, project: 'mikrob' })
+    const sol1 = results.find((r) => r.id === 'sol:1')!
+    expect(sol1.why).toBe('szöveg-egyezés')
+    expect(sol1.why.length).toBeLessThan(50)
+    db.close()
+  })
+
   it('anchor-path match finds the exact node regardless of q', async () => {
     const db = freshDb()
     seedBasic(db)
     const { results } = await hybridKgSearch(db, { paths: ['src/db.ts'], project: 'mikrob' })
     expect(results.map((r) => r.id)).toContain('sol:1')
     expect(results[0]!.anchors[0]?.symbol).toBe('hybridSearch')
+    db.close()
+  })
+
+  // Card 5ecf6133: a node can now carry several real anchors (one per Gate-SHA file, not one
+  // placeholder), and for-card.ts's contract only ever shows anchors[0]. DECISIONS.md is touched
+  // by nearly every card -- without this it kept winning the id-ordering race and starving the
+  // one useful anchor out of the dispatch package (measured: stuck mean recall 0.208, see
+  // DECISIONS.md's own 5ecf6133 entry). It's still a real anchor, just always last among several.
+  it('a node with several anchors lists DECISIONS.md last, not by insertion order', async () => {
+    const db = freshDb()
+    seedBasic(db)
+    upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen', path: 'DECISIONS.md', sha: 'abc1234' })
+    upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen', path: 'src/web/other.ts', sha: 'abc1234' })
+    const { results } = await hybridKgSearch(db, { paths: ['src/db.ts'], project: 'mikrob' })
+    const sol1 = results.find((r) => r.id === 'sol:1')!
+    expect(sol1.anchors.map((a) => a.path)).toEqual(['src/db.ts', 'src/web/other.ts', 'DECISIONS.md'])
     db.close()
   })
 

@@ -23,6 +23,7 @@ import { hybridKgSearch, type KgSearchResult } from './search.js'
 
 export interface KgForCardEntry {
   card_id: string // the node's own id, see field-naming note above
+  title: string
   error_class: string | null
   anchor: KgSearchResult['anchors'][number] | null
   verdict: string | null
@@ -78,6 +79,9 @@ function errorClassOf(db: Database.Database, nodeId: string): string | null {
 function toEntry(db: Database.Database, r: KgSearchResult): KgForCardEntry {
   return {
     card_id: r.id,
+    // Card 5ecf6133 (CYBERSEC/CYBERED: "an agent gets sol:3a7c...:0 with nothing that says what it
+    // is"): the node's own title, already capped to 200 chars by upsertNode, so this is bounded.
+    title: r.title,
     error_class: errorClassOf(db, r.id),
     anchor: r.anchors[0] ?? null,
     verdict: r.type === 'finding' ? r.title : null,

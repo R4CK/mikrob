@@ -29,9 +29,11 @@ import {
   upsertAnchor,
   findSecretShape,
   UNSAFE_CHARS_RX,
+  NON_DISCRIMINATING_ANCHOR_PATHS,
   type KgNodeInput,
 } from './store.js'
 import { markCaptureDone, markCaptureFailed, markCaptureSkipped } from './capture.js'
+import { filesForCommits, resolveFullSha } from '../kanban-relations-git.js'
 
 // F4 (card 2ace4db9, WhiteHat): both subprocess calls below used to hardcode the live checkout
 // path -- a gate/CI run against a different checkout (or a renamed live install) would silently
@@ -124,6 +126,14 @@ export interface CaptureDeps {
    *  output (expected to be a JSON array per store/local-llm-skills/kg-capture.txt); this module
    *  parses and validates it, never trusts it as-is. */
   draftFn: (reviewText: string) => string
+  /** Card 5ecf6133: the real repo-relative files the Gate-SHA touched, for anchoring the
+   *  solution node on something a later exact-path search can actually find -- NOT the
+   *  kanban_comments:<id> placeholder this used to write (100% of 343 live anchor rows had it).
+   *  Default: filesForCommits() against MARVEEN_MAIN (same `-m --first-parent` merge-aware git
+   *  call the fork-upstream git sweep already uses, so a marveen-land MERGE Gate-SHA resolves to
+   *  the branch's own files, not an empty combined diff). Returns [] (never throws) when the sha
+   *  is unresolvable -- the caller then skips the file anchor rather than writing a fake one. */
+  filesForSha: (sha: string) => string[]
   now: () => number
   extractor: string
 }
@@ -365,10 +375,32 @@ export function defaultDraftFn(reviewText: string): string {
   )
 }
 
+// Card 5ecf6133: a cap, not a correctness requirement -- a big merge Gate-SHA (e.g. the 19-file
+// 3e59d70e sample) would otherwise write one anchor row per file with no bound. Exact-path search
+// only needs SOME of the touched files findable, not all of them.
+const MAX_FILE_ANCHORS_PER_SOLUTION = 20
+
+/** Default filesForSha: same merge-aware git call the fork-upstream git sweep already proved
+ *  correct (-m --first-parent, see filesForCommits's own doc comment) -- never throws, so a sha
+ *  that doesn't resolve in this checkout (wrong repo, gc'd, test fixture) just yields no file
+ *  anchor instead of failing the whole capture. Resolves a short sha to its full form FIRST (card
+ *  5ecf6133, CYBERSEC F-4): filesForCommits keys its result by the full %H, so looking it up by the
+ *  original short sha silently found nothing. */
+function defaultFilesForSha(sha: string): string[] {
+  try {
+    const full = resolveFullSha(MARVEEN_MAIN, sha)
+    if (!full) return []
+    return filesForCommits(MARVEEN_MAIN, [full]).get(full) ?? []
+  } catch {
+    return []
+  }
+}
+
 export function defaultDeps(): CaptureDeps {
   return {
     closureCheck: defaultClosureCheck,
     draftFn: defaultDraftFn,
+    filesForSha: defaultFilesForSha,
     now: () => Math.floor(Date.now() / 1000),
     extractor: 'local-llm:kg-capture@v1',
   }
@@ -456,6 +488,15 @@ export function runCapture(
   }
 
   const gateSha = allowedActive ? closure.sha : (latestReviewGateSha(comments) ?? null)
+  // Card 5ecf6133: resolved once per run (same sha for every draft item below), not per solution.
+  // Non-discriminating paths (DECISIONS.md etc, CYBERSEC F-1) are filtered BEFORE the cap, so they
+  // never displace a real file out of the MAX_FILE_ANCHORS_PER_SOLUTION budget.
+  const changedFiles = gateSha
+    ? deps
+        .filesForSha(gateSha)
+        .filter((p) => !NON_DISCRIMINATING_ANCHOR_PATHS.has(p))
+        .slice(0, MAX_FILE_ANCHORS_PER_SOLUTION)
+    : []
 
   const draftResult = callDraftWithRetry(deps.draftFn, frameReviewAsData(review.content), KG_DRAFT_MAX_ATTEMPTS)
   if ('error' in draftResult) {
@@ -535,13 +576,17 @@ export function runCapture(
             })
           }
           upsertEdge(kgDb, { src: id, dst: commitId, rel: 'implemented_in', source: 'kg-capture' })
-          upsertAnchor(kgDb, {
-            node_id: id,
-            repo: 'marveen',
-            path: `kanban_comments:${review.id}`,
-            sha: gateSha,
-            state: 'fresh',
-          })
+          // Card 5ecf6133: one anchor per real file the Gate-SHA touched, not the old
+          // kanban_comments:<id> placeholder (source_ref two lines above already carries that
+          // reference) -- an exact-path search can only ever find a REAL path. A file whose name
+          // doesn't fit the anchor path pattern (e.g. a space) is skipped, not fatal to the rest.
+          for (const path of changedFiles) {
+            try {
+              upsertAnchor(kgDb, { node_id: id, repo: 'marveen', path, sha: gateSha, state: 'fresh' })
+            } catch {
+              continue
+            }
+          }
         }
       }
       return ids

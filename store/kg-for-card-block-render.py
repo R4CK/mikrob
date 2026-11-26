@@ -30,6 +30,20 @@ LINE_BREAK_CHARS = ("\n", "\r", " ", " ")
 # entry. Capped per-entry, independent of the overall block cap below.
 WHY_MAX_CHARS = 300
 
+# Card 5ecf6133, CYBERSEC GO-with-conditions (msg 24927): the JSON package (for-card.ts) already
+# carries a node's title and its first anchor path, but this renderer only ever printed
+# card_id/why/verdict/gate_sha -- the title never actually reached the text block an agent sees.
+# Capped per-entry for the same reason WHY_MAX_CHARS is: a single long title must not eat the
+# whole block budget on its own.
+TITLE_MAX_CHARS = 200
+ANCHOR_PATH_MAX_CHARS = 200
+
+
+def cap_text(text, max_len):
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
+
 
 def collapse_lines(text):
     if text is None:
@@ -68,9 +82,20 @@ def escape_frame(text):
 def fmt_entry(e):
     why = cap_why(escape_frame(collapse_lines(e.get("why"))))
     cid = escape_frame(e.get("card_id"))
+    title = e.get("title")
+    title = cap_text(escape_frame(collapse_lines(title)), TITLE_MAX_CHARS) if title else None
+    anchor = e.get("anchor")
+    anchor_path = anchor.get("path") if isinstance(anchor, dict) else None
+    anchor_path = cap_text(escape_frame(collapse_lines(anchor_path)), ANCHOR_PATH_MAX_CHARS) if anchor_path else None
     verdict = escape_frame(collapse_lines(e.get("verdict"))) if e.get("verdict") else None
     gate_sha = escape_frame(e.get("gate_sha")) if e.get("gate_sha") else None
-    bits = [f"- {cid}: {why}"]
+
+    head = f"- {cid}"
+    if title:
+        head += f' "{title}"'
+    if anchor_path:
+        head += f" ({anchor_path})"
+    bits = [f"{head}: {why}"]
     if verdict:
         bits.append(f"[{verdict}]")
     if gate_sha:
