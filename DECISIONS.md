@@ -33056,3 +33056,45 @@ Ki döntött: MikroB (design, go-ahead, adopt/build threshold); végrehajtó: ba
 Hivatkozás: kártya eed988e7, c65add5a (MT FÁZIS), 3f6fc4ce (F0, independent security-scanner flag
 on Graft/Trail-Code that did not reproduce against current `main` -- see this card's own earlier
 FINDING comment for the two-pass README search); `store/secret-shape-scan.py`.
+
+## 2026-11-26 -- CORRECTION to the entry above: F8 baseline was broken, decision restated as inconclusive (kártya eed988e7, MikroB catch msg 24757)
+
+**This supersedes this card's earlier "keep our own F8 hook" conclusion.** MikroB challenged it
+(msg 24757, correctly): a 0.0-vs-0.208 recall comparison only supports "trail is not clearly
+ahead" if the 0.0 side is actually a working baseline. It was not -- the F8 side of the pilot was
+measuring a broken search path, not our hook's real behavior.
+
+Root-caused (new card 5ecf6133, HIGH, assigned to backend, not fixed on this card -- out of this
+card's own adopt/build scope):
+
+1. `src/kg/capture-pipeline.ts` line 541 (the EK-MT-2 "at least one anchor on the Gate-SHA" write)
+   sets the anchor's `path` field to `kanban_comments:<id>` -- the same comment-reference string
+   already correctly used for `source_ref` two lines above -- instead of a real repo-relative file
+   path. Confirmed graph-wide, not a one-off: 343 of 343 rows in the live `kg_anchors` table match
+   this `kanban_comments:NNNN` pattern. Zero real file paths exist in the anchors table at all.
+2. `hybridKgSearch`'s RRF fusion (`src/kg/search.ts`) scores each branch's contribution as
+   `1 / (60 + rank + 1)` -- a rank-0 hit contributes about 0.016; FTS and embedding both firing at
+   rank 0 for the same node sums to about 0.033, roughly 10x below the default `minScore` of 0.35.
+   Only an exact anchor-path match is exempted from that filter -- and with (1) above, that
+   exemption path is also dead. In practice, for-card/search can only surface a result when FTS
+   and embedding together happen to clear 0.35 on their own, which this formula makes very hard
+   regardless of actual relevance.
+3. Separately confirmed: 0 of 890 `kg_nodes` (every type: card/commit/solution) have a populated
+   `embedding` column -- the semantic branch is entirely dead across the whole graph. Root cause of
+   THIS (Ollama availability, embedding backfill never run, or something else) not yet
+   investigated; left to card 5ecf6133.
+
+**Restated decision: INCONCLUSIVE, not "keep our F8 hook."** The pilot's F8 measurement (0.0 mean
+recall, all 12 samples empty) reflects this broken search path, not a real comparison of what our
+hook would return once the anchor-path bug and the score-threshold mismatch are fixed. Per
+MikroB's instruction: do not run phase 2 regardless (the trail side's own 0.208 mean recall is
+itself weak and was never "clearly ahead" under any reading); but the adopt/build question stays
+genuinely open until the F8 side is re-run on a working search path. Re-running the same 12-card
+offline comparison after card 5ecf6133 lands is the natural next step for whoever picks that card
+up, not a new pilot from scratch -- the trail numbers, the near-miss writeup, and the sample/ground-
+truth selection from the entry above all stand unchanged and should be reused, not redone.
+
+Ki döntött: MikroB (caught the baseline flaw, set the correction's scope); backend (root-caused,
+opened the follow-up card). Végrehajtó: backend.
+Hivatkozás: kártya eed988e7, 5ecf6133 (new, HIGH, the actual fix); `src/kg/capture-pipeline.ts:541`,
+`src/kg/search.ts` (RRF fusion + minScore).
