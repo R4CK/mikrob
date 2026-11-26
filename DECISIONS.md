@@ -33945,3 +33945,42 @@ validation -- all four confirmed load-bearing.
 Ki döntött: CYBERED (NO-GO 39256, the fix direction); backend (implementation, tests, mutation
 proof). Hivatkozás: kártya af3cd669; CYBERED NO-GO 39256; `store/vendor-skill.sh`;
 `src/__tests__/vendor-skill-symlink-safety.test.ts`; Gate-SHA fa8f30fbea450b12462e64ec9eeaae1cf9826fe4.
+
+## 2026-11-26 -- CYBERED NO-GO 39294 closed: find -H + find -L replace the per-case symlink/loop walk (card af3cd669)
+
+CYBERED NO-GO 39294 (sha 6b40a0e0a15b7dcfae6a9d9aab44a80f4bcd5e7c) found two shapes still open
+in `vendor-skill.sh`'s symlink guard after the prior round (CYBERED NO-GO 39256 close): F-1,
+`--subdir`'s last component being itself a symlink to a directory INSIDE the clone, whose target
+holds an escaping inner link -- `find "$src" -type l` without `-H` does not follow a symlinked
+START point during traversal, so it lists `$src` itself as type `l` and never descends into it,
+leaving the nested escaping link unvalidated. F-2, a mutual cycle between two sibling directories
+(`a/x -> ../b`, `b/y -> ../a`) resolves each link to a real, existing, non-ancestor path, passing
+both the hand-rolled ancestor-loop guard and the existence check; only `cp -RL`'s own traversal
+failure caught it, AFTER the destructive payload wipe.
+
+Per MikroB's re-plan (39295): the hand-rolled per-case ancestor-loop guard was REPLACED (not
+extended) with CYBERED's validated two-step design, both run before `$dest` is touched: (1)
+`find -L "$src"` as an upfront loop detector -- GNU find reports a non-zero exit on any
+filesystem loop (self, ancestor, or multi-node cycle) while dereferencing every symlink during
+traversal, subsuming the old ancestor-only check and additionally catching the mutual-cycle
+shape; (2) `find -H "$src" -type l` for the per-symlink existence/containment walk -- `-H`
+follows a symlink given as the START point only, so a symlinked `--subdir` is itself dereferenced
+for listing purposes and its contents get walked too, closing F-1.
+
+Both mechanisms verified empirically (ancestor-loop, self-link, mutual-cycle, and symlinked-start
+inner-link cases all reproduced with plain `find`/GNU find before writing fixtures). Three new
+fixtures added to `src/__tests__/vendor-skill-symlink-safety.test.ts`: the symlinked-subdir
+inner-link escape (F-1), the mutual sibling cycle with a dest-only marker proving the wipe never
+ran (F-2), and a clean root-vendor SUCCESS fixture pinning the clone-equality alternative in the
+containment check (CYBERED's M7 mutation-pin gap). Confirmed RED against the pre-fix script
+(2 failed as expected, root-vendor control already green), GREEN after the fix (18/18, no
+regression). Both new guard mechanisms (`find -L` precheck, `find -H` walk) individually
+mutation-tested (disable -> commit -> fleet-test confirms the exact expected fixtures RED ->
+revert): disabling `find -L` turned the ancestor-loop, self-link, AND mutual-cycle fixtures red
+together (3 failed); reverting `-H` to plain `find` turned only the symlinked-subdir fixture red
+(1 failed). Both confirmed load-bearing; final diff against the fix commit is clean (net-zero).
+
+Ki döntött: CYBERED (NO-GO 39294, the validated fix direction); MikroB (39295, re-plan: replace
+the per-case design rather than patch another case); backend (implementation, tests, mutation
+proof). Hivatkozás: kártya af3cd669; CYBERED NO-GO 39294; MikroB re-plan 39295;
+`store/vendor-skill.sh`; `src/__tests__/vendor-skill-symlink-safety.test.ts`.
