@@ -87,7 +87,12 @@ export function applyAnchorPathBackfill(
   writeBackup: (backup: Omit<AnchorBackfillBackup, 'createdIds'>) => void,
   now: () => number,
 ): AnchorBackfillApplyResult {
-  const originals = [...plan.toBackfill.map((i) => i.placeholder), ...plan.unresolved]
+  // Bug caught testing restore against a copy of the live db before ever touching live: this used
+  // to also snapshot plan.unresolved rows. Those are NEVER deleted (left alone, by design), so a
+  // later restore tried to INSERT a row with an id still present in the table and hit
+  // SQLITE_CONSTRAINT_PRIMARYKEY. Only toBackfill's placeholders are ever deleted, so only those
+  // belong in a backup meant to undo the deletions.
+  const originals = plan.toBackfill.map((i) => i.placeholder)
   // Backup taken BEFORE the transaction, from the plan's own snapshot (not a fresh re-read) --
   // the exact rows this run is about to touch, not whatever the table holds at call time.
   writeBackup({ takenAt: now(), originals })

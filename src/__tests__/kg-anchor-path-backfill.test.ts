@@ -165,4 +165,26 @@ describe('applyAnchorPathBackfill + restoreAnchorPathBackfill (tested rollback)'
     const afterRows = db.prepare('SELECT * FROM kg_anchors ORDER BY id').all() as KgAnchorRow[]
     expect(afterRows).toEqual(beforeRows)
   })
+
+  // Regression: caught by hand against a copy of the live db before this card ever touched it
+  // for real. An unresolved row is never deleted during apply, so it must NOT be in the backup's
+  // "originals" -- restoring used to try to re-INSERT it over itself and hit
+  // SQLITE_CONSTRAINT_PRIMARYKEY, because its id was still live in the table the whole time.
+  it('restore is safe when the run had BOTH resolved and unresolved placeholders mixed together', () => {
+    const db = freshKgDb()
+    seedSolutionWithPlaceholder(db, 'sol:a:0', '1111111', 1) // resolves
+    seedSolutionWithPlaceholder(db, 'sol:b:0', 'deadbee', 2) // does not resolve
+    const beforeRows = db.prepare('SELECT * FROM kg_anchors ORDER BY id').all() as KgAnchorRow[]
+
+    const plan = planAnchorPathBackfill(db, {
+      filesForSha: (sha) => (sha === '1111111' ? ['src/a.ts'] : []),
+    })
+    const result = applyAnchorPathBackfill(db, plan, () => {}, () => 1000)
+    expect(result.backfilled).toBe(1)
+    expect(result.unresolved).toBe(1)
+
+    expect(() => restoreAnchorPathBackfill(db, result.backup)).not.toThrow()
+    const afterRows = db.prepare('SELECT * FROM kg_anchors ORDER BY id').all() as KgAnchorRow[]
+    expect(afterRows).toEqual(beforeRows)
+  })
 })
