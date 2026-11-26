@@ -392,6 +392,24 @@ describe('N-3: drops/failures are counted, logged, and self-heal via a backfill 
     db.close()
   })
 
+  // M6 (CYBERSEC NO-GO 39146/39187): the test above only exercises the THROW path
+  // (mockRejectedValueOnce). The real backend-down shape is generateEmbedding resolving to
+  // null WITHOUT throwing (src/db.ts's own catch returns null) -- a mutant that counts a falsy
+  // result as success survived every other test here.
+  it('a falsy (null) embedding result -- not a throw -- is counted as a failure too', async () => {
+    const { generateEmbedding } = await import('../db.js')
+    vi.mocked(generateEmbedding).mockResolvedValueOnce(null)
+    const db = new Database(':memory:')
+    migrate(db)
+    upsertNode(db, {
+      id: 'card:nullfail', type: 'card', project: 'marveen', title: 'title',
+      source_ref: 'kanban_cards:nullfail', extractor: 'manual',
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(getEmbedFailedCount()).toBe(1)
+    db.close()
+  })
+
   it('900 new nodes in one tick: drops are counted exactly (54 embedded, 846 dropped) and the debounced sweep heals coverage to >=95%', async () => {
     vi.useFakeTimers()
     try {
@@ -577,6 +595,141 @@ describe('backfillKgNodeEmbeddings guards its write against a text change mid-fl
     // title', which this mock resolves immediately) or still NULL if that has not run yet either
     // way -- both are correct; only the stale vector landing would be the bug.
     expect(after.embedding === null ? null : JSON.parse(after.embedding.toString())).not.toEqual([1, 2, 3])
+    db.close()
+  })
+})
+
+// N-A (CYBERSEC NO-GO 39187, card 7f3cbe92): a trigger arriving while a sweep is already RUNNING
+// used to be silently dropped -- a second write batch landing mid-sweep (healthy backend, no
+// outage) left its own drops permanently NULL, because the running sweep's SELECT snapshot
+// predates them and the normal re-arm (attempted >= limit) never fires for a backlog that fits
+// under the cap.
+describe('N-A: a trigger that arrives while a sweep is already running is not dropped (card 7f3cbe92)', () => {
+  it('a second batch landing mid-sweep (healthy backend) is still fully healed, not left 246/600 NULL forever', async () => {
+    vi.useFakeTimers()
+    try {
+      const db = new Database(':memory:')
+      migrate(db)
+      const perBatch = 300
+      const expectedAccepted = EMBED_CONCURRENCY_LIMIT + EMBED_QUEUE_BOUND
+      const expectedDroppedPerBatch = perBatch - expectedAccepted
+
+      for (let i = 0; i < perBatch; i++) {
+        upsertNode(db, {
+          id: `card:na1-${i}`, type: 'card', project: 'marveen', title: `t1-${i}`,
+          source_ref: `kanban_cards:na1-${i}`, extractor: 'manual',
+        })
+      }
+      expect(getEmbedDropCount()).toBe(expectedDroppedPerBatch)
+
+      // Let the debounce fire so the first sweep STARTS, but stop well before it could finish
+      // (246 rows * 100ms = ~24.6s) -- the second batch below lands while it is still running.
+      await vi.advanceTimersByTimeAsync(2000 + 500)
+
+      for (let i = 0; i < perBatch; i++) {
+        upsertNode(db, {
+          id: `card:na2-${i}`, type: 'card', project: 'marveen', title: `t2-${i}`,
+          source_ref: `kanban_cards:na2-${i}`, extractor: 'manual',
+        })
+      }
+      expect(getEmbedDropCount()).toBe(expectedDroppedPerBatch * 2)
+
+      // Drain in a loop rather than one hand-computed window: the first sweep must finish, the
+      // re-arm (requested mid-flight, N-A) must run a second sweep over the backlog batch 2 left,
+      // and that needs to be observed regardless of exactly how the two sweeps interleave.
+      const coverageOf = (): { total: number; embedded: number } =>
+        db.prepare('SELECT COUNT(*) total, SUM(embedding IS NOT NULL) embedded FROM kg_nodes').get() as {
+          total: number
+          embedded: number
+        }
+      for (let i = 0; i < 40 && coverageOf().embedded < perBatch * 2; i++) {
+        await vi.advanceTimersByTimeAsync(5000)
+      }
+
+      const coverage = coverageOf()
+      expect(coverage.total).toBe(perBatch * 2)
+      expect(coverage.embedded).toBe(coverage.total) // not 354/600 (the measured regression)
+      db.close()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+// L-2 (CYBERSEC NO-GO 39187, card 7f3cbe92): `attempted >= limit` ignored whether a pass actually
+// embedded anything, so a permanently-down backend re-armed forever at the base 2s cadence
+// (measured: ~6k calls/10min, zero effect). Bounded exponential backoff caps this.
+describe('L-2: a permanently-down backend backs off instead of re-arming forever (card 7f3cbe92)', () => {
+  it('embed call count over 10 simulated minutes stays bounded, not ~300 (the base-cadence count)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { generateEmbedding } = await import('../db.js')
+      vi.mocked(generateEmbedding).mockResolvedValue(null) // backend down, every call fails, never throws
+
+      const db = new Database(':memory:')
+      migrate(db)
+      upsertNode(db, {
+        id: 'card:l2seed', type: 'card', project: 'marveen', title: 'seed',
+        source_ref: 'kanban_cards:l2seed', extractor: 'manual',
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(getEmbedFailedCount()).toBe(1) // armed the sweep
+
+      vi.mocked(generateEmbedding).mockClear()
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+
+      // One NULL row per pass -> one call per pass. Base cadence (2s, never backing off) would be
+      // ~300 passes in 10 minutes; capped exponential backoff (2s doubling to a 60s ceiling)
+      // caps it far lower.
+      expect(vi.mocked(generateEmbedding).mock.calls.length).toBeLessThan(50)
+      db.close()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+// N-B (CYBERSEC NO-GO 39187, card 7f3cbe92): the OTHER half of F-4's stale-write race -- F-4 only
+// guarded the backfill sweep's own UPDATE; scheduleKgNodeEmbedding's UPDATE (the ordinary
+// fire-and-forget auto-embed path every write goes through) was still unconditional.
+describe('N-B: scheduleKgNodeEmbedding guards its own write against reversed completion order (card 7f3cbe92)', () => {
+  it('an older, slower embed call cannot overwrite a newer vector that already landed', async () => {
+    const { generateEmbedding } = await import('../db.js')
+    const db = new Database(':memory:')
+    migrate(db)
+
+    let resolveOld!: (v: number[]) => void
+    vi.mocked(generateEmbedding).mockImplementation(
+      (text: string) =>
+        new Promise((resolve) => {
+          if (text === 'old title') resolveOld = resolve
+          else resolve([2, 2, 2]) // the newer write's own embed, resolves immediately
+        }),
+    )
+
+    upsertNode(db, {
+      id: 'card:nb', type: 'card', project: 'marveen', title: 'old title',
+      source_ref: 'kanban_cards:nb', extractor: 'manual',
+    })
+    // Text changes WHILE the first embed call (for 'old title') is still pending -- clears to
+    // NULL synchronously (N-1) and schedules its OWN embed call, which this mock resolves at once.
+    upsertNode(db, {
+      id: 'card:nb', type: 'card', project: 'marveen', title: 'new title',
+      source_ref: 'kanban_cards:nb', extractor: 'manual',
+    })
+    await vi.waitFor(() => {
+      const row = db.prepare('SELECT embedding FROM kg_nodes WHERE id = ?').get('card:nb') as { embedding: Buffer | null }
+      if (row.embedding === null) throw new Error('not written yet')
+    })
+    const afterNew = db.prepare('SELECT embedding FROM kg_nodes WHERE id = ?').get('card:nb') as { embedding: Buffer }
+    expect(JSON.parse(afterNew.embedding.toString())).toEqual([2, 2, 2])
+
+    // Now the STALE, older call (for text the row no longer has) finally resolves.
+    resolveOld([9, 9, 9])
+    await new Promise((r) => setTimeout(r, 0))
+
+    const after = db.prepare('SELECT embedding FROM kg_nodes WHERE id = ?').get('card:nb') as { embedding: Buffer }
+    expect(JSON.parse(after.embedding.toString())).toEqual([2, 2, 2]) // NOT overwritten with [9,9,9]
     db.close()
   })
 })

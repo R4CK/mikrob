@@ -33843,7 +33843,12 @@ Hivatkozás: kártya 7f3cbe92 (child of 5ecf6133), 6d542dc9 (the fix this correc
 ## 2026-11-26 -- KG embeddings fix round: floating promise, slot-release pin, sweep re-arm, single-flight, stale-write guard (kártya 7f3cbe92, CYBERSEC NO-GO + QA FAIL 39145)
 
 CYBERSEC NO-GO + QA FAIL 39145 on the entry above's Gate-SHA (dfd54b2496a3c0e9d37f50623026bd0e0d388976)
-found five problems, all fixed in `src/kg/store.ts`:
+found five problems, addressed in `src/kg/store.ts` as described below. Correction (CYBERSEC
+NO-GO 39187, the next gate round on this fix): F-2 was closed only for the measured 2500-row
+case, not for a streamed import landing while a sweep is already running (N-A, this round's own
+regression); F-4 was closed only for the backfill sweep's own UPDATE, not for
+`scheduleKgNodeEmbedding`'s (N-B, the other half of the same race, inherited from 6d542dc9 and
+not a regression). See the entry below this one for both.
 
 - F-1: `runEmbedSlot`'s `run().then().finally()` chain lost its `void` marker in this card's own
   conflict resolution against 6d542dc9's landing (`no-floating-promises` had regressed 0 -> 1).
@@ -33888,3 +33893,70 @@ Ki döntött: cybersec (NO-GO 39145) + qa (FAIL 39145), both on this card's delt
 Végrehajtó: fullstack.
 Hivatkozás: kártya 7f3cbe92, gate comments/verdict 39145, MikroB inter-agent msg 25084, previous
 entry above (the round this corrects).
+
+## 2026-11-26 -- KG embeddings fix round 3: streamed-import regression, scheduleKgNodeEmbedding stale-write guard, down-backend backoff (kártya 7f3cbe92, QA PASS 39181 + CYBERSEC NO-GO 39187)
+
+QA PASS 39181 confirmed F-1/F-3/F-2(measured case)/F-4(backfill half)/F-5 from the prior round, by
+independent mutation testing. CYBERSEC NO-GO 39187 on the SAME sha (632167657c63ece8a072d978488f6cbdeee91835)
+found two blocking items and fixed two non-blocking ones from its own L-list:
+
+- N-A (REGRESSION, introduced by the F-3 single-flight guard): `scheduleBackfillSweep()` silently
+  DISCARDED every trigger that arrived while a sweep was already running, with nothing recording
+  "run again". Measured by CYBERSEC: a healthy backend, 300 new nodes then another 300 five
+  seconds later (while the first sweep is still draining) -- 246 of 600 rows stayed NULL
+  PERMANENTLY, because the running sweep's SELECT snapshot predates the second batch and the
+  normal re-arm (`attempted >= limit`) never fires for a backlog that fit under the cap. This is
+  exactly the streamed-import shape 01b10349 will use. Fixed: a `sweepRerunRequested` flag, set
+  when `scheduleBackfillSweep()` is called while `backfillSweepRunning` is true; read (and
+  cleared) INSIDE the sweep's own `.then()`, not captured at the sweep's START (the first attempt
+  at this fix captured it too early and read the pre-sweep, always-`false` value -- caught by the
+  test itself, not by review). Re-arm condition widened per MikroB's 25146: rerun requested, OR
+  `attempted >= limit`, OR the pass left failures behind (`embedded < attempted`, backend's own
+  39167 suggestion) -- the last one closes L-3 from 39187 too (a partially-failing pass used to
+  wait for an unrelated future write to retry it).
+- N-B (not a regression, the other half of the prior round's F-4; inherited from 6d542dc9):
+  `scheduleKgNodeEmbedding`'s own `UPDATE` (the ordinary fire-and-forget auto-embed every write
+  goes through) was still unconditional -- only the backfill sweep's `UPDATE` got F-4's guard.
+  Measured by CYBERSEC: two writes to one node with completion order reversed -- the OLDER text's
+  vector landed AFTER the newer one, permanently. Fixed with the same guard, expressed at the JS
+  level this time (re-read the row's current fields, recompute `kgEmbedText`, compare to the text
+  that was embedded, apply only if it still matches AND `embedding IS NULL`) rather than
+  duplicating F-4's column-by-column SQL `WHERE` -- `scheduleKgNodeEmbedding` only had the combined
+  text to begin with, not the individual fields.
+- L-2 (non-blocking, fixed anyway, cheap): a permanently-down backend re-armed the sweep forever
+  at the base 2s cadence regardless of whether a pass embedded anything (measured: ~6k calls/10min,
+  zero effect). Bounded exponential backoff (2s doubling to a 60s cap, reset the moment any pass
+  embeds something again) instead of a fixed cadence.
+- M6 (non-blocking, fixed anyway, one test): the only failure-counting test exercised the THROW
+  path; the real backend-down shape is `generateEmbedding` resolving to `null` WITHOUT throwing
+  (`src/db.ts`'s own catch returns `null`). A mutant counting that as success survived every
+  existing test. Added the missing case; no code change was needed (the existing `if (emb)`
+  branch was already correct, only its test coverage was not).
+
+Not touched this round (CYBERSEC's own L-1/L-4/L-5 from 39187, explicitly non-blocking,
+info/cosmetic): M9 (`embed_model` not cleared on a text change, pre-existing), M15 (concurrency
+constant import shape, pre-existing), `embedded++` over-counting when a guarded UPDATE is a no-op
+(L-4, info-only, nothing reads it for control flow), and the three remaining column-guard pins
+(G3/G4/G5 for body/snippet/keywords individually) CYBERSEC's own probe found still unpinned on the
+backfill UPDATE -- left for a future round if they prove load-bearing; the F-4 guard they test is
+still correct, only under-pinned.
+
+Every non-trivial fix verified by mutation (ran the mutant, not just reasoned about it): N-A's
+own first implementation attempt (capturing the rerun flag too early) was caught this way before
+it ever reached a gate. L-2's mutant (remove the backoff) produced 285 calls in 10 simulated
+minutes against a 50-call bound; N-B's mutant (revert to the unconditional UPDATE) reproduced the
+exact stale-vector landing CYBERSEC measured; M6's mutant (treat falsy as success) was caught by
+the one new test added for it.
+
+Measured: `kg-embed-backfill.test.ts` 23/23 green (4 new cases: N-A's streamed-second-batch
+healing, L-2's backoff bound, N-B's reversed-completion-order guard, M6's null-not-thrown
+failure count). Full `src/__tests__/kg-*.test.ts` (30 files): 459/459 green. `npx tsc --noEmit -p .`
+clean. `store/lint-ratchet.sh`: no rule got worse (459 findings, baseline holds, unrelated to the
+kg rule count above).
+
+Ki döntött: qa (PASS 39181, independent mutation confirmation) + cybersec (NO-GO 39187, N-A/N-B
+blocking, L-2/M6 non-blocking); fullstack (applied the fix). MikroB msg 25146 ordered this round,
+prioritized ahead of e94fea8e and the e99c3dc1 re-plan.
+Végrehajtó: fullstack.
+Hivatkozás: kártya 7f3cbe92, gate comments/verdict 39181/39187, backend's comment 39167 (the
+`embedded < attempted` re-arm trigger), MikroB inter-agent msg 25146, previous two entries above.

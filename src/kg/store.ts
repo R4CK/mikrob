@@ -507,6 +507,19 @@ let backfillSweepTimer: ReturnType<typeof setTimeout> | null = null
 // overlapping re-selection of the same backlog, not a single clean drain). This flag covers the
 // gap the timer alone cannot: "currently executing", not just "currently pending".
 let backfillSweepRunning = false
+// CYBERSEC NO-GO 39187 N-A (card 7f3cbe92): the single-flight guard above silently discarded
+// every trigger that arrived while a sweep was already running, and nothing recorded "run again"
+// -- a second write batch landing mid-sweep (a healthy backend, no outage) left its drops
+// permanently NULL, because the running sweep's SELECT snapshot predates them and the normal
+// re-arm (attempted >= limit) never fires for a backlog that fit under the cap. Recorded here
+// instead, consumed once the current sweep finishes.
+let sweepRerunRequested = false
+// L-2 (same NO-GO): `attempted >= limit` ignores whether the pass actually embedded anything, so
+// a permanently-down backend re-armed forever at the base cadence (measured: ~6k calls/10min).
+// Bounded exponential backoff: grows only on a zero-progress pass, resets the moment any pass
+// embeds something again.
+let sweepBackoffMs = 0
+const BACKFILL_SWEEP_MAX_BACKOFF_MS = 60_000
 const BACKFILL_SWEEP_DELAY_MS = 2000
 const BACKFILL_SWEEP_LIMIT = 2000
 
@@ -545,37 +558,65 @@ export function resetEmbedCountersForTest(): void {
     backfillSweepTimer = null
   }
   backfillSweepRunning = false
+  sweepRerunRequested = false
+  sweepBackoffMs = 0
 }
 
-function scheduleBackfillSweep(db: Database.Database): void {
-  // F-3: single-flight -- a sweep already PENDING (timer set) or already RUNNING (the long async
-  // backfillKgNodeEmbeddings call itself) both skip scheduling a new one. The re-arm path in the
-  // .then() below (F-2) is the only other caller, and it runs after backfillSweepRunning is
-  // cleared, so it is never blocked by the pass it is re-arming for.
-  if (backfillSweepTimer || backfillSweepRunning) return
+function scheduleBackfillSweep(db: Database.Database, delayMs: number = BACKFILL_SWEEP_DELAY_MS): void {
+  // N-A fix: a trigger arriving while a sweep is RUNNING no longer falls on the floor -- it is
+  // recorded so the sweep re-arms itself once done, instead of being silently dropped.
+  if (backfillSweepRunning) {
+    sweepRerunRequested = true
+    return
+  }
+  // F-3: a sweep already PENDING (timer set) skips scheduling a second one; the pending timer
+  // will read the backlog fresh when it fires regardless of what triggered this call.
+  if (backfillSweepTimer) return
   backfillSweepTimer = setTimeout(() => {
     backfillSweepTimer = null
     backfillSweepRunning = true
+    // sweepRerunRequested is read INSIDE .then(), not captured here: a trigger that arrives WHILE
+    // backfillKgNodeEmbeddings below is still running (the whole point of N-A) sets it AFTER this
+    // line runs but BEFORE the async call resolves -- capturing it here would silently read the
+    // stale pre-sweep value (always false at this point) and miss exactly the case this fixes.
     void backfillKgNodeEmbeddings(db, BACKFILL_SWEEP_LIMIT)
       .then((result) => {
         // Cleared BEFORE the possible re-arm call below, not in a trailing .finally(): the
         // single-flight guard above would otherwise block that exact call.
         backfillSweepRunning = false
-        // F-2 (card 7f3cbe92, CYBERSEC NO-GO 39145): a single sweep only ever closed up to
-        // BACKFILL_SWEEP_LIMIT rows and nothing re-armed another one -- a backlog bigger than
-        // the limit (measured: 2500 NULL rows, 446 still NULL after +1h) stayed partially NULL
-        // forever. `attempted === limit` means the SELECT ... LIMIT ? query hit the cap, so more
-        // rows may remain; keep re-arming until a pass comes back under the limit.
-        if (result.attempted >= BACKFILL_SWEEP_LIMIT) {
-          scheduleBackfillSweep(db)
+        const rerunRequested = sweepRerunRequested
+        sweepRerunRequested = false
+        const madeProgress = result.embedded > 0
+        // F-2: a single sweep only ever closed up to BACKFILL_SWEEP_LIMIT rows (attempted hit the
+        // cap, more may remain). N-A: OR a trigger arrived mid-sweep and asked for another pass.
+        // N-A/backend's 39167 note: OR this pass itself left failures behind (embedded < attempted
+        // -- some rows in THIS backlog did not embed, e.g. a flaky backend) -- these do not wait
+        // for an unrelated future write to accidentally re-trigger them.
+        const moreWorkLikely =
+          rerunRequested || result.attempted >= BACKFILL_SWEEP_LIMIT || result.embedded < result.attempted
+        if (!moreWorkLikely) {
+          sweepBackoffMs = 0
+          return
         }
+        if (madeProgress) {
+          // Progress resumed (or this was the first pass) -- back to the normal cadence.
+          sweepBackoffMs = 0
+          scheduleBackfillSweep(db)
+          return
+        }
+        // L-2: a pass that embedded NOTHING (the shape a permanently-down backend produces) does
+        // not keep re-arming at the base 2s cadence -- that measured ~6k calls/10min with zero
+        // effect. Bounded exponential backoff instead: it still eventually retries (the backend
+        // may recover), but at a capped, shrinking rate rather than hammering forever.
+        sweepBackoffMs = sweepBackoffMs === 0 ? BACKFILL_SWEEP_DELAY_MS : Math.min(sweepBackoffMs * 2, BACKFILL_SWEEP_MAX_BACKOFF_MS)
+        scheduleBackfillSweep(db, sweepBackoffMs)
       })
       .catch(() => {
         backfillSweepRunning = false
         // best-effort self-heal; a failed sweep leaves rows NULL for the next trigger or an
         // operator-run backfill, same posture as any other embed failure in this module.
       })
-  }, BACKFILL_SWEEP_DELAY_MS)
+  }, delayMs)
 }
 
 function runEmbedSlot(db: Database.Database, run: () => Promise<boolean>): void {
@@ -629,11 +670,29 @@ function scheduleKgNodeEmbedding(db: Database.Database, id: string, text: string
       // failing the whole node write.
       const emb = await generateEmbedding(text)
       if (emb) {
-        db.prepare('UPDATE kg_nodes SET embedding = ?, embed_model = ? WHERE id = ?').run(
-          Buffer.from(JSON.stringify(emb)),
-          EMBED_MODEL,
-          id,
-        )
+        // N-B (card 7f3cbe92, CYBERSEC NO-GO 39187): this is the OTHER half of the stale-write
+        // race F-4 closed only for the backfill sweep's own UPDATE -- generateEmbedding above can
+        // take long enough that two overlapping calls for the SAME node (e.g. two quick edits)
+        // finish out of order. An unconditional UPDATE here let the OLDER text's vector land
+        // AFTER the newer one, permanently (the column is no longer NULL, so no sweep repairs
+        // it). Same guard as the backfill UPDATE: apply only if the row is still NULL and its
+        // current fields still produce exactly the text that was embedded.
+        const current = db
+          .prepare('SELECT title, body, snippet, keywords, embedding FROM kg_nodes WHERE id = ?')
+          .get(id) as
+          | { title: string; body: string | null; snippet: string | null; keywords: string | null; embedding: Buffer | null }
+          | undefined
+        if (
+          current &&
+          current.embedding === null &&
+          kgEmbedText(current.title, current.body, current.snippet, current.keywords) === text
+        ) {
+          db.prepare('UPDATE kg_nodes SET embedding = ?, embed_model = ? WHERE id = ? AND embedding IS NULL').run(
+            Buffer.from(JSON.stringify(emb)),
+            EMBED_MODEL,
+            id,
+          )
+        }
         return true
       }
       return false
