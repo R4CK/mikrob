@@ -136,8 +136,10 @@ esac
 #     symlink given as the START point only (not ones found during traversal), so a symlinked
 #     --subdir is itself dereferenced for listing purposes and its CONTENTS get walked too,
 #     closing F-1.
-# MUTATION-TEST-H: temporarily disabled find -L loop pre-check (to be reverted)
-true
+find -L "$src" >/dev/null 2>&1 || {
+  echo "vendor-skill: directory loop in upstream: $src" >&2
+  exit 4
+}
 while IFS= read -r -d '' link; do
   resolved="$(realpath -- "$link" 2>/dev/null)"
   [[ -n "$resolved" && -e "$resolved" ]] || {
