@@ -726,8 +726,9 @@ if [[ "$GATEWAY_ENABLED" == "true" ]]; then
   curl -fsS -m 5 "$OLLAMA_HOST/api/tags" | model_pulled "$MODEL" \
     || die 3 "model '$MODEL' not pulled -- run: ollama pull $MODEL (gateway mode only forwards models Ollama has actually pulled, same as the direct path)"
 
-  GATEWAY_AUTH_HDR="$(mktemp)"; chmod 0600 "$GATEWAY_AUTH_HDR"
-  printf 'Authorization: Bearer %s\n' "$GATEWAY_AUTH_TOKEN" > "$GATEWAY_AUTH_HDR"
+  # Token never touches disk (card 0aba66b8, CYBERSEC NO-GO 8c291307 F-2c): the existing EXIT trap
+  # above only names QUEUE_HDR_FILE, so a SIGTERM between the two straight-line `rm -f` calls below
+  # left GATEWAY_AUTH_HDR on disk. Process substitution: an anonymous pipe fd, never a disk path.
 
   # CUSTOM-PREFIX FIX (card 29ceef23, RedHat standing condition on Cybered GO 30273 / card
   # 9b25cc84): the pulled-check above proves Ollama has $MODEL, but freellmapi's OWN router
@@ -773,13 +774,13 @@ if t:
 print(json.dumps(d))')
 
   GATEWAY_CMD=(flock -w "$GPU_LOCK_WAIT" "$GPU_LOCK" curl -fsS -m "$TIMEOUT" -X POST "$GATEWAY_API_BASE/chat/completions" \
-    -H "Content-Type: application/json" -H "@$GATEWAY_AUTH_HDR" --noproxy '*' -d "$GATEWAY_REQ")
+    -H "Content-Type: application/json" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$GATEWAY_AUTH_TOKEN") --noproxy '*' -d "$GATEWAY_REQ")
   if command -v timeout >/dev/null 2>&1; then
     GATEWAY_CMD=(timeout -k 5 "$(( GPU_LOCK_WAIT + TIMEOUT + 10 ))" "${GATEWAY_CMD[@]}")
   fi
   GATEWAY_RESP=$("${GATEWAY_CMD[@]}" 2>/dev/null) || {
     gen_rc=$?
-    rm -f "$GATEWAY_AUTH_HDR"
     log_usage "$([[ "$gen_rc" -eq 1 ]] && echo busy || echo err)" "$(_elapsed)"
     _queue_finish fail
     if [[ "$gen_rc" -eq 1 ]]; then
@@ -787,7 +788,6 @@ print(json.dumps(d))')
     fi
     die 5 "gateway api error (timeout ${TIMEOUT}s or server error) at $GATEWAY_API_BASE"
   }
-  rm -f "$GATEWAY_AUTH_HDR"
 
   # eval_duration has no gateway equivalent (the gateway does not report generation-only time
   # separately from total request time); approximated here as the full elapsed wall time, which

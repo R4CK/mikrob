@@ -334,14 +334,13 @@ fi
 
 if [[ "$VALIDATE_ONLY" -eq 1 ]]; then
   # Lightweight probe: list models (no token cost).
-  # Key goes in a 0600 header file to keep it out of /proc/<pid>/cmdline (card a92e9913 B3).
-  VAL_HDR="$(mktemp)"
-  chmod 0600 "$VAL_HDR"
-  printf 'x-goog-api-key: %s\r\n' "$API_KEY" > "$VAL_HDR"
-  http_status="$(curl -s -o /dev/null -w '%{http_code}' \
-    -H @"$VAL_HDR" \
+  # Key goes in via stdin to keep it out of /proc/<pid>/cmdline (card a92e9913 B3) -- not a
+  # tempfile: the trap above never named VAL_HDR, so a SIGTERM mid-request left it on disk
+  # (card 0aba66b8, CYBERSEC NO-GO 8c291307 F-2d).
+  http_status="$(printf 'x-goog-api-key: %s\r\n' "$API_KEY" \
+    | curl -s -o /dev/null -w '%{http_code}' \
+    -H @- \
     "$GEMINI_API_BASE/models" 2>/dev/null)"
-  rm -f "$VAL_HDR"
   if [[ "$http_status" == "200" ]]; then
     echo "gemini-offload-call: key valid (HTTP 200)"
     exit 0

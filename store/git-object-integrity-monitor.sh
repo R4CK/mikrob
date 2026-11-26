@@ -329,13 +329,12 @@ if [ "$DRY" = "1" ]; then
   exit 1
 fi
 
-# Token from a 0600 header file, never argv.
-HDR=""
-if [ -r "$ROOT/store/.dashboard-token" ]; then
-  HDR="$(mktemp)"; chmod 600 "$HDR"
-  printf 'Authorization: Bearer %s\n' "$(cat "$ROOT/store/.dashboard-token")" > "$HDR"
-fi
-if [ -n "$HDR" ]; then
+# Token never touches disk (card 0aba66b8, CYBERSEC NO-GO 8c291307 F-2b: the old mktemp header
+# file had no trap and survived SIGTERM). stdin already carries the POST body here, so the header
+# goes in via process substitution -- an anonymous pipe fd, never a disk path.
+HAS_TOKEN=0
+[ -r "$ROOT/store/.dashboard-token" ] && HAS_TOKEN=1
+if [ "$HAS_TOKEN" = "1" ]; then
   python3 -c 'import json,sys; print(json.dumps({"from":"mikrob","to":"mikrob","content":sys.argv[1]}))' \
 "[git-object-integrity-monitor] RIASZTAS: git fsck bukott a(z) $SCAN_ROOT alatt --$BAD_REPOS
 $DETAIL
@@ -344,10 +343,11 @@ Ez ugyanaz a hibaosztaly, mint a 2026-08-13-i CleanCore-eset (c6e9758f): egy obj
 vissza a sajat SHA-jara. A tartalom gyakran megvan sertetlenul egy worktree-ben vagy egy masik
 klonban -- ELOSZOR azt keresd meg, es SEMMIT ne torolj (a 08-13-i helyreallitas pont igy ment jol).
 Reszletek: git -C <repo> fsck --no-dangling" \
-    | curl -fsS -m 15 -o /dev/null -H "@$HDR" -H 'Content-Type: application/json' \
+    | curl -fsS -m 15 -o /dev/null \
+        -H @<(printf 'Authorization: Bearer %s\n' "$(cat "$ROOT/store/.dashboard-token")") \
+        -H 'Content-Type: application/json' \
         -X POST "http://127.0.0.1:${WEB_PORT:-3420}/api/messages" --data-binary @- 2>/dev/null \
     || log "WARN: could not deliver the corruption alert"
-  rm -f "$HDR"
 else
   log "WARN: no dashboard token, corruption found but MikroB could not be alerted"
 fi

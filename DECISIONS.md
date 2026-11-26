@@ -33967,3 +33967,52 @@ implementáció, teszt).
 Hivatkozás: kártya 0aba66b8; CYBERED NO-GO 8c2913071bf377a0a38aee8d318a3861462a8c11 (komment,
 msg 25282); `scripts/doctor.sh`, `scripts/channels.sh`,
 `store/token-header-no-tempfile.selftest.sh`, `store/token-header-no-tempfile-scan.py`.
+
+## 2026-11-26 -- token header tempfiles, kör 3: 3 új lelet + per-call-site header-drop pin (kártya 0aba66b8)
+
+CYBERSEC NO-GO a kör 2 sháján (8c291307, MikroB msg 25287): négy újabb hely, ahol egy titok
+mktemp fájlba íródik EXIT trap nélkül a sajátjára. Három valódi, a kártya hatókörébe eső
+(`scripts/channels.sh` a kör 2-ben már javítva; `store/git-object-integrity-monitor.sh:335`
+dashboard token; `store/local-llm.sh:729` freellm gateway token, a meglévő EXIT trap csak
+`QUEUE_HDR_FILE`-t takarítja; `store/gemini-offload-call.sh:338` Gemini API key, a meglévő trap
+csak `_REDACT_PY`/`TMPOUT`/`TMPERR`/`API_HDR`/`REQ_FILE`-t sorolja). Mindhárom javítva: stdin
+free esetén közvetlen `printf ... | curl -H @-`, egyébként (`git-object-integrity-monitor.sh`,
+`fleet-test.sh` mintájára, mivel a stdin már a POST body-t viszi) `-H @<(printf ...)`.
+
+A második, nagyobb rész MikroB konkrét kérése: "a REVIEW grep file-szintű volt (van-e trap
+BÁRHOL a fájlban) -- a selftest hitelesítő-változónként/curl-hívásonként nézze, és pinneld le mind
+a 11 hívási helyet, hogy a 6 túlélő revert-mutáns és a header-drop mutánsok elhaljanak." Mérve: a
+"revert mutáns" osztályt (egy fájl visszaállítása a régi mktemp-trap-nélküli mintára) a kör 2-ben
+épített `store/token-header-no-tempfile-scan.py` MÁR lefedi STRUKTURÁLISAN -- egy revert
+visszahozza pont azt az alakot, amit a scan keres. Ellenőrizve: egy kézzel visszaállított
+`gate-dispatch-check.sh`-mintájú fájlt a scratch fába helyezve a scan azonnal jelezte. A
+"header-drop mutáns" osztály (a stdin/procsub ALAK megmarad, de a valódi hitelesítő adat sosem
+jut el a curl-hoz) viszont VALÓBAN nincs lefedve semmivel -- ez egy futásidejű tény, nem a
+forrás alakjából olvasható ki.
+
+Új önteszt: `store/token-header-drop-pin.selftest.sh`. Mechanizmus: `curl` egy shell
+FÜGGVÉNNYÉ felülírva (nem igazi hálózati hívás), amely minden `@...` argumentumot elkap
+(`-H @-` stdin, `-H @<(...)` processz-helyettesítés -- bash már valós `/dev/fd/N` útra oldja fel
+mire a curl látja --, `-H @fájl`) és a tartalmát egy capture-fájlba másolja; az állítás az, hogy a
+valódi (hamis, teszt-) hitelesítő adat TÉNYLEG odaért. Mind a 11 eredeti hívási hely (
+`fleet-concurrency-checks.sh`, `gate-dispatch-check.sh`, `redispatch-guard.sh` x3,
+`gemini-agy-call.sh` x2, `mopsion-preland.sh` x2, `pre-dispatch-check.sh`, `fleet-test.sh`) +
+6 e kártya saját javításai (`scripts/doctor.sh`, `scripts/channels.sh` x2,
+`store/git-object-integrity-monitor.sh`, `store/gemini-offload-call.sh`) pinnelve: 16 zöld +
+1 mutáció-kontroll (szándékosan üres stdin, igazolja, hogy a mechanizmus TÉNYLEG buktatja a
+hiányzó fejlécet). Mindegyik a valódi fájl `sed`-del kivágott forrását futtatja, nem egy kézzel
+másolt variánst.
+
+**Nyitva hagyott, kimondott rés (nem csendes kihagyás):** `store/local-llm.sh` gateway-ágának
+curl-hívását `flock -w ... "$GPU_LOCK" curl ...` csomagolja; a `flock` a saját argumentumát
+`execvp`-vel futtatja, ami SOHA nem néz bele a futó shell függvény-táblájába -- a `curl()`
+felülírásos mechanizmus itt strukturálisan nem tud közbeavatkozni. Ezt a helyet csak kódolvasással
+ellenőriztem (a `GATEWAY_AUTH_HDR` változóra nulla további hivatkozás, és a `-H @<(printf ...)`
+sor maga), nem futtatott bizonyítékkal. Egy valódi, hálózatot elfogó listener kellene a dinamikus
+pin-hez -- ez a kör ezt nem vállalta be.
+
+Ki döntött: MikroB (a hatókör-bővítés és a per-call-site pin konkrét kérése, msg 25287);
+fullstack (implementáció, mérés, teszt, a local-llm.sh rés kimondása).
+Hivatkozás: kártya 0aba66b8; CYBERSEC NO-GO 8c2913071bf377a0a38aee8d318a3861462a8c11 (komment
+39272, F-2/F-3); `store/git-object-integrity-monitor.sh`, `store/local-llm.sh`,
+`store/gemini-offload-call.sh`, `store/token-header-drop-pin.selftest.sh`.
