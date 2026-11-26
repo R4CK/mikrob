@@ -33957,3 +33957,44 @@ Ki döntött: MikroB (dispatch, msg 25203, a CYBERED 39219 / CYBERSEC msg 25202 
 HIGH-ra emelve); backend3 (implementáció, teszt).
 Hivatkozás: kártya a1c38d36; CYBERED GO 39219 (card 1535f7f9); `store/wsl-cleanup.selftest.sh`,
 `store/wsl-cleanup.sh` (csak olvasva, nem módosítva), `src/__tests__/store-selftests-all-run.test.ts`.
+
+## 2026-11-26 18:00 -- Kártya a1c38d36 kiegészítés: a sandbox-könyvtárat a VALÓS /tmp alá kellett tenni, nem a $TMP alá
+
+Az előző (ugyanaznapi) a1c38d36 bejegyzés fix-e a `fleet-test.sh` szemafor alatt, a VALÓDI
+megosztott fán futva, konzisztensen (2/2) ugyanazzal a tünettel bukott: `wsl-cleanup passes`
+piros, `SANDBOX-LEAK guard: find shim captured nothing -- the guard is vacuous`. A gyökér-ok NEM
+a `fleet-test.sh` megosztott fáján lévő egyidejű terhelés volt (ez a korábban feltételezett,
+hibás hipotézis) -- izolált worktree-ben, `TMPDIR`-t egy VALÓDI /tmp-en kívüli útvonalra állítva
+(pl. `/home/neon/marveen-tmp/...`, pontosan ahogy a `fleet-test.sh` harness is teszi), a hiba
+determinisztikusan reprodukálódott standalone módban is.
+
+KÖVETKEZTETÉS: a `WT_TMP_SANDBOX="$TMP/wt-tests-tmp-sandbox"` (a selftest saját `$TMP`-jén,
+`mktemp -d`-n belül) nem garantálja, hogy a sandbox a VALÓS `/tmp` alatt legyen -- a `mktemp -d`
+a `$TMPDIR` env-et követi, és a `fleet-test.sh` harness ezt egy /tmp-en kívüli, futásonkénti
+könyvtárra állítja. `store/wsl-cleanup.sh` saját `sweep_tmp()` fail-closed SANITY guardja (kártya
+c9c1f159) pontosan ezt hivatott megállítani: csak olyan `WSL_CLEANUP_TMP_DIR`-t fogad el, ami
+`realpath`-dal `/tmp` vagy `/tmp/*`-ra oldódik fel -- minden mást "REFUSING /tmp sweep"-pel
+visszadob, `find`-ot soha nem hívja meg. A SANDBOX-LEAK guard pontosan ezt a helyzetet kapta el
+helyesen vákuumosnak (a guard maga NEM hibás -- a sandbox útja volt).
+
+Javítás: `WT_TMP_SANDBOX="$(mktemp -d /tmp/wt-cleanup-sandbox.XXXXXX)"` -- a sandbox mostantól
+EXPLICIT a valós `/tmp` alatt jön létre, `$TMPDIR`-től függetlenül. A cleanup trap kapott egy
+explicit `rm -rf "$WT_TMP_SANDBOX"`-ot is (már nem a `$TMP` alatt él, a korábbi "a meglévő trap
+már törli" indoklás emiatt nem áll többé -- ez csak ezen az új bejegyzésen változik, az előző
+bejegyzés szövegét nem módosítom, append-only).
+
+Mérve: a javított selftest 49/49 PASS egy szimulált, valódi /tmp-en kívüli `$TMPDIR` alatt is
+(`/home/neon/marveen-tmp/debug-sim`), 0 maradék sandbox-könyvtár két egymást követő futás után.
+Mutáció-teszt (visszaállítva, sha256 ellenőrizve): a `$TMP` alá nesztelt régi forma ugyanezen
+`$TMPDIR` alatt visszahozza a pontos tünetet (48/49, SANDBOX-LEAK guard vákuum) -- a javítás
+load-bearing. Harmadik `fleet-test.sh --ref 95aa6cf58` futás a VALÓDI megosztott fán: 178/178
+PASS (Test Files 1 passed).
+
+A gyökér-ok megtalálásához egy IDEIGLENES debug-commit (141b42b04, `store-selftests-all-run.test.ts`
+catch ágába `console.error(err.stdout/err.stderr)` téve) futott egy önálló `fleet-test.sh --ref`
+körön, majd egy következő commitban visszavonva -- a végső ág ezt a debug-kódot nem tartalmazza.
+
+Ki döntött: backend3 (gyökér-ok vizsgálat, javítás, mérés).
+Hivatkozás: kártya a1c38d36; commit 0abb49693 (eredeti fix), 141b42b04 (ideiglenes debug, visszavonva),
+95aa6cf58 (valódi gyökér-ok fix); `store/wsl-cleanup.selftest.sh`, `store/wsl-cleanup.sh:216-244`
+(sweep_tmp SANITY guard, csak olvasva).
