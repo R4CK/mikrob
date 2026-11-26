@@ -43,6 +43,7 @@ function makeDeps(kgDb: Database.Database, overrides: Partial<AnchorBackfillCliD
     filesForSha: () => ['src/a.ts'],
     readFile: (path) => files.get(path) ?? (() => { throw new Error(`no fixture for ${path}`) })(),
     writeFile: (path, content) => files.set(path, content),
+    backupExists: (path) => files.has(path),
     now: () => 1000,
     log: (msg) => logs.push(msg),
     warn: (msg) => warns.push(msg),
@@ -103,6 +104,22 @@ describe('runAnchorPathBackfillCli', () => {
     const after = kgDb.prepare('SELECT * FROM kg_anchors').all() as KgAnchorRow[]
     expect(after).toHaveLength(1)
     expect(after[0]).toEqual(before)
+  })
+
+  // CYBERSEC F-5: a re-run (or a re-run after a crash) pointed at a --backup path that ALREADY
+  // has a file must be refused outright, never silently overwritten -- otherwise a prior, real
+  // backup (e.g. 214 originals) can be replaced by this run's own empty pre-mutation write, and
+  // a later --restore would exit 0 "RESTORED: 0" while the real backup is already gone.
+  it('refuses a real run whose --backup path already exists, without touching the graph', () => {
+    const kgDb = freshKgDb()
+    seedSolutionWithPlaceholder(kgDb, 'sol:a:0', '1111111', 1)
+    const { deps, warns, files } = makeDeps(kgDb)
+    files.set('/tmp/x.json', 'stale-backup-from-a-prior-run')
+    runAnchorPathBackfillCli(['--backup', '/tmp/x.json'], deps)
+    expect(warns.some((w) => w.includes('REFUSED') && w.includes('already exists'))).toBe(true)
+    expect(files.get('/tmp/x.json')).toBe('stale-backup-from-a-prior-run') // untouched, not overwritten
+    const anchors = kgDb.prepare('SELECT * FROM kg_anchors').all() as KgAnchorRow[]
+    expect(anchors[0]!.path).toBe('kanban_comments:1') // untouched
   })
 
   // CYBERSEC F-4a / CYBERED H-A: the final file on disk after a clean run must carry a non-null

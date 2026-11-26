@@ -1,7 +1,7 @@
 // The body of scripts/kg-anchor-path-backfill.ts -- lives here so a test can drive it with its
 // collaborators mocked, same reasoning as backfill-cli.ts.
 import type Database from 'better-sqlite3'
-import { writeFileSync, readFileSync, renameSync, fsyncSync, openSync, closeSync } from 'node:fs'
+import { writeFileSync, readFileSync, renameSync, fsyncSync, openSync, closeSync, existsSync } from 'node:fs'
 import { openKgDb, kgDbPath } from './store.js'
 import { filesForCommits, resolveFullSha } from '../kanban-relations-git.js'
 import {
@@ -30,6 +30,7 @@ export interface AnchorBackfillCliDeps {
   filesForSha: (sha: string) => readonly string[]
   readFile: (path: string) => string
   writeFile: (path: string, content: string) => void
+  backupExists: (path: string) => boolean
   now: () => number
   log: (msg: string) => void
   warn: (msg: string) => void
@@ -67,6 +68,7 @@ export function defaultAnchorBackfillCliDeps(): AnchorBackfillCliDeps {
     filesForSha: defaultFilesForSha,
     readFile: (path) => readFileSync(path, 'utf8'),
     writeFile: atomicWriteFile,
+    backupExists: existsSync,
     now: () => Math.floor(Date.now() / 1000),
     log: (msg) => console.log(msg),
     warn: (msg) => console.error(msg),
@@ -113,6 +115,19 @@ export function runAnchorPathBackfillCli(argv: readonly string[], deps: AnchorBa
   const backupPath = flagValue(argv, '--backup')
   if (backupPath === undefined) {
     deps.warn('REFUSED: a real run needs --backup <path> (tested rollback requires a backup to roll back to). Use --dry-run to plan without one.')
+    return
+  }
+
+  // Card 5ecf6133, CYBERSEC F-5: a second run (or a re-run after a crash) pointed at the SAME
+  // --backup path used to overwrite a prior, real backup (e.g. 214 originals) with an empty one
+  // from this run's own pre-mutation write -- restore then exited 0 "RESTORED: 0" while the real
+  // backup was already gone. Exclusive create: refuse outright if anything already sits at this
+  // path, rather than letting either write silently replace it.
+  if (deps.backupExists(backupPath)) {
+    deps.warn(
+      `REFUSED: --backup ${backupPath} already exists -- refusing to overwrite a possibly-real prior backup. ` +
+        'Pick a fresh path for this run (or --restore the existing file first if it is still needed).',
+    )
     return
   }
 

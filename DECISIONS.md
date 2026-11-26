@@ -33212,3 +33212,61 @@ re-measurement, BEGIN IMMEDIATE fix, escalation on the F1 conflict rather than o
 Végrehajtó: backend.
 Hivatkozás: kártya 5ecf6133, dbd2e272 (body/snippet rendering, split out), 01b10349 (pitfall/
 decision node types); `src/kg/anchor-path-backfill.ts`.
+
+## 2026-11-26 -- 5ecf6133 (round 4): CYBERSEC GO-with-conditions (msg 24926/24927), two real gaps
+left by round 3, both fixed and mutation-verified.
+
+1. **F-5 MEDIUM (CYBERSEC): `--backup` silently overwrote a prior backup file.** Running the
+   backfill CLI a second time against the SAME `--backup <path>` (deliberately, or after a crash)
+   had `applyAnchorPathBackfill`'s pre-mutation write replace whatever backup already sat at that
+   path with THIS run's own (often much smaller, e.g. empty) snapshot -- a real 214-row backup
+   could be clobbered by a near-empty re-run, and `--restore` on the clobbered file would exit 0
+   with "RESTORED: 0" while reporting success, leaving the graph at 876 rows instead of the real
+   348. Root cause: `atomicWriteFile`'s temp-file+rename makes each individual write atomic, but
+   neither write ever checked whether something was already AT that path before overwriting it.
+   Fix (`src/kg/anchor-path-backfill-cli.ts`): a new `backupExists` dependency (default
+   `fs.existsSync`), checked once in `runAnchorPathBackfillCli` BEFORE either write, refusing the
+   run outright ("REFUSED: --backup <path> already exists") rather than silently overwriting.
+   New test ("refuses a real run whose --backup path already exists, without touching the graph",
+   `kg-anchor-path-backfill-cli.test.ts`) seeds a stale file at the backup path and asserts both
+   the REFUSED warning and that the file's content is untouched. Mutation-verified: reverting the
+   `backupExists` check (temporarily wrapped `if (false && ...)`) turned the new test red
+   (`expected false to be true` on the REFUSED-warning assertion); restoring the check turned it
+   green again, suite stayed at 9/9 passing throughout.
+2. **Rendering gap (CYBERSEC measured): the TEXT block an agent actually sees still had no
+   title.** Round 2/3 added `title` and kept `anchor` on the JSON package
+   (`src/kg/for-card.ts`'s `KgForCardEntry`), but the separate renderer that turns that JSON into
+   the framed text block actually injected into a dispatch (`store/kg-for-card-block-render.py`,
+   invoked by `store/kg-for-card-block.sh`) never read either field -- `fmt_entry` only ever
+   printed `card_id`/`why`/`verdict`/`gate_sha`. So "titles added" had reached the JSON package
+   MikroB's own earlier ask was scoped to, but never the rendered block the agent's prompt
+   actually contains -- CYBERSEC's own measurement caught this gap directly. Fixed: `fmt_entry`
+   now also renders the node's `title` (quoted) and the first anchor's `path` (parenthesized),
+   both run through the SAME `escape_frame`/`collapse_lines` defenses already applied to
+   `why`/`verdict` (so a hostile title/anchor can no longer forge a frame-closing lookalike or a
+   fake second line), each capped independently (`TITLE_MAX_CHARS`/`ANCHOR_PATH_MAX_CHARS` = 200,
+   same per-entry-cap pattern as the existing `WHY_MAX_CHARS` = 300) so one long title/path cannot
+   eat the whole block budget the way a long echoed `why` once did (card 6dfae8e7 INFO). New
+   selftest case F9 (`store/kg-for-card-block.selftest.sh`) feeds a title+anchor payload and
+   asserts both actually appear in the rendered text. Mutation-verified: temporarily stripping the
+   title/anchor lines from `fmt_entry` turned F9 red (title missing from output) while F1-F8 stayed
+   green; restoring them brought the selftest back to 12/12 green.
+3. **Fleet-wide size check (MikroB's 3rd ask, msg 24926): is the now-larger block worth its
+   tokens?** Measured the ACTUAL rendered-text size (not the JSON package size) across every card
+   with at least one real-path solution anchor in a fresh, real-backfill-applied scratch copy of
+   `store/knowledge-graph.db` (154 cards, same full-population approach as round 3's held-out
+   measurement; never run against the live db, which still has no real-path anchors until this
+   card lands and the live backfill runs): median rendered block 609.5 chars, min 505, max 778 --
+   comfortably inside the existing [500,8000]-char `KG_FOR_CARD_MAX_CHARS` ceiling and far under
+   the 3000-char default. Adding title+anchor did not blow the budget.
+
+**Verification:** `npx vitest run src/__tests__/kg-*.test.ts src/__tests__/kanban-relations-git.test.ts`:
+30 files, 461 passed (+1 over round 3's 460, the new F-5 refusal test). `npx tsc --noEmit -p .`:
+clean. `bash store/kg-for-card-block.selftest.sh`: 12 passed, 0 failed (+1 over the prior 11, the
+new F9 title/anchor case).
+
+Ki döntött: MikroB (msg 24926/24927, CYBERSEC GO-with-conditions); backend (both fixes +
+mutation checks + the rendered-size measurement).
+Végrehajtó: backend.
+Hivatkozás: kártya 5ecf6133; `src/kg/anchor-path-backfill-cli.ts`, `store/kg-for-card-block-render.py`,
+`store/kg-for-card-block.selftest.sh`.
