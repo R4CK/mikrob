@@ -218,6 +218,12 @@ describe('F2 (card af3cd669): a broken/cyclic upstream symlink aborts before any
     expect(res.status, res.stderr).toBe(0)
     const vendoredBefore = readFileSync(join(dest, 'VENDORED.md'), 'utf-8')
 
+    // Marker that exists ONLY in dest, never in upstream: cp -RL can never recreate it, so it
+    // survives iff the destructive cleanup step never ran. SKILL.md's own content is identical
+    // across both vendor runs, so asserting on it alone cannot distinguish "wiped then
+    // recreated" from "never touched" -- this marker closes that gap.
+    writeFileSync(join(dest, 'dest-only-marker.txt'), 'must survive an aborted re-vendor\n')
+
     symlinkSync('missing.txt', join(upstream, 'skills', 'foo', 'dangling'))
     git(upstream, 'add', '-A')
     git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'dangling symlink, existing parent')
@@ -227,7 +233,7 @@ describe('F2 (card af3cd669): a broken/cyclic upstream symlink aborts before any
       { CLAUDE_SKILLS_DIR: skillsDir },
     )
     expect(res.status).not.toBe(0)
-    expect(readFileSync(join(dest, 'SKILL.md'), 'utf-8')).toBe('free content\n')
+    expect(existsSync(join(dest, 'dest-only-marker.txt'))).toBe(true)
     expect(readFileSync(join(dest, 'VENDORED.md'), 'utf-8')).toBe(vendoredBefore)
   })
 
