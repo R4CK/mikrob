@@ -28802,330 +28802,6 @@ Which other update.sh-read env vars are intentionally left out of the allowlist 
 
 **Ki döntött:** a heti arlista-check heartbeat találata, nincs emberi döntés-pont (mechanikus javítás a hivatalos forrás ellen ellenőrizve). backend végezte. Gate: QA.
 
-## 2026-11-18 -- 51c68eeb: Koteg 26 upstream szinkron (66d38ee45..a4545a8a0, 25 commit)
-
-A szülő-fázis e5c46e87 (Szotasz/marveen UPSTREAM-SYNC) következő kötege Köteg 25 (5dd0842a) után.
-`git merge --no-ff a4545a8a0` az `origin/develop@afe121d22`-re, 22 konfliktusos fájl feloldva
-(`6deef1741`). Fontosabb döntések: update.sh/watchdog.sh/background-tasks.ts/connectors.ts/
-updates.ts -- az upstream async/argv-alapú perf-fix-jei felvéve, a fork lazy-bin-resolver és
-rollback-guard mintái megtartva fölöttük; channel-mcp-reconnect.ts -- az upstream typed-command
-reconnect-átírása (#2179) felvéve a fork saját dokumentált elavult cursor-navigation kódja helyett;
-approvals.ts -- union mindkét security-check (owner-session gate #2156 + meglévő GPU-driver
-hard fail-closed); auth.ts -- az upstream mayIssueCredentials/OWNER_SESSION_REQUIRED alapfunkció
-NEM került át (bootstrap-kivétel, kártya 49960046), de a rá épülő nem-konfliktusos Köteg 26
-hívási helyekhez (#2175) a fork saját, session-only implementációja került be ugyanazokkal az
-exportált nevekkel; web/app.js + allowlist -- STUB (ours), a fájl és az allowlist byte-identikus
-a merge előtti HEAD-del (a fájl szabványos felbontási szabálya,
-`src/fork-upstream/acknowledged-conflicts.ts`). Két nem-portolt régió nevesítve: (1) upstream
-fleet-freeze frontend-drótozás (wireFleetFreeze/renderFleetFreeze) -- a style.css additív
-`.fleet-freeze-*` szabályai felkerültek (jelenleg holt CSS), a JS fél hiányzik, külön kártya kell;
-(2) upstream 4540f195f (SETUPTOKENWIZ1022, "log in" mód a Claude Plans panelhez) -- a backend fél
-tisztán felment (claude-plans-login.ts, setup-token-login.ts, web.ts drótozás, commitNewPlan a
-claude-plans.ts-ben), de a frontend a web/app-claude-plans.js-ben élő panelhez kötődne, aminek
-NINCS mode-selector/token-auth/edit-infrastruktúrája (a panel-port kártya, 1c810029, 2026-11-07-én
-lett kész, de csak a Köteg 3-korabeli egyszerű formát hozta át) -- a login-UI tesztjei
-(claude-plans-login-ui.test.ts) describe.skip-pel maradtak, a backend-drótozást ellenőrző
-leírás futva (lásd a src/fork-upstream/acknowledged-conflicts.ts bejegyzés 2026-11-18-i, javított
-szövegét és az 1c810029 kártyára tett kommentet, komment 33267).
-
-Két javítási kör a merge után: (f3f1ed7db) async-mock hiányok két meglévő teszt-fájlban,
-auth.ts mayIssueCredentials export-hiány, lint-ratchet alapvonal frissítés; (c325e2e6e) update.sh/
-update-finalize.sh natív-modul-rebuild gate visszaállítása az upstream multi-line retry formára
-(a saját egysoros || alakom törte az update-rebuild-gated.test.ts-t), pinolt szám/leltár-frissítés
-nyolc tesztfájlban (sync-child census, pane-writer census, hook-anchor leltár, KNOWN_SYNC_ROUTES),
-két hiányzó lang-leírás; (3f28b164b) három shebanges script tényleges `git update-index --chmod=+x`
-commitolása -- az első próbálkozás csak az indexet érintette commit nélkül, elveszett a fleet-test
-friss checkout-ján; (da460ff8f + 99b0ff860) claude-plans-login-ui.test.ts három web/app.js-függő
-describe blokkjának describe.skip-elése dátumozott jegyzettel, a jegyzet egy saját-köri javítással
-(a panel NEM hiányzik, csak a mode-selector-infrastruktúrája -- lásd fent).
-
-**Mérés:** `fleet-test.sh --ref 99b0ff860` (= `da460ff8f` + 2 kommentkülönbség, kód-identikus,
-`git diff` ellenőrizve) 1406 Test Files passed | 1 skipped (1407), 43795 Tests passed | 144 skipped
-(43940), 1 FAIL -- `store-selftests-all-run.test.ts`-ben, a "tracked tree dirtied: M CLAUDE.md"
-hiba, HÁROM egymást követő teljes futáson HÁROM KÜLÖNBÖZŐ, egymással össze NEM tartozó
-selftest-re esve (mopsion-suite-run, offload-dispatch, post-review -- none of these three scripts
-touched by this card commits). Önmagában (`npx vitest run` a saját card-worktree-ben, konkurens
-fleet-test nélkül) ugyanez a fájl 162/162 zöld. Ez egy ismert, megosztott `/home/neon/marveen-test`
-fa-kontenció alatti false-positive (lásd `shared-fleet-test-tree-contention-fakes-lint-ratchet-
-parse-errors` memória-minta, ugyanaz az osztály), nem ebből a kötegből eredő regresszió.
-`npx tsc --noEmit` ezen a shán: clean. `npm run build`: clean. `lint-ratchet.sh`: no rule got
-worse (443 finding, baseline tartja magát).
-
-**Ki döntött:** backend3 végezte. Gate-SHA: 99b0ff860d780a5e28da50356370749edf43bb75. Gate: QA +
-Cybersec (WhiteHat) + Cybered (RedHat) -- a kötegben trust-boundary fájl van (auth.ts, approvals.ts,
-claude-plans-login.ts, settings.ts érintett az upstream commitokban). `99b0ff860`
-`git merge-base --is-ancestor` origin/develop-nek NEM ancestor-je még (landolás előtt áll).
-
-
-## 2026-11-18 -- 51c68eeb: Koteg 26 delta -- RedHat C2 feloldva, a /stop es /resume valodi feloldasi utat mutat
-
-RedHat GO (komment 33311, Gate-SHA 4aeb9055694351cfcf15fe2397c9c9d9f7b3ef1b) ket landolasi
-feltetelt nevezett meg a mar kesz Koteg 26 batch mellett. C1 (nincs dashboard-felhasznalo
-az elesben) Peti/MikroB dontese, nem erre a kartyara tartozik. C2: a dashboard piros savjaban
-levo "Feloldas" gomb nulla bekotessel all a web/app.js-ben (grep: fleet, freeze, unfreeze,
-FleetFreeze mind 0), es az /stop + /resume Telegram-valaszok, valamint docs/fleet-freeze.md
-pont erre a nem-mukodo gombra kuldtek a gazdat -- telefonrol olvasva ez rosszabb, mint a
-csend.
-
-Javitas (nem a gomb portolasa -- az kulon kartyat/scope-ot igenyelne, lasd a REVIEW-ban
-nevesitve): a harom szoveg (src/web/builtin-commands.ts /stop + /resume valasz, docs/
-fleet-freeze.md) mind a ket tenylegesen mukodo utat nevezi meg: (1) store/fleet-freeze.json
-torlese a gepen (a fleet-freeze.ts modul sajat, mar dokumentalt "CLI-free way out"-ja),
-(2) hitelesitett POST /api/fleet/unfreeze hivas, ha mar van dashboard-bejelentkezes (C1
-felteve). fleet-freeze.test.ts: 37/37 zold, semelyik teszt nem fuggott a regi szoveg
-pontos szavaitol (grep-pelve ellenorizve).
-
-**Mertek:** npx tsc --noEmit ezen a shan: clean. npx vitest run fleet-freeze.test.ts: 37/37
-zold. Teljes fleet-test.sh ezen a delta-shan nincs lefuttatva kulon (bash-only + 2 TS/doc
-fajl, nem kodfuggo valtozas -- a QA/WhiteHat/RedHat delta-gate dontse, kell-e teljes kor).
-
-**Ki dontott:** backend3 vegezte. Gate-SHA: c13d691d05e7b2af03889a4214199a4480a56594. Delta scope: src/web/builtin-commands.ts
-(2 reply-string csere), docs/fleet-freeze.md (1 szakasz javitasa) -- a Koteg 26 batch tobbi
-resze (merge + korabbi fixupok) valtozatlan, lasd a korabbi 51c68eeb bejegyzeseket.
-
-## 2026-11-19 -- 51c68eeb: Koteg 26 land refused on develop drift, fixed (background-tasks.test.ts await), redone theirs-first after RedHat C33478
-
-First attempt at this fixup (merge beedd6369 + docs commit 567b13aa4, pushed and reviewed in
-comment 33469) resolved the DECISIONS.md conflict by hand, ours-first -- RedHat's delta re-gate
-(comment 33478) caught two problems: decisions_tail_append_ok returned rc=1 against develop (the
-card's own entry sat mid-file relative to develop's later history), and my REVIEW quoted a
-hand-retyped, truncated sha. Both are process mistakes already on file (always-copy-gate-sha-from-git-rev-parse-never-retype),
-now actually hit.
-
-Redone with the right tool: `store/decisions-sync-resolve.sh` in a fresh detached worktree off
-the still-gated ba1a3f7a8, merging origin/develop theirs-first (the script's own stated purpose,
-card edf9c837 -- an agent syncing onto its own branch must put the integration branch's content
-first so its own entry stays a clean tail-append relative to develop's history). The
-background-tasks.test.ts await fix from the first attempt is unchanged and re-verified.
-
-**Mérés:** `store/decisions-sync-resolve.sh --check-last-merge`: rc=0 (append-only invariant
-holds against develop both ways). `tsc --noEmit`: clean. `vitest run background-tasks.test.ts
-background-tasks-async-tmux.test.ts`: 2 Test Files passed (2), 33 Tests passed (33) -- same
-result as the first attempt, confirming RedHat's own measurement (33/33, production-await mutant
-red) independently.
-
-**Ki döntött:** backend3 végezte. Gate-SHA: 16be03fbe94a4dcaa84c3ba67fa71a67c17bbc54 (merge commit; sha copied via
-`git rev-parse HEAD`, not retyped). Supersedes beedd6369/567b13aa4 (force-pushed over, same
-card branch, no other agent had based work on them). Gate: QA + Cybersec (WhiteHat) + Cybered
-(RedHat) per the card's designated set -- needs a fresh verdict on this sha.
-
-## 2026-11-19 -- 1124f53f: Koteg 27 (d7182b63..6b457343, 25 commits), two NOT-ADOPTED security features, one direct adoption
-
-Stacked on card/51c68eeb (Koteg 26, not yet landed) per the batch convention -- merged
-origin/card/51c68eeb into card/1124f53f first (clean, DECISIONS.md unioned ours-first via
-try_append_union, since this branch had no new tail content of its own yet), then merged
-upstream 6b457343 on top. 12 real conflicts, all resolved by hand (not auto-mergeable).
-
-**NOT ADOPTED (two), both tangled into otherwise-valid commits:**
-
-1. **recipient-ledger re-introduction in scripts/email-send-gate.mjs** (gateDecision gains
-   isVerified/cwd params, an 'unverified-recipient' kind). Checked upstream's CURRENT
-   recipient-ledger.mjs at 6b457343: isValidSource() is still a pure regex-on-the-string check,
-   never verifying the evidence is real -- the EXACT flaw Cybersec rejected (card afd64623, HIGH,
-   "addRecipient() validates the --source string's FORMAT only, never that the evidence is real,
-   so an agent can self-certify any address"). Unfixed upstream, so not adopted again. Kept ours
-   entirely for this file. Two unrelated good pieces in the same upstream commit (a symlink-safe
-   local isInvokedDirectly() via realpathSync; a script-header mail-import scanner via
-   openSync/readSync/closeSync) left on the table too -- tangled into the rejected diff, worth a
-   dedicated future card (the symlink-safety piece belongs in hook-lib.mjs for every gate, not a
-   one-off here).
-
-2. **"evidence on done" self-close-to-done escape hatch** (upstream #2026: an agent attaching an
-   `evidence` string to POST /api/kanban/:id/move can close straight to 'done', bypassing the
-   normal waiting->gate flow). This fleet's rule 4 (CLAUDE.md, Peti 2026-07-05) is absolute: an
-   agent NEVER closes its own work to done, no exception. Same self-certification shape as item 1,
-   decided the same way. What WAS adopted: the `evidence` field itself (API validation, DB column,
-   KANBAN_EVIDENCE_MAX_CHARS, isAgentActor()) and the SAFETY NET it enables -- an agent-actor move
-   to 'done' now ALWAYS redirects to 'testing' regardless of evidence (stricter than upstream's
-   "unless evidence given"), computed before the fork's own gate checks
-   (landedGuardVerdict/cardLandingsGuardVerdict/gateCompletenessGuardVerdict/
-   planGrillingGuardVerdict/draftReviewGuardVerdict/decisionsGuardVerdict/
-   degradedOrchestratorRefusal/dependencyBlockBody/bulkAttributionRequired, all still run, now
-   against the EFFECTIVE status) so a redirect-to-testing never trips a done-only guard for a
-   transition that is no longer actually going to done. The PUT route's pre-existing stricter
-   behaviour (never accepts evidence at all, always redirects) is now consistent with /move's.
-   Removed entirely: src/web/routes/review-action.ts + its test (the server half of a THIRD,
-   separate rejected feature -- "D3(b) second reviewer", a new opt-in high-risk-tool-call review
-   gate -- this file imported BOTH agentGetsSecondReviewer AND the already-reverted
-   consumeCategoryApproval from db.ts, so it could not even compile); its web.ts wiring line; the
-   dangling 'second_review is reserved' check in approvals.ts; scripts/hooks/second-reviewer-gate.py
-   + its own test (orphaned once the TS wiring was cut); agentGetsSecondReviewer/
-   injectSecondReviewerGate/removeSecondReviewerGate/hasSecondReviewerHook/profileWantsSecondReviewer
-   usage in agent-scaffold.ts (profileWantsSecondReviewer itself stays defined in profiles.ts,
-   just never called -- same standing-refusal shape as the already-NOT-ADOPTED
-   profileWantsCredentialGate from Koteg 25); src/__tests__/second-reviewer-wiring.test.ts.
-
-**ADOPTED DIRECTLY (one, no caveat):** schedule-runner.ts's `seen_at` column (F9, when a
-recipient was seen to have a message, message-seen-sweep.ts) -- added to
-src/schema/agent-messages-ddl.ts's shared AGENT_MESSAGES_ALTER_COLUMNS array (the fork's own
-refactor of what used to be inline ALTER statements), not inlined in db.ts the upstream way.
-message-seen-sweep.ts needed one adaptation: its `from './main-transcript-root.js' import
-{ configDirFor }` does not exist in this fork (no central export) -- replaced with the same
-2-line local `configDirFor` duplicate every other caller (delivery-turn-check.ts,
-context-guard-runner.ts, context-restart-gate-runner.ts) already carries, per that file's own
-documented reasoning (importing the shared module pulls in a heavy, unrelated import graph for
-one small helper). moveKanbanCard() gained the `evidence` trailing positional parameter (see item
-2 above) the same way expectedStatus was added in Koteg 19 (card 973ed6eb) -- a new trailing
-param, not upstream's options-object refactor, so the ~60 existing call sites stay untouched.
-Team-nicknames (owner strip, store/team-nicknames.json) merged in clean, no conflict, used in the
-kanban/marveen route hunks resolved here (combined with fork-specific imports, not a replacement).
-
-**Other 10 conflicts** (db.ts's moveKanbanCard signature/body; kanban.ts's move-route guard
-sequence and dispatch-template text; agent-scaffold.ts's gate-injection call sites and a
-misaligned function boundary around ensureGateSharedMemoryInjectAgentArg; marveen.ts's response
-field; skills.ts's execShellAsync-vs-execFile duplication, three places; websearch-envelope-wiring.test.ts's
-stale 'WebSearch'-only assertions, now matching the ALREADY-MERGED-CLEAN production
-WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch|WebFetch'; web/app.js + its allowlist fixture, STUB (ours)
-per this entry's own standing policy below (two hunks, ~6000 + ~3000 lines, not line-audited --
-same character as every prior round on this file); web/lang/{en,hu}.js, union of both additive
-tails per that entry's own standing policy) were either pure import/combination merges or resolved
-per an EXISTING acknowledged-conflicts.ts policy, not fresh judgement calls.
-
-**Two unrelated TS errors fixed in auto-merged (non-conflicted) new files**, both pre-existing
-upstream test bugs surfaced by `tsc --noEmit` rather than anything this merge caused:
-claude-plans-login-routes.test.ts was missing a `tryHandleAuth` import it already called;
-connectors-mcp-cli-async.test.ts's stdio-connector test called `call(...)` without capturing its
-result into the `r` the rest of the test block already expected.
-
-**Mérés:** `npx tsc --noEmit`: clean, whole tree (zero errors, including every file this merge
-touched). Scoped `fleet-test.sh --ref card/1124f53f`: TODO before gate (listed in REVIEW).
-
-**Ki döntött:** backend3 végezte (MikroB dispatch msg 21629, "take e5c46e87's next unblocked
-subtask" while e5c13c0e's gate was pending). Gate: QA + Cybersec + Cybered (trust-boundary
-clause: vault/secret, auth, approval and mail-gate code touched -- see the card's own Gate line).
-
-
-## 2026-11-19 -- 1124f53f (follow-up): Koteg 27 scoped-test reconciliation, two more NOT-ADOPTED items
-
-Scoped fleet-test (63 test files touched or added by this koteg, run in two batches) surfaced
-real mismatches after the first commit, none of them compile errors (tsc was already clean) --
-all either a new upstream test assuming a feature this fork does not have, or this fork's OWN
-stricter rule-4 enforcement (agent-actor move to done always redirects to testing, no evidence
-exception -- see the main entry above) correctly breaking a test fixture written against the
-looser upstream semantics.
-
-**Two more NOT ADOPTED, consistent with the main entry's reasoning:**
-
-3. **email-send-gate.mjs's script-header mail-import scanner** (readScriptHead/resolveScriptPath/
-   isSendInvocation/scriptRunSends, flagged as "left on the table" in the main entry above).
-   Its own dedicated test file, email-send-gate-script.test.ts, landed as a new file importing
-   functions that do not exist in this fork's version of the gate (kept entirely ours, per the
-   recipient-ledger rejection two files over in the same conflict). DELETED the test (not
-   skipped): it has zero code behind it in this fork, so a skip would just be a permanently-red
-   marker nobody re-enables. Revisit together if/when the dedicated follow-up card this entry's
-   main paragraph suggests ports the scanner.
-4. **web/app.js's owner-strip UI**, kanban-owner-strip.test.ts specifically (not -lanes, which
-   skips cleanly): its `setup()` helper is called directly inside `describe()` bodies, not
-   inside `it()`, so `describe.skip` does not prevent the module-collection-time crash
-   (`slice()` throwing on a marker absent from the STUB'd app.js). DELETED for the same reason
-   as #3 -- no code exists in this fork for the skip to eventually re-enable.
-
-**Fixed, not skipped (rule-4 interaction, not a missing feature):** five test files used a
-mocked `listAgentNames()` whose entries happened to double as the "actor" closing a card to
-done, incidentally triggering the new agent-redirect and breaking assertions that were actually
-about something else entirely (notification routing, expected_status staleness, dispatch-skip).
-kanban-unblock-notify.test.ts: swapped the move() helper's default closing actor from the agent
-'zara' to a human (listAgentNames itself stayed, since the file's self-exclusion/dispatch-routing
-logic genuinely needs 'dex'/'zara' recognised as agents elsewhere) -- one sub-test skipped with
-a note (its premise needs an agent to reach done directly, which rule 4 no longer allows; a real
-fix needs the shared card fixture reassigned, not a one-line actor swap). kanban-dispatch-skip.ts
-and kanban-move-expected-status.ts: one call site each, same swap. kanban-done-evidence.test.ts:
-updated the one test literally asserting the old evidence-bypass to assert the correct
-testing-redirect instead (evidence still stored, so the reviewer sees it -- required a
-db.ts fix too: evidenceToStore only checked status==='done', silently dropping evidence on
-the redirect-to-testing path it exists for; now also checks 'testing'). fleet-roster-section.ts:
-skipped case (g), which assumes the main agent can be a roster "manager" through the same
-dynamic path a sub-agent uses -- ensureFleetRosterSection has its own pre-existing, unrelated
-`if (name === MAIN_AGENT_ID) return` (same no-op-for-MAIN class every other ensure*Section
-carries, confirmed by its own comment, not something this merge touched). skills-cli-async.test.ts:
-5 of 9 tests skipped (the "assign" ones) -- /api/skills/:name/assign is pre-existing hard
-fail-closed (SKILLS_ASSIGN_FAIL_CLOSED = true, confirmed on origin/develop, unrelated to this
-batch) pending card 3fb0ef97's non-forgeable approval channel; the 4 "export" tests are
-unaffected and still run. teams-credentials.test.ts: one case skipped (the web/app.js half of
-an otherwise-passing wiring check).
-
-**Mérés:** two scoped fleet-test.sh --ref 0fe59d29f batches (63 test files split in half) --
-Batch A: 31 Test Files passed (31), 633 Tests passed, 11 skipped (644). Batch B: 28 Test Files
-passed | 2 skipped (30), 450 Tests passed, 16 skipped (466). `npx tsc --noEmit`: clean, whole
-tree. Full (unscoped) fleet-test.sh still not run on this branch (time).
-
-**Ki döntött:** backend3 végezte.
-
----
-
-**Kártya: 1124f53f (Koteg 27), 3. kör -- CYBERED NO-GO 34342 F1 javítás + teljes fleet-test.**
-
-CYBERED NO-GO 34342 F1 jelezte: a done-redirect (`isAgentActor(actor)`) BÁRMELY ismert ágenst
-elkapta, tehát mikrob/qa/qa2/cybersec*/cybered SAJÁT, idegen kártyára adott `done` lezárása is
-`testing`-re ment -- a 4. szabály a KÉSZÍTŐ önlezárását tiltja, nem minden ágens lezárását.
-Javítás: `isBuilderActorCloser(actor, assignee)` -- a redirect csak akkor sül el, ha az actor
-MAGA a kártya assignee-je. 3 új teszt (idegen ágens/mikrob idegen kártyát közvetlenül done-ba
-zár, PUT-oldali negatív eset).
-
-MikroB kötelezővé tette minden upstream-sync kártyára a TELJES (nem szűkített) fleet-test.sh
-futást a gate előtt (7c79badc tanulság: egy 20-fájlos szűkített kör 12 piros fork-tesztfájlt
-rejtett el). A teljes futás 4facd0073-on (az e5c13c0e-fixes fleet-test.sh-n át, mivel e5c13c0e
-maga még nem landolt a futás idején): **1428 Test Files passed | 3 skipped (1432), 44489 Tests
-passed | 161 skipped (44651)**. Egyetlen piros (`pipx-version-check`) önállóan futtatva kétszer
-is zöld -- megosztott fa kontendálás (több ágens egyszerre futtatott fleet-test.sh-t ugyanazon
-a lock-on), nem valódi lelet.
-
-Ez a teljes futás talált és javított (913b759→ee096f6→4facd00, mind pusholva): email-send-gate.mjs
-ReferenceError (hiányzó cwd + 5 node:fs/node:path import, a visszadobott recipient-ledger
-hunkkal együtt törölve, ~40 teszt tört el tőle); 3 duplikált lang-kulcs; hiányzó
-settings.desc.VAULT_ACL_MODE x2; egy elavult KNOWN_SYNC_ROUTES bejegyzés
-(onboarding.ts/vault-ssh-keys.ts már nem szinkron); egy elavult forrás-marker a
-kanban-spec-template-guard-wiring.test.ts-ben; egy chmod-regresszió (a korábbi `git add` a
-DrvFs-mounton visszaolvasta a 644-es módot, update-index-szel javítva, add nélkül utána); egy
-hiányzó seen_at oszlop az agent-messages-ddl.test.ts-ben (F9); és egy false-positive
-hand-copy-DDL-guard találat (egy meglévő komment átfogalmazva, SQL nem változott). Ezek közül
-EGYIK sem fedett át a köteg saját korábbi szűkített futásaival -- pontosan a 7c79badc tanulság.
-
-**Ki döntött:** backend3 javította a CYBERED NO-GO-t és futtatta a teljes fleet-testet, MikroB
-utasítására (msg 21740).
-
-## 2026-11-23 -- Koteg 28 upstream-sync REVIEW-ra kész, 3 valódi fleet-test red javítva (kártya 1535f7f9)
-
-**Döntés:** a 6b457343..baeb14a79 (50 commit) upstream-batch merge-eredményén (`card/1535f7f9` worktree)
-futtatott teljes `fleet-test.sh` run (1. mérés, commit 5f45b3b211dcc2c07d4277bcec0100d8caea6f9e) 4
-fájlban 10 red tesztet mutatott. Mind a 4-et gyökér-okig követtem (`sp-systematic-debugging`):
-
-1. `skills-dir-queue.test.ts` (5 teszt) -- NEM kódhiba, a teszt elvárása volt elavult: a batch
-   szándékosan landolt 3 fail-closed biztonsági kaput (`isPendingRoute` human-session gate,
-   `FLEET_IMPORT_APPLY_FAIL_CLOSED`, `SKILLS_ASSIGN_FAIL_CLOSED`, lásd kártyák 7c79badc/68254bd7/
-   54e6f4c8). A teszt javítva: hitelesítés hozzáadva a pending-queue híváshoz, a fleet
-   import/assign eseteket "hard-refused regardless of..." névre és 403-as elvárásra átírva.
-2. `slack-smoke-test-async.test.ts` (2 teszt) -- VALÓDI hiányosság: egy korábbi merge-döntés a
-   teljes upstream hunkot (szerializált smoke-test futás + stderr megtartása siker esetén) holt
-   kódnak kezelte, pedig kellett. Port: `smokeTestQueue`/`runSlackSmokeTest` a
-   `skills-dir-queue.ts` saját FIFO-mintáját utánozva, `src/web/routes/agents.ts`-ben.
-3. `context-guard-idle-flush-background-veto.test.ts` (2 teszt) -- a teszt `agent-config.js`
-   mockja hiányos volt: `checkAgent` (context-guard-runner.ts) 4 újabb exportot hív közvetlenül
-   (`agentConfigRoot`, `readAgentClaudePlan`, `readAgentClaudeConfigDir`,
-   `listRejectedAgentDirNames`), a hiányuk a belső try/catch-ben csendben elnyelődött, így az
-   ügynök sosem haladt tovább `idle`-ből. Pótolva a mockban.
-
-A javítást commitolva (`860a5b1c4ac5a5cd8f4a30716af34791773debfa`), 2. teljes `fleet-test.sh` futás
-ugyanezen a shán: **1 FAIL, 1467 passed, 3 skipped (1471 fájl); 1 FAIL, 47022 passed, 161 skipped
-(47184 teszt)**. A megmaradt 1 red (`store-selftests-all-run.test.ts` >
-`freellm-call-retry passes`, "left the shared tracked tree dirty: M CLAUDE.md") a már ismert,
-környezeti false-red osztály (kártya 329bda2d: egyidejű fleet-test futások piszkítják a megosztott
-fát) -- NEM ehhez a kártyához tartozó hiba, nem a diffemben érintett terület.
-
-**Miért:** a 4b/4d szabály szerint a mérést a tényleges shához kötve kell rögzíteni, és a 3 valódi
-piros közül kettő tényleg kódhiány volt (nem csak elavult teszt), tehát a javítás helyes volt, nem
-csak a teszt "igazítása" a kódhoz.
-
-**Ellenőrzés:** teljes `fleet-test.sh --ref 860a5b1c4ac5a5cd8f4a30716af34791773debfa`, a szemafor-
-szkripten át (17. szabály): Test Files 1 failed | 1467 passed | 3 skipped (1471); Tests 1 failed |
-47022 passed | 161 skipped (47184). A `git merge-base --is-ancestor baeb14a79 origin/develop`
-jelenleg FALSE -- a kártya 1. "Kész, ha" pontja landolás után teljesül, ez a bejegyzés a REVIEW/
-gate-ra bocsátás állapotát rögzíti, nem a végleges landolást.
-
-**Ki döntött:** backend2 (implementáció + gyökér-ok vizsgálat + fix), gate: QA + Cybersec + Cybered
-(trust-boundary klauzula: auth, sender-gate, mail-gate, egress érintve a batch-ben).
-
-**Hivatkozás:** kártya 1535f7f9 (FÁZIS e5c46e87), Gate-SHA 860a5b1c4ac5a5cd8f4a30716af34791773debfa.
 ## 2026-11-16 -- 89ccf629: egress-guard 3. kör -- if/case/coproc ALLOW-rés + 5 redaktor-szivárgás zárva (7e01b349 RedHat NO-GO follow-up)
 
 **Kontextus:** RedHat (cybered) NO-GO-ja a 7e01b349 kártyán (komment 15353, Gate-SHA 80c807065f5beb531a976ab2053431b1c1701cda) három, egymástól független rést mért: (1) a bash-egress-guard.py csoport-nyitó `{` felismerése a `if`-feltételben és `case`-mintában kihagyta ezt a két kulcsszót, valamint a `coproc`-ot, így egy ott nyitott `{ ... }` blokk ALLOW-ként futott át a kapun; (2) az activity_memory_capture.py redaktora 5 valós titok-alakra nem illett (AWS_SECRET_ACCESS_KEY, egyszeres idézőjeles JSON-kulcs, wget --http-password, glued -p, --pass); (3) egy 4 szintű, kizárólag benignus $( )/{ } beágyazás enforce módban hamis BLOCK-ot adhat -- ezt nem feltételezésként, hanem méréssel kellett megcáfolni/megerősíteni.
@@ -33257,3 +32933,456 @@ felülírva, amíg a 2-3. pont nincs kész.
 **Ki döntött:** DevO (fullstack), kártya leírása szerint.
 **Hivatkozás:** kártya 380a5e16; commit 39a412993 (`feat(mopsion): add --card mode to
 agent-worktree.sh`); `store/agent-worktree.sh`, `store/agent-worktree.selftest.sh`.
+
+## 2026-11-26 -- F8a follow-up: per-session cap/dedupe + offered-row audit for kg-prompt-pointer-hook (card 35a0e556)
+
+Implements the two items MikroB's split (comment 38677, see the 2026-11-25 entry above) deferred
+off 69f63a1a onto this card: (1) at most one graph injection per (session_id, card_id) pair, so
+a long conversation that repeats a card id does not re-inject the same pointer block every turn;
+(2) every /api/kg/for-card lookup this hook makes is auditable by agent, which the server could
+not previously record for this caller.
+
+(1) Session cap/dedupe: the hook is a fresh subprocess per UserPromptSubmit event (no daemon),
+so an in-memory cache cannot work across invocations -- confirmed by reading the hook's own
+module docstring before designing anything. Used the same marker-file pattern already proven in
+scripts/hooks/blast-radius-guard.py's `_already_shown` (one empty marker file per key, under a
+uid-scoped tempdir, fail-open on write errors): here the key is (session_id, card_id), the
+marker holds no prompt text or card content, only the fact that the pair was already queried.
+The marker is written only AFTER a successful for-card call, not on the check itself, so a
+transient network failure stays retryable on a later prompt instead of being silently
+permanently suppressed.
+
+(2) Offered-row audit: kg_search_events/kg_usage already existed and already recorded
+agent+card_id+timestamp for every /api/kg/for-card call (src/web/routes/kg.ts), but the agent
+column requires `ctx.auth.agent`, which only resolves from a per-agent token or the
+self-asserted `X-Agent-Id` header (root CLAUDE.md convention) -- this hook authenticates with
+the shared dashboard token and sent no such header, so every row it caused was stamped
+agent='unknown'. Fix: added an X-Agent-Id header (resolved from cwd, same helper shape as
+scripts/hooks/activity_memory_capture.py's `_agent_id_from_cwd`) to the for-card call. No new
+table, no new log file -- reuses the existing audit trail exactly as the card required.
+
+Rejected the local-llm draft on this card (comment 38817, Draft-Review: ELUTASITVA, comment
+38857): it used a module-level Python dict for the session cache, which cannot survive the
+per-prompt subprocess model at all, and invented a new file-based audit log instead of reusing
+kg_search_events/kg_usage.
+
+Deferred (per the card's own text, explicitly non-blocking "optional ride-alongs"): survivor C
+(card-id cap unpinned beyond 2 -- already pinned at MAX_CARD_IDS=2, no action needed), survivor
+D (word-boundary on CARD_ID_PATTERN -- already present, `\b...\b`), survivor G (truncation
+char-cap length assertion), LOW-2 (8-hex lookalikes sent as ids that don't resolve to a real
+card). None of these block this card's own Kész-ha.
+
+Mutation-proven: (a) stashed the full .py change, reran the selftest -- the new X-Agent-Id
+assertion failed exactly as predicted, header empty; restored, 19/19 green. (b) separately
+mutated only the cap filter (`fresh_ids = card_ids` unconditionally) on a scratch copy -- G1
+failed exactly as predicted (second same-session call printed the block instead of suppressing
+it); restored, 19/19 green again.
+
+Ki döntött: backend (implementation against MikroB's comment 38677 split + the card's own
+spec); végrehajtó: backend.
+Hivatkozás: kártya 35a0e556, 69f63a1a, eed988e7; CYBERED 38674 KC2/BLOCKER-1 (kg_search_events/
+kg_usage already hold only the 8-hex card id, never prompt text); `scripts/hooks/
+kg-prompt-pointer-hook.py`, `scripts/hooks/kg-prompt-pointer-hook.selftest.sh`.
+
+## 2026-11-26 -- MT F9: Graft/Trail-code A/B pilot, offline retrieval comparison (kártya eed988e7)
+
+**Döntés: keep our own F8 hook, do NOT adopt trailhq/Trail-Code (Graft), do NOT proceed to a
+phase 2 (live-session) pilot.**
+
+MikroB's design (card eed988e7 comment thread): offline retrieval comparison only, no live Claude
+session per card, phase 2 gated on phase 1 showing trail "clearly ahead" plus Peti's token-cost
+approval. Sampled 12 landed cards with a full REVIEW + Gate-SHA, mixed store/ scripts and src/ TS
+(c9c1f159, b5d19a32, 89e8cb90, e2368d0a, 2d27b27b, 2d5ad4d2, 771c1219, cb178dbf, 4e9ad774, 03dff487,
+f19cb1e1, 3e59d70e). Input per card: title+description as of dispatch. Ground truth per card:
+`git diff --name-only` of the merge-base..feature-tip for that card's actual landed merge (NOT a
+naive two-commit diff against the develop tip at merge time, which pulled in hundreds of unrelated
+files from everything else landed in between -- caught and corrected before scoring). DECISIONS.md
+excluded from ground truth in all cards (append-only, touched by nearly every card, not a useful
+discriminator).
+
+Our F8 hook: queried `GET /api/kg/for-card/<cardId>` for each of the 12 card ids directly (this is
+literally how the hook calls it in production). Result: **empty solutions/pitfalls/decisions on
+all 12 of 12 cards** -- ~38 tokens of pure envelope overhead per call, 0.0 recall/precision on
+every sample. Checked this isn't a bug: `kg_nodes` has 359 solution nodes and a `card:`/`sol:` node
+exists for several of the sampled cards, so for-card's own matching (by anchor overlap with other
+cards' files/symbols) legitimately found no sibling history for these particular files -- plausible
+for first-touch infra scripts, not independently verified further given the card's own scope
+(offline comparison, not an audit of for-card's matching logic). Flagging as a finding worth a
+separate look, not fixed here.
+
+trailhq/Trail-Code (`graft ask`, no API key configured so it ran in lexical/graph-rank mode, not
+semantic): installed pinned at 0.30.5 (npm registry's actual `latest` dist-tag, shasum
+9211bcd95f4e13764039a47b0fe78e819addba00) into a throwaway npm --prefix dir, --ignore-scripts,
+DO_NOT_TRACK=1. `trail init --dry-run` read first (per MikroB's instruction): listed exactly 5
+repo-scoped writes, nothing outside the target repo. Ran for real against a disposable
+`git clone /home/neon/marveen` at sha `83b6b0d619da1ea2374c9afac82dffdb6d2d66f3` (same sha for all
+12 cards), HOME + CLAUDE_CONFIG_DIR both pointed at an empty fake-home, `--just-me --no-global
+--no-mcp --agents claude`. Built a graph of 18,844 nodes / 46,685 edges over 2,886 files. Mean
+recall across the 12 cards: **0.208** (1.0 on one single-file-ground-truth card, 0.5 on three,
+0.0 on eight), mean output size ~900 tokens (chars/4 approximation) per query vs our hook's ~38 --
+roughly 24x the context cost for a weak, inconsistent retrieval signal. Wall time per query
+1.0-2.2s (CLI process startup included, not isolated graph-query time). No secret-shaped content
+in either system's output (`store/secret-shape-scan.py`, clean on both). Tool-call count and
+gate-result are genuinely unmeasurable offline, as MikroB's own design anticipated -- recorded as
+ISMERETLEN, not estimated.
+
+**Why not adopt, why not phase 2:** 0.208 mean recall with 8/12 cards at zero is not "clearly
+ahead" of our 0.0 by MikroB's own stated bar -- it is a weak, noisy signal, not a demonstrated win,
+and it comes with real adoption costs this pilot measured directly: a third-party MIT dependency,
+a ~24x per-query token cost, and registered Claude Code hooks (UserPromptSubmit, PreToolUse x2,
+PostToolUse x3, Stop, SessionStart, SessionEnd) plus a statusLine that would need their own ongoing
+review if ever wired for real (this pilot never executed them -- written into the disposable
+repo's `.claude/settings.json` only, no session was opened pointed at that repo). Keeping our own
+F8 hook; the 0-recall finding above is the more actionable lead from this pilot, separate from the
+adopt/build question this card asked.
+
+**Near-miss during this card (self-caught, corrected):** a failed `cd` inside a `bash -c` block
+(no `set -e`) let a first `npm install --ignore-scripts @trailhq/trail-code@0.30.5` attempt run in
+the shared live main clone instead of the intended throwaway dir, touching its package.json/
+package-lock.json and node_modules. My own revert (git checkout on the two tracked files + manual
+rm of the two package paths I could see) was INCOMPLETE -- MikroB's own `npm ls` found 20+
+extraneous transitive packages and an unrelated `@anthropic-ai/sdk` version drift still left behind
+in node_modules, which `git checkout` cannot touch (gitignored). MikroB restored the live clone with
+`npm ci` after the then-running fleet-tests finished. Lesson recorded to my own memory
+(`git-checkout-does-not-restore-node-modules.md`): a stray write into a shared node_modules needs
+`npm ci` or an explicit `npm ls` diff to actually undo, not a spot-check of the one package noticed.
+Disposable clone, fake HOME and throwaway npm --prefix dir all deleted at the end of this pilot.
+
+**Gate:** QA + WhiteHat + RedHat (RedHat added mid-card: `trail init` registered multiple Claude
+Code hooks, per MikroB's own stated trigger -- "add RedHat if trail init registers any hook, even
+in the fake HOME").
+
+Ki döntött: MikroB (design, go-ahead, adopt/build threshold); végrehajtó: backend.
+Hivatkozás: kártya eed988e7, c65add5a (MT FÁZIS), 3f6fc4ce (F0, independent security-scanner flag
+on Graft/Trail-Code that did not reproduce against current `main` -- see this card's own earlier
+FINDING comment for the two-pass README search); `store/secret-shape-scan.py`.
+
+## 2026-11-26 -- CORRECTION to the entry above: F8 baseline was broken, decision restated as inconclusive (kártya eed988e7, MikroB catch msg 24757)
+
+**This supersedes this card's earlier "keep our own F8 hook" conclusion.** MikroB challenged it
+(msg 24757, correctly): a 0.0-vs-0.208 recall comparison only supports "trail is not clearly
+ahead" if the 0.0 side is actually a working baseline. It was not -- the F8 side of the pilot was
+measuring a broken search path, not our hook's real behavior.
+
+Root-caused (new card 5ecf6133, HIGH, assigned to backend, not fixed on this card -- out of this
+card's own adopt/build scope):
+
+1. `src/kg/capture-pipeline.ts` line 541 (the EK-MT-2 "at least one anchor on the Gate-SHA" write)
+   sets the anchor's `path` field to `kanban_comments:<id>` -- the same comment-reference string
+   already correctly used for `source_ref` two lines above -- instead of a real repo-relative file
+   path. Confirmed graph-wide, not a one-off: 343 of 343 rows in the live `kg_anchors` table match
+   this `kanban_comments:NNNN` pattern. Zero real file paths exist in the anchors table at all.
+2. `hybridKgSearch`'s RRF fusion (`src/kg/search.ts`) scores each branch's contribution as
+   `1 / (60 + rank + 1)` -- a rank-0 hit contributes about 0.016; FTS and embedding both firing at
+   rank 0 for the same node sums to about 0.033, roughly 10x below the default `minScore` of 0.35.
+   Only an exact anchor-path match is exempted from that filter -- and with (1) above, that
+   exemption path is also dead. In practice, for-card/search can only surface a result when FTS
+   and embedding together happen to clear 0.35 on their own, which this formula makes very hard
+   regardless of actual relevance.
+3. Separately confirmed: 0 of 890 `kg_nodes` (every type: card/commit/solution) have a populated
+   `embedding` column -- the semantic branch is entirely dead across the whole graph. Root cause of
+   THIS (Ollama availability, embedding backfill never run, or something else) not yet
+   investigated; left to card 5ecf6133.
+
+**Restated decision: INCONCLUSIVE, not "keep our F8 hook."** The pilot's F8 measurement (0.0 mean
+recall, all 12 samples empty) reflects this broken search path, not a real comparison of what our
+hook would return once the anchor-path bug and the score-threshold mismatch are fixed. Per
+MikroB's instruction: do not run phase 2 regardless (the trail side's own 0.208 mean recall is
+itself weak and was never "clearly ahead" under any reading); but the adopt/build question stays
+genuinely open until the F8 side is re-run on a working search path. Re-running the same 12-card
+offline comparison after card 5ecf6133 lands is the natural next step for whoever picks that card
+up, not a new pilot from scratch -- the trail numbers, the near-miss writeup, and the sample/ground-
+truth selection from the entry above all stand unchanged and should be reused, not redone.
+
+Ki döntött: MikroB (caught the baseline flaw, set the correction's scope); backend (root-caused,
+opened the follow-up card). Végrehajtó: backend.
+Hivatkozás: kártya eed988e7, 5ecf6133 (new, HIGH, the actual fix); `src/kg/capture-pipeline.ts:541`,
+`src/kg/search.ts` (RRF fusion + minScore).
+
+## 2026-11-26 -- CORRECTION 2: wording fixes per CYBERSEC NO-GO 38977 + CYBERED NO-GO 38978 (kártya eed988e7)
+
+Both gates agreed the isolation claims hold and the restated INCONCLUSIVE decision is right, but
+found the near-miss paragraph (first entry above) states as done two things that are not, and the
+cost numbers reused from it are off. Per the file's own append-only rule, the two entries above
+stand untouched; this entry corrects the specific sentences, not the conclusions.
+
+1. **The near-miss "restored" claim was false at the time written (CYBERSEC F-1 MEDIUM, CYBERED
+   F-1 MEDIUM, both blocking).** The first entry's sentence "MikroB restored the live clone with
+   `npm ci` after the then-running fleet-tests finished" was written in the past tense before it
+   happened. Measured by both gates at their read time: `node_modules/.package-lock.json` still
+   carries the `@trailhq/trail-code` entry, `npm ls --depth=0` lists 19-21 extraneous packages
+   (openai, dotenv, gray-matter, commander, web-tree-sitter and its depth/wasm siblings, the
+   vscode-languageserver family, argparse, esprima, js-yaml, etc.), and `@anthropic-ai/sdk` in
+   `node_modules` is still `0.133.0` against the lockfile's `0.120.0`. **Corrected statement: the
+   restore is PENDING, not done.** MikroB will run `npm ci` in the live main clone at the next
+   fleet-test-idle window and re-verify with `npm ls --depth=0` (extraneous count back to 0, no
+   `@trailhq` entry) plus a lockfile diff (`@anthropic-ai/sdk` back to `0.120.0`). This correction
+   entry does not itself perform or re-verify that restore -- it is MikroB's action, tracked
+   separately, out of this card's scope.
+2. **The sdk version bump is not "unrelated drift" (CYBERED F-2 MEDIUM, blocking).** The first
+   entry's near-miss paragraph called it "an unrelated `@anthropic-ai/sdk` version drift". CYBERED
+   measured the actual cause: `node_modules/@anthropic-ai/sdk` and `openai` were both rewritten at
+   08:14 (same timestamp as the hidden `.package-lock.json` entry for `@trailhq/trail-code@0.30.5`,
+   which itself declares `"@anthropic-ai/sdk": "^0.133.0"`), while untouched packages carry their
+   original 2026-11-21 timestamps. **Corrected statement: the sdk bump CAME FROM the near-miss
+   install** -- `trail-code`'s own dependency tree pulled a newer `@anthropic-ai/sdk` over the
+   lockfile-pinned `0.120.0` at the same moment as the accidental install, not a pre-existing or
+   coincidental drift. The restore in point 1 fixes this too (same `npm ci`).
+3. **Token-cost numbers were off and the ratio needs a caveat (CYBERSEC LOW-1, CYBERED F-3 LOW).**
+   The first entry's "~900 tokens ... roughly 24x" and the second entry's "the trail numbers ...
+   stand unchanged" are both corrected: the actual mean from comment 38964's table is **799 tokens
+   (range 424-952), about 21x** the F8 side's 38 tokens, not ~900/~24x. More importantly, the 38
+   tokens on the F8 side is the EMPTY envelope of the now-known-broken baseline (card 5ecf6133),
+   not a real competing system's output size -- so "21x" is not a real cost comparison and should
+   not be read as one when the F8 side is re-run on a working search path. The trail-side recall
+   (0.208), wall-time, and ground-truth/sample selection are unaffected by this and remain valid to
+   reuse; the token-ratio number is not.
+4. **Line-distance wording (CYBERED F-4 LOW, non-blocking).** The second entry's "the same value
+   already correctly used for `source_ref` two lines above" should read: `source_ref` is at line
+   515, **26 lines above** line 541 -- the lines directly above 541 are the commit node's own id,
+   repo and `source_ref: git:<sha>`, not the solution node's `source_ref`. The value claim itself
+   (the two fields held the same string) was correct; only the line-distance was wrong.
+5. **The 0.35 threshold was understated as "very hard to clear", not unreachable (CYBERSEC LOW-2,
+   CYBERED's own derivation) -- carried into 5ecf6133's scope.** Without an anchor-path match, the
+   best possible RRF score from the text+embedding branches alone is `1/61 + 1/61 ≈ 0.0328`,
+   strictly below the old default `minScore` of 0.35 -- this is unreachable, not merely unlikely.
+   This means fixing ONLY the embedding-coverage gap (point 3 of the entry above, split to child
+   card 6d542dc9) cannot by itself make `for-card` return anything: the anchor-path fix and/or the
+   score-threshold fix (both now also in 5ecf6133's scope per Peti's 2026-11-26 widening) are the
+   load-bearing pieces. Separately worth noting for 5ecf6133: `for-card`'s `known_pitfalls` and
+   `decisions` searches (`anti_pattern`/`finding` and `decision` node types) structurally return
+   empty today regardless of any fix here, because the live graph currently has no nodes of those
+   types at all (only `card`, `commit`, `solution`) -- a second, independent reason those two
+   arrays were empty in the pilot, not just the anchor/threshold bug.
+6. **README-scan wording (CYBERSEC LOW-3, non-blocking).** "Did not reproduce against current
+   main" (first entry) should read "did not reproduce on the 0.30.5 tarball README" -- CYBERSEC's
+   own grep was against the published tarball, not a check of upstream `main`. Also worth recording
+   for any future reader of this recipe: the real (non-dry-run) `trail init` wrote
+   `.trail/install.json` under the fake HOME even though `--dry-run` listed only repo-scoped paths,
+   and the package has a separate user-level path (`dist/cloud/share-hook.js`, a SessionStart hook
+   added to the REAL `~/.claude/settings.json` for its share-session feature) that this pilot never
+   reached only because of the fake HOME plus `--no-global --no-mcp` -- those two flags are
+   load-bearing in this recipe, not optional hardening.
+
+Ki döntött: cybersec (NO-GO 38977), cybered (NO-GO 38978); backend (applied the wording fixes).
+Végrehajtó: backend.
+Hivatkozás: kártya eed988e7, comments 38977 (CYBERSEC NO-GO), 38978 (CYBERED NO-GO), 38964 (the
+per-card measurement table); card 5ecf6133 (point 5 above folded into its scope).
+
+## 2026-11-19 -- 1124f53f: Koteg 27 (d7182b63..6b457343, 25 commits), two NOT-ADOPTED security features, one direct adoption
+
+Stacked on card/51c68eeb (Koteg 26, not yet landed) per the batch convention -- merged
+origin/card/51c68eeb into card/1124f53f first (clean, DECISIONS.md unioned ours-first via
+try_append_union, since this branch had no new tail content of its own yet), then merged
+upstream 6b457343 on top. 12 real conflicts, all resolved by hand (not auto-mergeable).
+
+**NOT ADOPTED (two), both tangled into otherwise-valid commits:**
+
+1. **recipient-ledger re-introduction in scripts/email-send-gate.mjs** (gateDecision gains
+   isVerified/cwd params, an 'unverified-recipient' kind). Checked upstream's CURRENT
+   recipient-ledger.mjs at 6b457343: isValidSource() is still a pure regex-on-the-string check,
+   never verifying the evidence is real -- the EXACT flaw Cybersec rejected (card afd64623, HIGH,
+   "addRecipient() validates the --source string's FORMAT only, never that the evidence is real,
+   so an agent can self-certify any address"). Unfixed upstream, so not adopted again. Kept ours
+   entirely for this file. Two unrelated good pieces in the same upstream commit (a symlink-safe
+   local isInvokedDirectly() via realpathSync; a script-header mail-import scanner via
+   openSync/readSync/closeSync) left on the table too -- tangled into the rejected diff, worth a
+   dedicated future card (the symlink-safety piece belongs in hook-lib.mjs for every gate, not a
+   one-off here).
+
+2. **"evidence on done" self-close-to-done escape hatch** (upstream #2026: an agent attaching an
+   `evidence` string to POST /api/kanban/:id/move can close straight to 'done', bypassing the
+   normal waiting->gate flow). This fleet's rule 4 (CLAUDE.md, Peti 2026-07-05) is absolute: an
+   agent NEVER closes its own work to done, no exception. Same self-certification shape as item 1,
+   decided the same way. What WAS adopted: the `evidence` field itself (API validation, DB column,
+   KANBAN_EVIDENCE_MAX_CHARS, isAgentActor()) and the SAFETY NET it enables -- an agent-actor move
+   to 'done' now ALWAYS redirects to 'testing' regardless of evidence (stricter than upstream's
+   "unless evidence given"), computed before the fork's own gate checks
+   (landedGuardVerdict/cardLandingsGuardVerdict/gateCompletenessGuardVerdict/
+   planGrillingGuardVerdict/draftReviewGuardVerdict/decisionsGuardVerdict/
+   degradedOrchestratorRefusal/dependencyBlockBody/bulkAttributionRequired, all still run, now
+   against the EFFECTIVE status) so a redirect-to-testing never trips a done-only guard for a
+   transition that is no longer actually going to done. The PUT route's pre-existing stricter
+   behaviour (never accepts evidence at all, always redirects) is now consistent with /move's.
+   Removed entirely: src/web/routes/review-action.ts + its test (the server half of a THIRD,
+   separate rejected feature -- "D3(b) second reviewer", a new opt-in high-risk-tool-call review
+   gate -- this file imported BOTH agentGetsSecondReviewer AND the already-reverted
+   consumeCategoryApproval from db.ts, so it could not even compile); its web.ts wiring line; the
+   dangling 'second_review is reserved' check in approvals.ts; scripts/hooks/second-reviewer-gate.py
+   + its own test (orphaned once the TS wiring was cut); agentGetsSecondReviewer/
+   injectSecondReviewerGate/removeSecondReviewerGate/hasSecondReviewerHook/profileWantsSecondReviewer
+   usage in agent-scaffold.ts (profileWantsSecondReviewer itself stays defined in profiles.ts,
+   just never called -- same standing-refusal shape as the already-NOT-ADOPTED
+   profileWantsCredentialGate from Koteg 25); src/__tests__/second-reviewer-wiring.test.ts.
+
+**ADOPTED DIRECTLY (one, no caveat):** schedule-runner.ts's `seen_at` column (F9, when a
+recipient was seen to have a message, message-seen-sweep.ts) -- added to
+src/schema/agent-messages-ddl.ts's shared AGENT_MESSAGES_ALTER_COLUMNS array (the fork's own
+refactor of what used to be inline ALTER statements), not inlined in db.ts the upstream way.
+message-seen-sweep.ts needed one adaptation: its `from './main-transcript-root.js' import
+{ configDirFor }` does not exist in this fork (no central export) -- replaced with the same
+2-line local `configDirFor` duplicate every other caller (delivery-turn-check.ts,
+context-guard-runner.ts, context-restart-gate-runner.ts) already carries, per that file's own
+documented reasoning (importing the shared module pulls in a heavy, unrelated import graph for
+one small helper). moveKanbanCard() gained the `evidence` trailing positional parameter (see item
+2 above) the same way expectedStatus was added in Koteg 19 (card 973ed6eb) -- a new trailing
+param, not upstream's options-object refactor, so the ~60 existing call sites stay untouched.
+Team-nicknames (owner strip, store/team-nicknames.json) merged in clean, no conflict, used in the
+kanban/marveen route hunks resolved here (combined with fork-specific imports, not a replacement).
+
+**Other 10 conflicts** (db.ts's moveKanbanCard signature/body; kanban.ts's move-route guard
+sequence and dispatch-template text; agent-scaffold.ts's gate-injection call sites and a
+misaligned function boundary around ensureGateSharedMemoryInjectAgentArg; marveen.ts's response
+field; skills.ts's execShellAsync-vs-execFile duplication, three places; websearch-envelope-wiring.test.ts's
+stale 'WebSearch'-only assertions, now matching the ALREADY-MERGED-CLEAN production
+WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch|WebFetch'; web/app.js + its allowlist fixture, STUB (ours)
+per this entry's own standing policy below (two hunks, ~6000 + ~3000 lines, not line-audited --
+same character as every prior round on this file); web/lang/{en,hu}.js, union of both additive
+tails per that entry's own standing policy) were either pure import/combination merges or resolved
+per an EXISTING acknowledged-conflicts.ts policy, not fresh judgement calls.
+
+**Two unrelated TS errors fixed in auto-merged (non-conflicted) new files**, both pre-existing
+upstream test bugs surfaced by `tsc --noEmit` rather than anything this merge caused:
+claude-plans-login-routes.test.ts was missing a `tryHandleAuth` import it already called;
+connectors-mcp-cli-async.test.ts's stdio-connector test called `call(...)` without capturing its
+result into the `r` the rest of the test block already expected.
+
+**Mérés:** `npx tsc --noEmit`: clean, whole tree (zero errors, including every file this merge
+touched). Scoped `fleet-test.sh --ref card/1124f53f`: TODO before gate (listed in REVIEW).
+
+**Ki döntött:** backend3 végezte (MikroB dispatch msg 21629, "take e5c46e87's next unblocked
+subtask" while e5c13c0e's gate was pending). Gate: QA + Cybersec + Cybered (trust-boundary
+clause: vault/secret, auth, approval and mail-gate code touched -- see the card's own Gate line).
+
+
+## 2026-11-19 -- 1124f53f (follow-up): Koteg 27 scoped-test reconciliation, two more NOT-ADOPTED items
+
+Scoped fleet-test (63 test files touched or added by this koteg, run in two batches) surfaced
+real mismatches after the first commit, none of them compile errors (tsc was already clean) --
+all either a new upstream test assuming a feature this fork does not have, or this fork's OWN
+stricter rule-4 enforcement (agent-actor move to done always redirects to testing, no evidence
+exception -- see the main entry above) correctly breaking a test fixture written against the
+looser upstream semantics.
+
+**Two more NOT ADOPTED, consistent with the main entry's reasoning:**
+
+3. **email-send-gate.mjs's script-header mail-import scanner** (readScriptHead/resolveScriptPath/
+   isSendInvocation/scriptRunSends, flagged as "left on the table" in the main entry above).
+   Its own dedicated test file, email-send-gate-script.test.ts, landed as a new file importing
+   functions that do not exist in this fork's version of the gate (kept entirely ours, per the
+   recipient-ledger rejection two files over in the same conflict). DELETED the test (not
+   skipped): it has zero code behind it in this fork, so a skip would just be a permanently-red
+   marker nobody re-enables. Revisit together if/when the dedicated follow-up card this entry's
+   main paragraph suggests ports the scanner.
+4. **web/app.js's owner-strip UI**, kanban-owner-strip.test.ts specifically (not -lanes, which
+   skips cleanly): its `setup()` helper is called directly inside `describe()` bodies, not
+   inside `it()`, so `describe.skip` does not prevent the module-collection-time crash
+   (`slice()` throwing on a marker absent from the STUB'd app.js). DELETED for the same reason
+   as #3 -- no code exists in this fork for the skip to eventually re-enable.
+
+**Fixed, not skipped (rule-4 interaction, not a missing feature):** five test files used a
+mocked `listAgentNames()` whose entries happened to double as the "actor" closing a card to
+done, incidentally triggering the new agent-redirect and breaking assertions that were actually
+about something else entirely (notification routing, expected_status staleness, dispatch-skip).
+kanban-unblock-notify.test.ts: swapped the move() helper's default closing actor from the agent
+'zara' to a human (listAgentNames itself stayed, since the file's self-exclusion/dispatch-routing
+logic genuinely needs 'dex'/'zara' recognised as agents elsewhere) -- one sub-test skipped with
+a note (its premise needs an agent to reach done directly, which rule 4 no longer allows; a real
+fix needs the shared card fixture reassigned, not a one-line actor swap). kanban-dispatch-skip.ts
+and kanban-move-expected-status.ts: one call site each, same swap. kanban-done-evidence.test.ts:
+updated the one test literally asserting the old evidence-bypass to assert the correct
+testing-redirect instead (evidence still stored, so the reviewer sees it -- required a
+db.ts fix too: evidenceToStore only checked status==='done', silently dropping evidence on
+the redirect-to-testing path it exists for; now also checks 'testing'). fleet-roster-section.ts:
+skipped case (g), which assumes the main agent can be a roster "manager" through the same
+dynamic path a sub-agent uses -- ensureFleetRosterSection has its own pre-existing, unrelated
+`if (name === MAIN_AGENT_ID) return` (same no-op-for-MAIN class every other ensure*Section
+carries, confirmed by its own comment, not something this merge touched). skills-cli-async.test.ts:
+5 of 9 tests skipped (the "assign" ones) -- /api/skills/:name/assign is pre-existing hard
+fail-closed (SKILLS_ASSIGN_FAIL_CLOSED = true, confirmed on origin/develop, unrelated to this
+batch) pending card 3fb0ef97's non-forgeable approval channel; the 4 "export" tests are
+unaffected and still run. teams-credentials.test.ts: one case skipped (the web/app.js half of
+an otherwise-passing wiring check).
+
+**Mérés:** two scoped fleet-test.sh --ref 0fe59d29f batches (63 test files split in half) --
+Batch A: 31 Test Files passed (31), 633 Tests passed, 11 skipped (644). Batch B: 28 Test Files
+passed | 2 skipped (30), 450 Tests passed, 16 skipped (466). `npx tsc --noEmit`: clean, whole
+tree. Full (unscoped) fleet-test.sh still not run on this branch (time).
+
+**Ki döntött:** backend3 végezte.
+
+---
+
+**Kártya: 1124f53f (Koteg 27), 3. kör -- CYBERED NO-GO 34342 F1 javítás + teljes fleet-test.**
+
+CYBERED NO-GO 34342 F1 jelezte: a done-redirect (`isAgentActor(actor)`) BÁRMELY ismert ágenst
+elkapta, tehát mikrob/qa/qa2/cybersec*/cybered SAJÁT, idegen kártyára adott `done` lezárása is
+`testing`-re ment -- a 4. szabály a KÉSZÍTŐ önlezárását tiltja, nem minden ágens lezárását.
+Javítás: `isBuilderActorCloser(actor, assignee)` -- a redirect csak akkor sül el, ha az actor
+MAGA a kártya assignee-je. 3 új teszt (idegen ágens/mikrob idegen kártyát közvetlenül done-ba
+zár, PUT-oldali negatív eset).
+
+MikroB kötelezővé tette minden upstream-sync kártyára a TELJES (nem szűkített) fleet-test.sh
+futást a gate előtt (7c79badc tanulság: egy 20-fájlos szűkített kör 12 piros fork-tesztfájlt
+rejtett el). A teljes futás 4facd0073-on (az e5c13c0e-fixes fleet-test.sh-n át, mivel e5c13c0e
+maga még nem landolt a futás idején): **1428 Test Files passed | 3 skipped (1432), 44489 Tests
+passed | 161 skipped (44651)**. Egyetlen piros (`pipx-version-check`) önállóan futtatva kétszer
+is zöld -- megosztott fa kontendálás (több ágens egyszerre futtatott fleet-test.sh-t ugyanazon
+a lock-on), nem valódi lelet.
+
+Ez a teljes futás talált és javított (913b759→ee096f6→4facd00, mind pusholva): email-send-gate.mjs
+ReferenceError (hiányzó cwd + 5 node:fs/node:path import, a visszadobott recipient-ledger
+hunkkal együtt törölve, ~40 teszt tört el tőle); 3 duplikált lang-kulcs; hiányzó
+settings.desc.VAULT_ACL_MODE x2; egy elavult KNOWN_SYNC_ROUTES bejegyzés
+(onboarding.ts/vault-ssh-keys.ts már nem szinkron); egy elavult forrás-marker a
+kanban-spec-template-guard-wiring.test.ts-ben; egy chmod-regresszió (a korábbi `git add` a
+DrvFs-mounton visszaolvasta a 644-es módot, update-index-szel javítva, add nélkül utána); egy
+hiányzó seen_at oszlop az agent-messages-ddl.test.ts-ben (F9); és egy false-positive
+hand-copy-DDL-guard találat (egy meglévő komment átfogalmazva, SQL nem változott). Ezek közül
+EGYIK sem fedett át a köteg saját korábbi szűkített futásaival -- pontosan a 7c79badc tanulság.
+
+**Ki döntött:** backend3 javította a CYBERED NO-GO-t és futtatta a teljes fleet-testet, MikroB
+utasítására (msg 21740).
+
+## 2026-11-23 -- Koteg 28 upstream-sync REVIEW-ra kész, 3 valódi fleet-test red javítva (kártya 1535f7f9)
+
+**Döntés:** a 6b457343..baeb14a79 (50 commit) upstream-batch merge-eredményén (`card/1535f7f9` worktree)
+futtatott teljes `fleet-test.sh` run (1. mérés, commit 5f45b3b211dcc2c07d4277bcec0100d8caea6f9e) 4
+fájlban 10 red tesztet mutatott. Mind a 4-et gyökér-okig követtem (`sp-systematic-debugging`):
+
+1. `skills-dir-queue.test.ts` (5 teszt) -- NEM kódhiba, a teszt elvárása volt elavult: a batch
+   szándékosan landolt 3 fail-closed biztonsági kaput (`isPendingRoute` human-session gate,
+   `FLEET_IMPORT_APPLY_FAIL_CLOSED`, `SKILLS_ASSIGN_FAIL_CLOSED`, lásd kártyák 7c79badc/68254bd7/
+   54e6f4c8). A teszt javítva: hitelesítés hozzáadva a pending-queue híváshoz, a fleet
+   import/assign eseteket "hard-refused regardless of..." névre és 403-as elvárásra átírva.
+2. `slack-smoke-test-async.test.ts` (2 teszt) -- VALÓDI hiányosság: egy korábbi merge-döntés a
+   teljes upstream hunkot (szerializált smoke-test futás + stderr megtartása siker esetén) holt
+   kódnak kezelte, pedig kellett. Port: `smokeTestQueue`/`runSlackSmokeTest` a
+   `skills-dir-queue.ts` saját FIFO-mintáját utánozva, `src/web/routes/agents.ts`-ben.
+3. `context-guard-idle-flush-background-veto.test.ts` (2 teszt) -- a teszt `agent-config.js`
+   mockja hiányos volt: `checkAgent` (context-guard-runner.ts) 4 újabb exportot hív közvetlenül
+   (`agentConfigRoot`, `readAgentClaudePlan`, `readAgentClaudeConfigDir`,
+   `listRejectedAgentDirNames`), a hiányuk a belső try/catch-ben csendben elnyelődött, így az
+   ügynök sosem haladt tovább `idle`-ből. Pótolva a mockban.
+
+A javítást commitolva (`860a5b1c4ac5a5cd8f4a30716af34791773debfa`), 2. teljes `fleet-test.sh` futás
+ugyanezen a shán: **1 FAIL, 1467 passed, 3 skipped (1471 fájl); 1 FAIL, 47022 passed, 161 skipped
+(47184 teszt)**. A megmaradt 1 red (`store-selftests-all-run.test.ts` >
+`freellm-call-retry passes`, "left the shared tracked tree dirty: M CLAUDE.md") a már ismert,
+környezeti false-red osztály (kártya 329bda2d: egyidejű fleet-test futások piszkítják a megosztott
+fát) -- NEM ehhez a kártyához tartozó hiba, nem a diffemben érintett terület.
+
+**Miért:** a 4b/4d szabály szerint a mérést a tényleges shához kötve kell rögzíteni, és a 3 valódi
+piros közül kettő tényleg kódhiány volt (nem csak elavult teszt), tehát a javítás helyes volt, nem
+csak a teszt "igazítása" a kódhoz.
+
+**Ellenőrzés:** teljes `fleet-test.sh --ref 860a5b1c4ac5a5cd8f4a30716af34791773debfa`, a szemafor-
+szkripten át (17. szabály): Test Files 1 failed | 1467 passed | 3 skipped (1471); Tests 1 failed |
+47022 passed | 161 skipped (47184). A `git merge-base --is-ancestor baeb14a79 origin/develop`
+jelenleg FALSE -- a kártya 1. "Kész, ha" pontja landolás után teljesül, ez a bejegyzés a REVIEW/
+gate-ra bocsátás állapotát rögzíti, nem a végleges landolást.
+
+**Ki döntött:** backend2 (implementáció + gyökér-ok vizsgálat + fix), gate: QA + Cybersec + Cybered
+(trust-boundary klauzula: auth, sender-gate, mail-gate, egress érintve a batch-ben).
+
+**Hivatkozás:** kártya 1535f7f9 (FÁZIS e5c46e87), Gate-SHA 860a5b1c4ac5a5cd8f4a30716af34791773debfa.
