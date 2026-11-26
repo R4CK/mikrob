@@ -28,10 +28,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-seed-skillusage-zerodiff-'))
 
 vi.mock('../web/agent-config.js', () => ({
