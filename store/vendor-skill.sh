@@ -185,8 +185,13 @@ for k in data.get('sanctioned', {}).get(sys.argv[2], []):
     # symlink that ends up in $dest some other way (a pre-existing dir from before this fix, or
     # a future copy path that does not go through the -L step).
     target="$dest/$excl"
-    # MUTATION-TEST-B (temporary, to be reverted): REALPATH924 containment check disabled.
-    : # if [[ -e "$target" || -L "$target" ]]; then ... fi
+    if [[ -e "$target" || -L "$target" ]]; then
+      target_real="$(realpath -m -- "$target")"
+      case "$target_real" in
+        "$dest_real"/*) ;;
+        *) echo "vendor-skill: sanctioned exclusion '$excl' resolves outside dest ($target_real), refusing" >&2; exit 5 ;;
+      esac
+    fi
     rm -rf -- "${dest:?}/${excl:?}"
   done <<< "$sanctioned_excl"
 fi
