@@ -5,6 +5,8 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$HERE/agent-worktree-marveen.sh"
+# shellcheck source=./worktree-on-create.sh
+. "$HERE/worktree-on-create.sh"
 fail=0
 n=0
 
@@ -311,35 +313,82 @@ else
 fi
 
 n=$((n + 1))
-# F-2 (card c16cd98e): an INTERRUPTED hook (the caller killed between `git worktree add`
-# succeeding and project_worktree_on_create ever running) must not be accepted as "already
-# present" by the next call. Reproduce the interruption by hand: do exactly the `git worktree add`
-# step this script does, WITHOUT ever calling project_worktree_on_create -- that is what a kill
-# between those two steps leaves behind.
+# F-2 fix, CORRECTED (CYBERSEC NO-GO 39444 / CYBERED NO-GO 39445 on be3b70680): a tree that only
+# has `git worktree add` run against it, with NO sentinel ever written -- indistinguishable from
+# any of the 176 live worktrees that predate this mechanism entirely -- must be REUSED as "already
+# present", never force-removed. This IS the live fleet state today; every existing worktree looks
+# exactly like this one.
 printf '{"repo": "%s", "base_branch": "develop", "land_script": "notes.txt", "on_create_script": "good-hook.sh"}\n' "$MAIN" > "$MAIN/store/projects/marveen.json"
 rm -f "$hook_log"
 git -C "$MAIN" worktree add -q -b card/1a7e44ee01 "$ROOT/card/1a7e44ee01" develop >/dev/null
-resume_out="$(run backend --card 1a7e44ee01 2>&1)"
-resume_rc=$?
-hook_calls_after_resume="$(wc -l < "$hook_log" 2>/dev/null || echo 0)"
-if [ "$resume_rc" = 0 ] \
-  && [ "$hook_calls_after_resume" = "1" ] \
-  && ! printf '%s' "$resume_out" | grep -q "worktree already present"; then
-  echo "  ok   a worktree left behind by an interrupted hook is detected as incomplete and recovered -- hook runs, not silently accepted"
+legacy_out="$(run backend --card 1a7e44ee01 2>&1)"
+legacy_rc=$?
+hook_calls_after_legacy="$(wc -l < "$hook_log" 2>/dev/null || echo 0)"
+if [ "$legacy_rc" = 0 ] \
+  && printf '%s' "$legacy_out" | grep -q "worktree already present" \
+  && [ "$hook_calls_after_legacy" = "0" ]; then
+  echo "  ok   a tree that never ran project_worktree_on_create at all (legacy shape) is reused untouched, not force-removed"
 else
-  echo "  FAIL expected recovery + exactly 1 hook call -> rc=$resume_rc calls=$hook_calls_after_resume out=$resume_out"; fail=1
+  echo "  FAIL expected a clean reuse with no hook call -> rc=$legacy_rc calls=$hook_calls_after_legacy out=$legacy_out"; fail=1
 fi
 
 n=$((n + 1))
-# CONTROL for the case above: a worktree that DID complete the hook must still be reused as
-# "already present" on the next pickup, with no second hook call -- the fix must discriminate
-# complete from incomplete, not just always re-run.
-second_out="$(run backend --card 1a7e44ee01 2>&1)"
-hook_calls_after_second="$(wc -l < "$hook_log" 2>/dev/null || echo 0)"
-if printf '%s' "$second_out" | grep -q "worktree already present" && [ "$hook_calls_after_second" = "1" ]; then
-  echo "  ok   once complete, the SAME worktree is reused as present with no extra hook call"
+# The headline finding itself, reproduced: a legacy-shape tree that ALSO carries uncommitted and
+# untracked work (measured live on the real fleet: 7 of 176 worktrees) must keep that work on the
+# next pickup, never lose it to a force-remove.
+git -C "$MAIN" worktree add -q -b card/dea0dea002 "$ROOT/card/dea0dea002" develop >/dev/null
+echo "untracked, uncommitted" > "$ROOT/card/dea0dea002/wip.txt"
+echo "edited" >> "$ROOT/card/dea0dea002/notes.txt"
+dirty_out="$(run backend --card dea0dea002 2>&1)"
+dirty_rc=$?
+# Check the SPECIFIC uncommitted/untracked work survives, not full-status equality: this call also
+# always creates the node_modules symlink on a tree that never had one, which is normal, unrelated
+# behaviour (every pickup ensures it, reuse included) and would make a byte-for-byte comparison
+# fail for a reason that has nothing to do with this fix.
+dirty_after="$(git -C "$ROOT/card/dea0dea002" status --porcelain 2>/dev/null)"
+if [ "$dirty_rc" = 0 ] \
+  && [ -f "$ROOT/card/dea0dea002/wip.txt" ] \
+  && printf '%s' "$dirty_after" | grep -q '?? wip.txt' \
+  && printf '%s' "$dirty_after" | grep -q ' M notes.txt'; then
+  echo "  ok   a dirty legacy-shape tree keeps its uncommitted/untracked work on the next pickup"
 else
-  echo "  FAIL expected reuse + still 1 hook call -> calls=$hook_calls_after_second out=$second_out"; fail=1
+  echo "  FAIL dirty legacy tree should survive untouched -> rc=$dirty_rc wip=$([ -f "$ROOT/card/dea0dea002/wip.txt" ] && echo present || echo GONE) status_after=[$dirty_after]"; fail=1
+fi
+
+n=$((n + 1))
+# A GENUINELY interrupted tree (the hook machinery started -- sentinel written by
+# _worktree_on_create_begin, simulating project_worktree_on_create having been entered -- but
+# never reached a successful return) and is otherwise CLEAN must still be recovered: force-removed
+# and recreated, hook runs.
+git -C "$MAIN" worktree add -q -b card/cafed00d02 "$ROOT/card/cafed00d02" develop >/dev/null
+_worktree_on_create_begin "$ROOT/card/cafed00d02"
+rm -f "$hook_log"
+interrupted_out="$(run backend --card cafed00d02 2>&1)"
+interrupted_rc=$?
+hook_calls_after_interrupted="$(wc -l < "$hook_log" 2>/dev/null || echo 0)"
+if [ "$interrupted_rc" = 0 ] \
+  && [ "$hook_calls_after_interrupted" = "1" ] \
+  && ! printf '%s' "$interrupted_out" | grep -q "worktree already present"; then
+  echo "  ok   a genuinely interrupted (sentinel present), clean tree is recovered -- hook runs"
+else
+  echo "  FAIL expected recovery + exactly 1 hook call -> rc=$interrupted_rc calls=$hook_calls_after_interrupted out=$interrupted_out"; fail=1
+fi
+
+n=$((n + 1))
+# The other new guard: a genuinely interrupted tree that is ALSO dirty must be refused loudly
+# (exit 3, naming the path), never force-removed -- "never auto-remove a dirty tree", the fix
+# direction both gates converged on.
+git -C "$MAIN" worktree add -q -b card/ba5eba1102 "$ROOT/card/ba5eba1102" develop >/dev/null
+_worktree_on_create_begin "$ROOT/card/ba5eba1102"
+echo "uncommitted, do not delete" > "$ROOT/card/ba5eba1102/wip.txt"
+refuse_out="$(run backend --card ba5eba1102 2>&1)"
+refuse_rc=$?
+if [ "$refuse_rc" = 3 ] \
+  && printf '%s' "$refuse_out" | grep -q "ba5eba1102" \
+  && [ -f "$ROOT/card/ba5eba1102/wip.txt" ]; then
+  echo "  ok   a dirty, genuinely-interrupted tree is refused (exit 3), not force-removed -- work survives"
+else
+  echo "  FAIL expected refusal + surviving work -> rc=$refuse_rc wip=$([ -f "$ROOT/card/ba5eba1102/wip.txt" ] && echo present || echo GONE) out=$refuse_out"; fail=1
 fi
 
 n=$((n + 1))

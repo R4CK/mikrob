@@ -123,12 +123,16 @@ fi
 
 mkdir -p "$ROOT" "$ROOT/.worktree-create-locks"
 
-# F-2 + F-3 fix (card c16cd98e, F6.2 follow-up). Two bugs in the "already present?" check this
-# block used to be:
+# F-2 + F-3 fix (card c16cd98e, F6.2 follow-up; F-2's shape corrected after CYBERSEC NO-GO 39444 /
+# CYBERED NO-GO 39445 on be3b70680). Two bugs in the "already present?" check this block used to be:
 #   F-2: `[ -e "$TREE/.git" ]` alone cannot tell "fully created, hook ran" apart from "git worktree
 #   add succeeded, then this script got killed before project_worktree_on_create ever ran" -- the
 #   NEXT call saw the same `.git` and treated it as done, so an interrupted hook was silently
-#   accepted as present forever.
+#   accepted as present forever. worktree_on_create_is_complete now answers this with an
+#   IN-PROGRESS SENTINEL rather than a completion marker (absent = complete, not absent =
+#   incomplete) -- see worktree-on-create.sh's own header for why the first (marker) shape was
+#   itself a live-data-loss regression, and the dirty-tree refusal just below for the other half
+#   of the fix.
 #   F-3: the whole create-or-reuse decision was a read (`[ -e ... ]`) followed much later by a
 #   write (`git worktree add`), with no lock between them -- two concurrent callers for the same
 #   brand-new $TREE both see "not present" and both race `git worktree add`, and whichever loses
@@ -144,11 +148,20 @@ if [ -e "$TREE/.git" ] && worktree_on_create_is_complete "$TREE"; then
   echo "worktree already present: $TREE ($(git -C "$TREE" rev-parse --abbrev-ref HEAD))"
 else
   if [ -e "$TREE/.git" ]; then
-    # F-2 recovery: a `.git` exists but the completion marker does not -- a prior attempt was
-    # interrupted between creating the worktree and finishing (or ever starting) its on_create
-    # hook. Remove the half-made worktree (never its branch here -- the normal branch_preexisted
-    # logic below decides that fresh, exactly as it would for a brand-new $TREE) and fall through
-    # to the ordinary creation path as if this tree never existed.
+    # F-2 recovery, CORRECTED (CYBERSEC NO-GO 39444 / CYBERED NO-GO 39445 on be3b70680): reaching
+    # this branch now means worktree-on-create.sh's in-progress sentinel is still present -- the
+    # hook machinery genuinely started and never reached a successful return. A tree this function
+    # was never called for at all (every pre-this-card worktree) never had a sentinel and takes
+    # the "already present" branch above instead, untouched.
+    #
+    # Even a genuine interruption is never force-removed while dirty: it may be sitting on real
+    # uncommitted/untracked work from whoever last had it open, and guessing that is safe to
+    # discard is exactly the failure both gates measured (176 live worktrees, 0 with the old
+    # marker, 7 dirty -- that measurement predates this correction, but the same shape of mistake
+    # applies to a genuinely-interrupted tree too). Refuse loudly instead of removing.
+    if [ -n "$(git -C "$TREE" status --porcelain 2>/dev/null)" ]; then
+      die 3 "worktree at $TREE has an interrupted on_create hook AND uncommitted/untracked changes -- refusing to auto-remove; resolve by hand (commit/stash the work, or confirm nothing valuable remains and remove it yourself), then re-run"
+    fi
     echo "worktree at $TREE exists but never completed its on_create hook (interrupted earlier run) -- recovering"
     git -C "$MAIN" worktree remove --force "$TREE" >/dev/null 2>&1 || true
   fi

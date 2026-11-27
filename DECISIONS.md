@@ -34242,3 +34242,50 @@ ennek a kártyának a része.
 Ki döntött: Cybered (NO-GO 38923 F-2/F-3/F-4 felvetője, GO 38955). Végrehajtotta: fullstack (DevO).
 Hivatkozás: kártya c16cd98e (60e5a40e F6.2 follow-up); előzmény 60e5a40e; `store/worktree-on-create.sh`,
 `store/agent-worktree-marveen.sh`, `store/projects-on-create-pin.selftest.sh`.
+
+## 2026-11-27 17:10 -- Kártya c16cd98e: az F-2 javítás elso alakja élo adatvesztést okozott, a
+sentinel-logika megfordítva
+
+MIT: a `be3b70680`-on landolt F-2 javítás "completion marker" alakja NO-GO-t kapott mindkét
+biztonsági gate-től (Cybersec NO-GO 39444, Cybered NO-GO 39445, HIGH mindkettőnél): a hiányzó
+marker "befejezetlen" jelentése nem tudott különbséget tenni egy VALÓDI megszakítás és egy
+"ez a mechanizmus létezése előtt készült worktree" között -- élő, olvasás-only cenzus szerint a
+176 futó worktree közül 0 hordozott markert, 7 pedig commitolatlan munkát (jogasz 16 bejegyzés,
+backend 2, backend3 1, card/3ae2411d 1, card/7f112c2f 3, card/ac0bf02d 1, card/bb562959 3) -- az
+első újra-dispatch mindegyiket törölte volna `git worktree remove --force`-szal, csendben, rc 0.
+A javítás erre: a marker helyett egy IN-PROGRESS SENTINEL, megfordított logikával -- a sentinel
+HIÁNYA jelenti a "kész" állapotot, nem a jelenléte. `project_worktree_on_create` a sentinelt saját
+első lépésként írja, és minden sikeres `return 0` előtt törli; egy ilyet soha nem hívott fa
+(minden élő worktree ma) tehát automatikusan "kész"-nek olvas, pont úgy, mint egy valóban
+befejezett. Csak az a fa olvas megszakítottnak, amelyiken a sentinel tényleg túlélte a hívást.
+Második réteg: a felvevő szkript (`agent-worktree-marveen.sh`) egy VALÓDI megszakítást (sentinel
+jelen) sem távolít el többé automatikusan, ha a fa `git status --porcelain` szerint piszkos --
+ilyenkor hangosan megáll (exit 3, megnevezi az útvonalat), nem tippel rá, hogy biztonságos
+törölni. Harmadik, kisebb javítás (Cybersec F-3, LOW): a pin-teszt (`projects-on-create-pin.
+selftest.sh`) egy sikertelenül feldolgozható (malformed) committolt configot eddig csendben
+null-ként olvasott (stderr elnyelve, kilépőkód ellenőrizetlen) -- most ez is FAIL. Negyedik
+(Cybered INFO): a felvevő lock (fd 9) most zárva van a hook gyerekfolyamata felé (`9>&-`), hogy egy
+daemonizáló hook ne tarthassa a lockot a szkript saját kilépése után.
+Minden eset élő mutánssal igazolva: a sentinel-megfordítás, a piszkos-fa-megállás és az ME mutáns
+(on_create-kiolvasás kilépőkódja erőltetve 0-ra) mind pirosra fordítják a hozzájuk tartozó új
+tesztesetet, visszaállítás után ismét zöld.
+
+MIÉRT: egy "soha ne töröld más munkáját" védelem, amelyik a leggyakoribb, idempotens hívási úton
+(minden kártya-dispatch, minden self-advance-pickup) pont ezt tette volna, nem védelem, hanem egy
+beépített, csendes adatvesztési mechanizmus -- és mindkét gate ugyanerre az irányra jutott
+egymástól függetlenül (Cybersec a (c) opciónál állt meg, Cybered -- a kettő összevetése után --
+a sentinel-megfordítást javasolta erősebbnek, mert valódi hook mellett is működik).
+
+MI MARADT: egy szűk, elfogadott rés él tovább, amíg `on_create_script` mindenhol `null` (LOW-1
+pin kényszeríti): ha a folyamat PONT a `git worktree add` sikere és a sentinel első megírása
+között szakad meg, a fa ugyanúgy "kész"-nek olvas, mint egy legacy fa, és egy VALÓDI hook ebben a
+szűk ablakban soha nem futna le. Ez a döntés tudatos (kisebb kockázat, mint 176 élő worktree
+törlése), és az első valódi `on_create_script` re-gate-jének kötelező eleme, hogy ezt az ablakot
+újra megmérje. Az fd 9 öröklésének dormáns rése (hosszan futó vagy daemonizáló hook) és a
+mktemp stderr-fájl SIGKILL-en túli lehetséges elszivárgása is dokumentált, nem élő hiba.
+
+Ki döntött: Cybersec (NO-GO 39444) + Cybered (NO-GO 39445), a javítási irány Cybered összevetése
+alapján konvergált; dispatch: MikroB (25574). Végrehajtotta: fullstack (DevO).
+Hivatkozás: kártya c16cd98e; előzmény be3b70680; `store/worktree-on-create.sh`,
+`store/agent-worktree-marveen.sh`, `store/projects-on-create-pin.selftest.sh`,
+`store/worktree-on-create.selftest.sh`, `store/agent-worktree-marveen.selftest.sh`.
