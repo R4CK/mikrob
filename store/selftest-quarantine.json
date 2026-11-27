@@ -1,0 +1,4 @@
+{
+  "note": "Quarantine list for slow/flaky store/*.selftest.* entries (card 1ce518d9, Peti approval Telegram 14809). A listed selftest still RUNS and is REPORTED by store-selftests-all-run.test.ts, but a failure on it does not fail the suite -- so it does not block a land. Adding an entry needs its own card and a MikroB decision; put the card id in `card`. Max 7 days from `added_at` to `expiry`, max 3 entries at once -- a 4th entry (or a bad date range) makes selftest-quarantine.ts throw, which fails the suite loudly rather than silently accepting it. An entry past its `expiry` is simply not in the active set any more: the selftest it names blocks the land again, automatically, with no further action needed.",
+  "entries": []
+}

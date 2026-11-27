@@ -49,9 +49,18 @@ import {
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DEAD_LAND_SELFTEST_ENV as DEAD_SELFTEST_ENV } from './setup/isolate-land-selftest-state.js'
+import { loadQuarantineEntries, activeQuarantineNames } from '../selftest-quarantine.js'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..')
 const STORE = join(REPO_ROOT, 'store')
+
+// Card 1ce518d9: a selftest named here is still run and its failure is still printed below, but
+// does not fail THIS suite -- so a known slow/flaky one cannot block every land behind it the way
+// wsl-cleanup did (card a1c38d36). Loading throws on a malformed file (missing card/owner/expiry,
+// a 4th entry, a bad date range) -- see src/selftest-quarantine.ts -- so a bad entry fails the
+// suite loudly instead of silently either blocking or silently not-blocking.
+const QUARANTINE_ENTRIES = loadQuarantineEntries(join(STORE, 'selftest-quarantine.json'))
+const ACTIVE_QUARANTINE = activeQuarantineNames(QUARANTINE_ENTRIES, new Date())
 
 // Card 1634bf55 (backend report msg 23386 + MikroB comment 37609; CYBERED NO-GO 37616
 // F-3: a locally-redefined copy here could drift from the global one and nobody would
@@ -425,6 +434,18 @@ describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b
     }
   })
 
+  it('every quarantine entry names a real, currently-discovered selftest (card 1ce518d9)', () => {
+    // Same shape as the mode-selftest/exclusion existence controls above: a typo'd or stale
+    // `selftest` name in the quarantine file would silently quarantine nothing, while reading as
+    // a live decision that something is shielded.
+    const names = ALL.map((s) => s.name)
+    for (const e of QUARANTINE_ENTRIES) {
+      expect(names, `quarantine entry "${e.selftest}" (card ${e.card}) does not match any discovered selftest`).toContain(
+        e.selftest,
+      )
+    }
+  })
+
   // PORT OWNERSHIP ACROSS SELFTESTS (card 0ebeff55's own consequence, found 2026-09-11).
   //
   // Wiring the never-run selftests into this file made two of them RUN TOGETHER for the first
@@ -479,14 +500,25 @@ describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b
       // around the SAME execFileSync this test needs to make anyway -- no separate invocation, so a
       // selftest that leaves tracked files dirty cannot slip through in the gap. It throws on its
       // own if the tree came out dirty; this is the ONLY place that decides pass/fail for that part.
-      const out = runGuardedSelftest(REPO_ROOT, script.runner, script.file, script.args)
-      const matched = OK_SHAPES.some((re) => re.test(out))
-      expect(
-        matched,
-        `${script.file} exited 0 but printed no recognised non-zero PASS summary. ` +
-          `Either it ran no cases, or it reports in a shape this file does not know yet ` +
-          `(add it to OK_SHAPES rather than loosening one). Tail:\n${out.slice(-400)}`,
-      ).toBe(true)
+      try {
+        const out = runGuardedSelftest(REPO_ROOT, script.runner, script.file, script.args)
+        const matched = OK_SHAPES.some((re) => re.test(out))
+        expect(
+          matched,
+          `${script.file} exited 0 but printed no recognised non-zero PASS summary. ` +
+            `Either it ran no cases, or it reports in a shape this file does not know yet ` +
+            `(add it to OK_SHAPES rather than loosening one). Tail:\n${out.slice(-400)}`,
+        ).toBe(true)
+      } catch (e) {
+        // Card 1ce518d9: only a selftest with an ACTIVE quarantine entry is spared -- an expired
+        // one throws exactly as before, which is what makes it "block again automatically".
+        if (!ACTIVE_QUARANTINE.has(script.name)) throw e
+        const entry = QUARANTINE_ENTRIES.find((q) => q.selftest === script.name)!
+        console.warn(
+          `QUARANTINED (not blocking the land): ${script.file} failed -- card ${entry.card}, ` +
+            `owner ${entry.owner}, expires ${entry.expiry}.\n${(e as Error).message}`,
+        )
+      }
     },
     200_000,
   )

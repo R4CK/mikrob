@@ -34038,3 +34038,33 @@ Ki döntött: backend3 (gyökér-ok vizsgálat, javítás, mérés, önjavítás
 Hivatkozás: kártya a1c38d36; CYBERSEC NO-GO 39270 + QA PASS 39267 (sha 68fe4d9c); a javítás commitja
 ezen bejegyzés után következik; `store/wsl-cleanup.selftest.sh`; `store/wsl-cleanup.sh` (csak
 olvasva, nem módosult).
+
+## Quarantine lane a lassú/flaky selftestekre (kártya 1ce518d9, Peti jóváhagyás Telegram 14809,
+## onfejlesztes 2026-11-26 #4)
+
+PROBLÉMA: egyetlen lassú/flaky selftest (wsl-cleanup, kártya a1c38d36) délutántól estig blokkolt
+minden landolást, mert `src/__tests__/store-selftests-all-run.test.ts` a teljes suite-ot elbuktatja,
+amint egyetlen selftest elbukik vagy timeoutol -- nincs mód egy ISMERT lassú/flaky-t futni és
+jelenteni hagyni anélkül, hogy blokkolná a landolást.
+
+JAVÍTÁS: `src/selftest-quarantine.ts` -- verziókövetett lista (`store/selftest-quarantine.json`,
+alapból üres `entries: []`), max 3 bejegyzés, bejegyzésenként max 7 nap `added_at`-tól `expiry`-ig.
+Egy bejegyzés hiányzó/üres `selftest`/`owner`/`card`/`added_at`/`expiry` mezővel, vagy egy 4.
+bejegyzés, vagy egy `expiry <= added_at` / 7 napnál hosszabb tartomány dobja a hibát -- a suite
+emiatt hangosan elbukik, nem némán fogadja el a rossz bejegyzést. `store-selftests-all-run.test.ts`
+a selftest-futtatás körüli `try/catch`-ben nézi, aktív-e a quarantine bejegyzés a selftest nevére:
+ha igen, a hiba csak egy `console.warn`-ba megy ("QUARANTINED (not blocking the land): ..."), a
+suite ZÖLD marad; ha nincs aktív bejegyzés (vagy lejárt), a hiba ugyanúgy dobódik, mint eddig --
+ez a "lejárat után újra blokkol" automatizmus. Szándékosan NINCS futásidejű add/remove API: egy
+bejegyzés felvétele normál commit + kártya + MikroB-döntés, mint bármelyik más gate-elt változás.
+Egy külön teszt (`"every quarantine entry names a real, currently-discovered selftest"`) ellenőrzi,
+hogy egy elgépelt/elavult `selftest` név nem marad némán hatástalan, holott élő döntésként olvasna.
+
+MÉRVE: `src/__tests__/selftest-quarantine.test.ts` (unit, parseQuarantineEntries/isActive/
+activeQuarantineNames pozitív+negatív esetekkel minden mezőre) + a módosított
+`store-selftests-all-run.test.ts` suite 199/199 PASS, typecheck tiszta.
+
+Ki döntött: backend2 (implementáció, mérés). Peti jóváhagyás: Telegram 14809 (2026-11-26 20:06,
+"a MikroB által ajánlott sorrendben (1 és 4 most, 2 és 3 utánuk)").
+Hivatkozás: kártya 1ce518d9; `src/selftest-quarantine.ts`; `src/__tests__/selftest-quarantine.test.ts`;
+`src/__tests__/store-selftests-all-run.test.ts`; `store/selftest-quarantine.json`; Gate: QA + CYBERSEC.
