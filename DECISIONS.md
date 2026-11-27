@@ -33984,3 +33984,24 @@ Ki döntött: CYBERED (NO-GO 39294, the validated fix direction); MikroB (39295,
 the per-case design rather than patch another case); backend (implementation, tests, mutation
 proof). Hivatkozás: kártya af3cd669; CYBERED NO-GO 39294; MikroB re-plan 39295;
 `store/vendor-skill.sh`; `src/__tests__/vendor-skill-symlink-safety.test.ts`.
+
+## 2026-11-27 19:36 -- 01b10349 -- F4: catch KgSecretError on referenced-card upsert in importDecisionsLog
+
+OBSERVATION: import-decisions-log.ts's referenced-card upsertNode call had no try/catch for
+KgSecretError, unlike the sibling decision-node upsert (earlier F3 fix). Real live trigger: card
+b0396aa1's title contains a #token= fragment (10 chars, clears the 8-char secret-shape floor) --
+the live MT-10 import would crash on it.
+
+FIX: ceb8e3308 (test-first, red test 11a0de013) adds the missing try/catch around the
+referenced-card upsertNode call, mirroring the existing F3 pattern. Mutation-tested: removing the
+try/catch reproduces the live crash verbatim and turns exactly the new F4 test red.
+
+Measured live (after landing, before cron install): dated backup
+store/kg-backups/knowledge-graph-20261127-200554.db; import run with this fix in place
+secretSkipped=11 decisions (incl. b0396aa1's referenced-card node) instead of crashing; chunked
+embedding backfill 2918/2918 embedded, 0 failed; Kesz-ha #3 on live 7/12 (58%), clearing the
+>=50% bar (card 01b10349 comment 39519/39520).
+
+Ki döntött: backend (F4 root-cause, fix, test, mutation proof, live measurement); MikroB (39435
+precondition sequencing: wait for 7f3cbe92 to land first). Hivatkozás: kártya 01b10349; commits
+11a0de013, ceb8e3308; `src/kg/import-decisions-log.ts`.
