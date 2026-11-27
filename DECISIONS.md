@@ -34039,6 +34039,177 @@ Hivatkozás: kártya a1c38d36; CYBERSEC NO-GO 39270 + QA PASS 39267 (sha 68fe4d9
 ezen bejegyzés után következik; `store/wsl-cleanup.selftest.sh`; `store/wsl-cleanup.sh` (csak
 olvasva, nem módosult).
 
+## 2026-11-26 -- lint-ratchet no-unused-vars baseline visszahúzva argsIgnorePattern-rel (kártya e94fea8e, RedHat N1, f3dd0c65 delta-gate)
+
+A commit `7b4e903ec` (Köteg 16 után) a `@typescript-eslint/no-unused-vars` lint-ratchet plafonját
+185-ről 197-re emelte, kizárólag a `(..._a: unknown[]) => ...` alakú vitest-mock argumentumok
+miatt -- ez egy ratchet-lazítás egy nem-valódi regresszióra, nem valódi hibafelhalmozódás: a
+kódbázis saját, már bevett konvenciója az aláhúzás-prefixszel jelölt "szándékosan nem használt"
+paraméter.
+
+Javítás `eslint.config.mjs`-ben: `argsIgnorePattern: '^_'` a szabályon. A MÉRT hatás jóval nagyobb,
+mint a kártya becsült ~185-ös célszáma: a valós szám 267-ről 84-re esett (a konvenció 16+ upstream
+köteg munkáján keresztül halmozódott fel, nem csak az egy regresszión). A baseline 84-re állítva
+(`store/lint-ratchet.sh --update`, SCOPED: a diffben csak ez az egy kulcs mozdult).
+
+Mellékhatás, amit NEM nyeltem le egy vak `--update`-del: az opció hozzáadása 10 korábbi,
+`@typescript-eslint/no-unused-vars`-ra szóló `eslint-disable-next-line` kommentet feleslegessé
+tett (a szabály már nem jelzi, amit azok elnémítottak), amit az ESLint saját
+"unused-disable-directive" ellenőrzése 0 -> 10-re ugrásként jelzett -- első pillantásra egy
+független, új regressziónak nézett ki, valójában ennek a fixnek a közvetlen, hatókörön belüli
+következménye. Mind a 10-et eltávolítottam, nem egy új baseline-kulcsként rögzítettem; a
+`(unused-disable-directive)` 0-ra való visszaállását a baseline-update ELŐTT ellenőriztem.
+
+A kártya saját mutáció-elfogadási kritériuma (egy új, nem-aláhúzásos unused változó pirosra
+fordítja a ratchet-et): kézzel igazolva (egy valódi ilyen változót hozzáadva majd eltávolítva, a
+ratchet 84->85-re ment és REFUSED-ot adott), majd tartósan rögzítve egy új tesztben
+(`src/__tests__/lint-ratchet-no-unused-vars-args-ignore.test.ts`) -- config-szöveg pin PLUSZ
+viselkedési teszt valódi ESLint-tel scratch-fixture-ökön. Mindkét ellenőrzést mutációval
+igazoltam (a valódi fix visszavonásával mindkettő pirosra ment).
+
+Mérve: `store/lint-ratchet.sh` tiszta (semelyik szabály nem romlott). `npx tsc --noEmit -p .`
+tiszta. Az új teszt-fájl 3/3 zöld. A 4 érintett teszt-fájl (124 teszt) és a 3 érintett modul
+saját teszt-fájlja (db/session-control/skill-quarantine, 93 teszt) mind zöld.
+
+Ki döntött: cybered/RedHat (N1 lelet, f3dd0c65 delta-gate); fullstack (implementáció).
+Végrehajtó: fullstack.
+Hivatkozás: kártya e94fea8e; forrás f3dd0c65 delta-gate komment 20564; `eslint.config.mjs`,
+`store/lint-baseline.json`.
+
+## 2026-11-26 -- Kártya cd872e72: classify_task_state() absent-<Enabled>=enabled + heredoc backtick fix (d97659cb live install blokkolója)
+
+**Kontextus:** d97659cb élő telepítése (14:53, backend3 üzenet 25088) az installer saját
+`classify_task_state()`-je miatt akadt el: a live `MikroB-WSL-Watchdog` feladat XML-je nem
+tartalmaz `<Enabled>` taget egyáltalán (a Task Scheduler séma-alapértéke true, és Windows
+kihagyja az elemet, ha sosem lett átváltva), a klasszifikátor pedig ezt "unknown"-ként
+olvasta és fail-closed módon kihagyta a `/Create`-et -- így az 1 perces tick sosem jutott el
+az élő feladatra. Ugyanez a leolvasás történt 3f6bb903-nál is (11:28).
+
+**Döntés 1 (classify_task_state):** hiányzó `<Enabled>` + egyébként jólformázott XML (van
+lezárt `<Settings>` blokk egy lezárt gyökér `<Task>` elemben) = "ready". `<Enabled>false</Enabled>`
+továbbra is "disabled" (58badae1 H1 változatlan: sosem re-enable). Csonkolt/hiányos XML
+(Settings vagy Task nincs lezárva) marad "unknown" -- ez a különbség a "a tag sosem lett
+kiírva" és a "a lekérdezés félbeszakadt" között. `<Enabled>` taggel, de nem true/false
+értékkel (pl. `maybe`) is "unknown" marad, sosem defaultol ready-re. Nincs manuális bypass
+flag (MikroB döntés, msg 25089, option 2 elutasítva).
+
+**Döntés 2 (heredoc backtick):** `install-wsl-watchdog.sh` ~289/299/306 sorában a PS1EOF
+heredoc (idézetlen delimiter, tehát bash backtick/`$()` helyettesítést végez a teste
+felett) három, backtick-kel idézett doksi-töredéket tartalmazott a wsl-watchdog-holder-ensure.sh
+fejkommentjéből átvett szöveg maradványaként (`` `need=<n>` ``, `` `-match` ``) -- ezek
+parancs-helyettesítésként futottak le render közben, sikertelenül, és a generált PS1
+kommentsorából szótlanul kiesett a szöveg (hibaüzenet stderr-re, de a `/Create`-et nem
+állította meg). Fix: a három backtick escapelve (`\``), ugyanúgy ahogy a heredoc már minden
+`$` jelet escapel a literál PS1-kimenethez.
+
+**MELLÉKLELET (teszt-hiba, nem production-kód):** a `install-wsl-watchdog.selftest.sh`-ban már
+létező "heredoc-safety: zero stderr" őr VAKON ZÖLDET adott erre a pontos hibára -- a
+`run_isolated()` segédfüggvény saját `2>&1`-je már a FÜGGVÉNYEN belül összeolvasztotta a
+telepítő valódi stderr-jét a stdout-jába, mielőtt a hívó oldali `2>"$DRYRUN_STDERR"` bármit
+látott volna; a hívó csak `run_isolated` saját (mindig üres) stderr-jét kapta. Mérve: a
+hibás kóddal 686 bájt valódi stderr keletkezett, a teszt mégis "ok"-ot írt. Új,
+`run_isolated_stderr_only()` függvény (nem olvasztja össze a két streamet) + három
+`check_line` pin a pontos kommentsorokra (érték-alapú ellenőrzés, nem csak a "nincs
+stderr" proxy) zárja ezt.
+
+**Ellenőrzés (fa/sha: card/cd872e72 worktree, új sha lentebb a kommiton):**
+`scripts/install-wsl-watchdog.selftest.sh` -- PASS, 132 ok, 0 FAIL (8 új eset: 3 comment-line
+pin + 4 classify_task_state eset + a most már valódi heredoc-safety stderr check). TDD:
+mind az 5 FAIL-t megnéztem (RED) a fix előtt. Mutáció-teszt (kézzel, `sha256sum`-mal
+visszaellenőrzött visszaállítás minden kör után): (1) a well-formedness-ellenőrzés
+elhagyása (bármilyen hiányzó-Enabled -> ready, jólformázottság nélkül) 5 tesztet buktat
+RED-re, köztük 3 MEGLÉVŐ H1'-classify esetet is; (2) a teljes új ready-ág eltávolítása
+pontosan 1 tesztet buktat (a saját új tesztemet, nem vakon zöld); (3) egy backtick
+escape-jének visszavonása buktatja a heredoc-safety stderr check-et ÉS a hozzá tartozó
+exact-line pint. `npx tsc --noEmit` nem releváns (tisztán bash-fájlok, nincs .ts
+változás). Scoped vitest a szemafor-szkripten át
+(`src/__tests__/wsl-watchdog-disable-flag-early-exit.test.ts`, ez a selftestet futtatja
+CI-ben) -- lásd a REVIEW-ban a friss eredményt.
+
+**Mi maradt ki:** d97659cb élő telepítés/kill-teszt továbbra is várja MikroB külön go-ját
+(msg 25089: "after cd872e72 lands I give a separate go to repeat the live step from the
+start").
+
+Ki döntött: MikroB (kártyanyitás + a megoldás iránya, üzenet 25089, option 1). backend3
+(implementáció, teszt, a vakon-zöld teszt-hiba felfedezése és javítása).
+Hivatkozás: kártya cd872e72 (szülő b736f51a); d97659cb (blokkolt kártya, üzenet 25088);
+3f6bb903 (korábbi, ugyanilyen leolvasás, 11:28); `scripts/install-wsl-watchdog.sh`,
+`scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 -- Kártya cd872e72 2. kör: classify_task_state() szóhatár-rés (L-1), négy szerkezeti feltétel egyenkénti pin-je (L-3), run_isolated_stderr_only() kontroll-pin (L-4) (CYBERSEC GO 39190, MikroB üzenet 25151)
+
+Az első kör ("absent" = a `<Enabled>` literál szubsztring hiánya) szűk volt: egy eltérő
+írásmódú Enabled-tag (szóköz a záró `>` előtt, önmagát-záró `<Enabled/>`, névtér-előtagolt,
+attribútumot hordozó) NEM tartalmazza a `<Enabled>` literál szubsztringet, tehát átcsúszott
+volna a "ready" ágra -- pontosan az az irány, amit az 58badae1 H1 tilt (egy letiltott task
+újra-engedélyezése). CYBERSEC (GO 39190, L-1 lelet) és MikroB (üzenet 25151, MUST-FIX)
+mérte/döntötte.
+
+**Döntés 1 (L-1 javítás):** az "absent" teszt mostantól a sima "Enabled" szó (kis-nagybetű
+független, szögletes zárójel NÉLKÜL) teljes hiányát nézi a kimenetben, nem a `<Enabled>`
+literált. KÖVETKEZTETÉS: ez a leggyengébb lehetséges feltétel, ami minden eddig ismert
+írásmódot elkap (szóközös, önmagát-záró, névtér-előtagolt, attribútumos), anélkül hogy
+felsorolná őket (guards-that-pin-behaviour 4. pont: inverzió, ne enumeráció).
+
+**Döntés 2 (L-3 pin-gap zárás):** 4 új fixture, mindegyik PONTOSAN egy darabot hagy ki a
+4-tagú ÉS-láncból (`<Settings>`, `</Settings>`, `<Task`, `</Task>`), a másik hármat
+érvényesen tartva -- az 1. köri csonkolt fixture-ök MINDKÉT zárót egyszerre hagyták ki, így
+egy láncszem kivétele a másik maszkolása miatt észrevétlen maradt (CYBERSEC mutáció K4-K7
+mind túlélte). Egy 5. fixture az `<Enabled>true</Enabled>` ág rc-kapuját pinneli
+(rc!=0 + true szöveg -> unknown, K11).
+
+**Döntés 3 (L-4 kontroll-pin):** a selftest-fájl `run_isolated_stderr_only()` segédje maga
+sosem volt tesztelve arra, hogy TÉNYLEG továbbadja a valós stderr-t -- csak arra, hogy egy
+tiszta render esetén 0 bájtot ad. Egy regresszió (visszaállás a vakon-zöld `2>&1`-es
+`run_isolated()` alakra) a nulla-stderr check-et is simán zöldre vinné, mert MINDKÉT fél
+(BIN és a saját stdout) nullára olvasna. Új kontroll: egy stub BIN, ami garantáltan ír
+stderr-re, és a teszt elvárja, hogy a capture NEM üres.
+
+MEGFIGYELÉS (TDD, mind a 3 döntésre): a 4 új L-1 fixture a javítás ELŐTT pirosra futott
+(a régi `<Enabled>` literál teszt nem fogta meg őket), az L-3/L-4 fixture-ök már a javítás
+előtt is zöldek voltak (meglévő kódot pinnelnek, nem új ágat). Javítás után mind a 142 teszt
+zöld (0 FAIL). Mutáció: az egyetlen megváltozott sor (`'Enabled'` vissza `'<Enabled>'`-re)
+pontosan a 4 új L-1 esetet buktatja, semmi mást -- nem kaszkád, a javítás terhelő és
+nem-vákuum. A mutált fájl és az eredeti sha256 ellenőrzéssel visszaállítva byte-azonosra.
+
+**Mi maradt ki:** CYBERSEC L-2 (a "jól formázott" teszt négy független substring-grep,
+nem valódi struktúra-elemzés) SZÁNDÉKOSAN nyitva -- MikroB üzenete ezt OPCIONÁLISNAK
+jelölte ("csak ha kicsi marad"), és egy valódi XML-parse-ra váltás ehhez a bash-only
+scripthez aránytalan komplexitást adna egy LOW kockázatú résért (a schtasks valós kimenete
+nem produkál ilyen torz szöveget). d97659cb élő telepítés/kill-teszt továbbra is várja
+MikroB külön go-ját.
+
+Ki döntött: MikroB (F-1/F-3/L-4 MUST-FIX kijelölése, üzenet 25151; L-2 opcionálisként
+hagyása). CYBERSEC (39190, a 4 lelet forrása). backend3 (implementáció, teszt).
+Hivatkozás: kártya cd872e72; CYBERSEC GO 39190; CYBERED GO 39176 (F-1/F-3 eredeti
+felvetője); QA PASS 39182; `scripts/install-wsl-watchdog.sh`,
+`scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 20:15 -- Kártya 36a5e39e: a telepítősablonokból kikerülnek a régi sablonszakaszok, a backend3 ellentmondása megszűnik, három szerep skilljei bekerülnek a skill-térképbe
+
+MIT: (1) A `seed-fleet-agents/{backend3,cybered,qa2,fron-teddy,teszter,videooo}/CLAUDE.md` fájlokból
+kikerült ugyanaz a 12 régi sablonszakasz és a "Flotta-szabályok" 3., 5., 6. pontja, amit a b89b859b
+kártya a telepített promptokból már törölt (QA PASS 39284); a helyükre kétsoros "Ütemezés" megjegyzés
+került. A jogasz sablonból a "Mérnöki alap (dev szerepeknél)" szakasz ment ki. (2) A backend3
+sablonból kikerült a "Nem fejlesztesz a mikrob kódjába" sor, a 4. flotta-szabály új szövege: a
+marveen repót csak saját worktree-ben szerkeszti és `marveen-land.sh`-val landol, az élő klónba nem
+ír. (3) A `store/skill-role-map.json` jogasz, marketing és teszter szerepe megkapta azt a 19 skillt,
+amelyet a promptjuk megnevez, de a térkép nem adott oda (2 + 12 + 5).
+
+MIÉRT: (1) Friss telepítésnél a sablon visszahozta volna a törölt szakaszokat (kb. 6 000 karakter
+ügynökönként); ezek a gyökér CLAUDE.md-t ismétlik, az ütemezés-recept pedig olyat tanít, amit a
+self-pace kapu blokkol. (2) MikroB döntése a kártyán: a worktree-fegyelem (Peti 2026-08-17, kártya
+dc185b52) szerint a backend3 marveen-landolásai a szándékolt munkamenet (30 nap alatt 56 landolás),
+a tiltó sor ennek mondott ellent. (3) A megnevezett, de nem hívható skill "Unknown skill" hibát ad;
+mind a 19 megvan a globális skill-mappában, csak a térképből hiányzott.
+
+MI MARADT: a korlátozó flotta-szabályok (1., 2., 4., 7.) eredeti számmal a helyükön vannak. Az
+`agent-scaffold.ts` `generateClaudeMd()` függvénye új ügynöknél továbbra is legenerálja ugyanezeket
+a szakaszokat: az alkalmazáskód, külön jelzés ment róla MikroB-nak.
+
+Ki döntött: MikroB (kártya 36a5e39e szövege), végrehajtotta Prompty.
+Hivatkozás: kártya 36a5e39e; előzmény b89b859b (QA PASS 39284), 3e59d70e.
+
 ## 2026-11-26 -- Quarantine lane a lassú/flaky selftestekre (kártya 1ce518d9, Peti jóváhagyás Telegram 14809, onfejlesztes 2026-11-26 #4)
 
 PROBLÉMA: egyetlen lassú/flaky selftest (wsl-cleanup, kártya a1c38d36) délutántól estig blokkolt

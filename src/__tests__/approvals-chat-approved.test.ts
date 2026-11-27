@@ -13,7 +13,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- signature must match sendTelegramMessage(token, chatId, text) for mock-call-arg assertions below
+// signature must match sendTelegramMessage(token, chatId, text) for mock-call-arg assertions below
 const sendSpy = vi.hoisted(() => vi.fn(async (_token: string, _chatId: string, _text: string): Promise<number | null> => 4242))
 
 vi.mock('../config.js', async (importOriginal) => {
