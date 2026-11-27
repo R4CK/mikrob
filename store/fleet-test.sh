@@ -177,11 +177,21 @@ print(summary if summary and len(summary) <= CAP else FALLBACK)
 # card asked for is failures, and the common case (most land runs are green) should not start
 # writing a file nobody asked for on every single one.
 FLEET_TEST_LOG_RETENTION="${FLEET_TEST_LOG_RETENTION:-200}"
-fleet_test_prune_log_dir() { # $1=dir $2=keep (newest N survive, by mtime)
+# Matches ONLY the filenames this script itself writes into FLEET_TEST_LOG_DIR -- the
+# fleet_test_persist_failure_log "<ts>-<pid>-failure.log" shape and the fleet_test_notify_finish
+# "<ts>-<pid>.log" shape. CYBERSEC F-1 (card 2f282a31, QA PASS 39543 + CYBERSEC GO 39544 delta):
+# the pruning used to count over the WHOLE shared directory, so the first red land after this
+# card could delete unrelated evidence another test deliberately persisted there (measured:
+# channel-poller-reap-failure-...-pane-parent-not-stopped.json, card a5c827ca). Pruning must only
+# ever touch files matching this pattern, never anything else a sibling test wrote into the same
+# shared directory.
+FLEET_TEST_OWN_LOG_RE='^[0-9]{8}T[0-9]{6}Z-[0-9]+(-failure)?\.log$'
+fleet_test_prune_log_dir() { # $1=dir $2=keep (newest N of OUR OWN logs survive, by mtime)
   local dir="$1" keep="$2" f
   [ -d "$dir" ] || return 0
-  local -a old
-  mapfile -t old < <(ls -1t "$dir" 2>/dev/null | tail -n "+$((keep + 1))")
+  local -a own old
+  mapfile -t own < <(ls -1t "$dir" 2>/dev/null | grep -E "$FLEET_TEST_OWN_LOG_RE")
+  mapfile -t old < <(printf '%s\n' "${own[@]:-}" | tail -n "+$((keep + 1))")
   for f in "${old[@]:-}"; do
     [ -n "$f" ] && rm -f "${dir:?}/$f" 2>/dev/null
   done

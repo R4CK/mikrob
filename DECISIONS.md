@@ -34561,3 +34561,32 @@ land-queue hold (msgs 25506/25530).
 Ki döntött: MikroB (card 2f282a31, dispatch 25663); backend3 (root cause, both fixes, tests).
 Hivatkozás: kártya 2f282a31; store/fleet-test.sh; store/fleet-test-notify-injection.selftest.sh;
 src/__tests__/store-selftests-all-run.test.ts.
+
+## 2026-11-27 -- fleet-test log persistence: prune only our own logs, not the whole shared dir (card 2f282a31 delta)
+
+CYBERSEC GO 39544 on bb08d333 carried F-1 (LOW, evidence-destroying): fleet_test_prune_log_dir
+counted retention over the WHOLE shared FLEET_TEST_LOG_DIR, so the first red land after the
+2f282a31 fix would delete non-log evidence another test deliberately left there (measured live:
+channel-poller-reap-failure-2026-11-25T08-18-15-842Z-pane-parent-not-stopped.json, card a5c827ca
+-- MikroB backed it up to /home/neon/marveen-backups/fleet-test-logs-evidence/ before reporting).
+
+FIX: added FLEET_TEST_OWN_LOG_RE, matching only the two filename shapes this script itself
+writes (fleet_test_persist_failure_log's "<ts>-<pid>-failure.log", fleet_test_notify_finish's
+"<ts>-<pid>.log"). fleet_test_prune_log_dir now filters by this pattern BEFORE ranking by mtime,
+so anything else in the directory is never counted and never touched, no matter how many of our
+own failure logs accumulate.
+
+Also closed F-2 (LOW, previously unpinned): the selftest only asserted the
+FLEET_TEST_LOG_RETENTION=200 assignment line EXISTED, never that its value was actually 200 --
+added an explicit case asserting the sourced default.
+
+TESTS: fleet-test-notify-injection.selftest.sh gained Case 10 (a foreign file matching the real
+a5c827ca evidence shape survives 3 cycles of our own retention-capped pruning) and Case 11 (pins
+the 200 default). Mutation-verified: reverting fleet_test_prune_log_dir to the pre-fix
+whole-directory version turns Case 10 red (confirmed foreign file deleted) while every other case
+stays green -- the fix is load-bearing. Standalone run (bash, not via fleet-test.sh, per the
+standing no-fleet-test.sh-during-land rule): 14/14 PASS.
+
+Ki dontott: MikroB (card 2f282a31, delta dispatch msg 25707, CYBERSEC GO 39544 F-1/F-2); backend3
+(fix, tests).
+Hivatkozas: kartya 2f282a31; store/fleet-test.sh; store/fleet-test-notify-injection.selftest.sh.

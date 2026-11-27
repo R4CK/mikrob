@@ -21,6 +21,10 @@ FUNCS="$TMP/funcs.sh"
 # a literal grep for the real line, so a mutant that changes the default is still caught.
 grep -m1 '^FLEET_TEST_LOG_RETENTION=' "$SRC" > "$FUNCS"
 grep -q '^FLEET_TEST_LOG_RETENTION=' "$FUNCS" || { echo "FAIL: could not extract the real FLEET_TEST_LOG_RETENTION default from $SRC -- source and selftest have drifted"; exit 1; }
+# Card 2f282a31 CYBERSEC F-1 delta: fleet_test_prune_log_dir now filters by this pattern before it
+# ever prunes anything -- extracted the same way, so a mutant widening/dropping the pattern is caught.
+grep -m1 "^FLEET_TEST_OWN_LOG_RE='" "$SRC" >> "$FUNCS"
+grep -q "^FLEET_TEST_OWN_LOG_RE='" "$FUNCS" || { echo "FAIL: could not extract the real FLEET_TEST_OWN_LOG_RE pattern from $SRC -- source and selftest have drifted"; exit 1; }
 sed -n '/^fleet_test_prune_log_dir() {/,/^}/p' "$SRC" >> "$FUNCS"
 sed -n '/^fleet_test_persist_failure_log() {/,/^}/p' "$SRC" >> "$FUNCS"
 sed -n '/^fleet_test_safe_summary() {/,/^}/p' "$SRC" >> "$FUNCS"
@@ -356,6 +360,50 @@ if [ ! -s "$STUB_POST_LOG" ]; then
   echo "  ok   no token file -> no POST sent (fail-silent, never blocks the run)"
 else
   echo "  FAIL a POST was sent anyway with no token file: $(cat "$STUB_POST_LOG")"; fail=1
+fi
+
+# --- Case 10 (card 2f282a31, CYBERSEC F-1): a FOREIGN file already in FLEET_TEST_LOG_DIR (same
+# shape as card a5c827ca's channel-poller-reap-failure-...-pane-parent-not-stopped.json evidence)
+# must SURVIVE repeated pruning. Before the fix, fleet_test_prune_log_dir counted over the whole
+# directory, so a flood of our own failure logs past the retention cap deleted it right along
+# with our own oldest logs.
+n=$((n+1))
+LOGDIR10="$TMP/logs-foreign"
+mkdir -p "$LOGDIR10"
+FOREIGN_FILE="$LOGDIR10/channel-poller-reap-failure-2026-11-25T08-18-15-842Z-pane-parent-not-stopped.json"
+echo '{"evidence":"card a5c827ca"}' > "$FOREIGN_FILE"
+r=1
+while [ "$r" -le 3 ]; do
+  RET10_TMPDIR="$(mktemp -d)"
+  bash -c '
+    . "$1"
+    export TMPDIR="$2"
+    export FLEET_TEST_LOG_DIR="$3"
+    export FLEET_TEST_LOG_RETENTION="$4"
+    unset FLEET_TEST_CALLER_AGENT
+    run_log="$TMPDIR/run.log"
+    printf "run-%s failed\n" "$5" > "$run_log"
+    exit 1
+  ' _ "$FUNCS_WITH_TRAP" "$RET10_TMPDIR" "$LOGDIR10" "1" "$r"
+  [ -d "$RET10_TMPDIR" ] && rm -rf "$RET10_TMPDIR" 2>/dev/null
+  sleep 1.1
+  r=$((r+1))
+done
+if [ -f "$FOREIGN_FILE" ] && grep -q 'a5c827ca' "$FOREIGN_FILE" 2>/dev/null; then
+  echo "  ok   foreign non-log evidence file survives pruning, even past our own retention cap"
+else
+  echo "  FAIL foreign evidence file was deleted by our own prune (CYBERSEC F-1 regression): $(ls -A "$LOGDIR10" 2>/dev/null)"; fail=1
+fi
+
+# --- Case 11 (card 2f282a31, CYBERSEC F-2): pin the retention DEFAULT value, not just that the
+# assignment line exists -- a mutant changing 200 to e.g. 2 or removing the default entirely
+# (falling through to an empty/unset value) must turn this red.
+n=$((n+1))
+default_val="$(bash -c '. "$1"; echo "$FLEET_TEST_LOG_RETENTION"' _ "$FUNCS")"
+if [ "$default_val" = "200" ]; then
+  echo "  ok   FLEET_TEST_LOG_RETENTION defaults to 200 when unset"
+else
+  echo "  FAIL FLEET_TEST_LOG_RETENTION default is '$default_val', expected 200"; fail=1
 fi
 
 echo
