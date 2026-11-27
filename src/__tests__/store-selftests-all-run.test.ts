@@ -49,7 +49,7 @@ import {
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DEAD_LAND_SELFTEST_ENV as DEAD_SELFTEST_ENV } from './setup/isolate-land-selftest-state.js'
-import { loadQuarantineEntries, activeQuarantineNames } from '../selftest-quarantine.js'
+import { loadQuarantineEntries, runQuarantined, AlwaysFatalSelftestError } from '../selftest-quarantine.js'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..')
 const STORE = join(REPO_ROOT, 'store')
@@ -57,10 +57,10 @@ const STORE = join(REPO_ROOT, 'store')
 // Card 1ce518d9: a selftest named here is still run and its failure is still printed below, but
 // does not fail THIS suite -- so a known slow/flaky one cannot block every land behind it the way
 // wsl-cleanup did (card a1c38d36). Loading throws on a malformed file (missing card/owner/expiry,
-// a 4th entry, a bad date range) -- see src/selftest-quarantine.ts -- so a bad entry fails the
+// a 4th entry, a bad date range, a non-hex card id, a duplicate selftest name, an added_at/expiry
+// that out-runs the real clock) -- see src/selftest-quarantine.ts -- so a bad entry fails the
 // suite loudly instead of silently either blocking or silently not-blocking.
 const QUARANTINE_ENTRIES = loadQuarantineEntries(join(STORE, 'selftest-quarantine.json'))
-const ACTIVE_QUARANTINE = activeQuarantineNames(QUARANTINE_ENTRIES, new Date())
 
 // Card 1634bf55 (backend report msg 23386 + MikroB comment 37609; CYBERED NO-GO 37616
 // F-3: a locally-redefined copy here could drift from the global one and nobody would
@@ -172,7 +172,9 @@ function runGuardedSelftest(repoRoot: string, runner: string, file: string, args
       .map((line) => line.slice(3).trim())
       .map((path) => `--- diff head for ${path} ---\n${diffHead(repoRoot, path)}`)
       .join('\n')
-    throw new Error(
+    // CYBERSEC NO-GO 39413 F-3: AlwaysFatalSelftestError, not a plain Error -- this guard must
+    // never be swallowed by quarantine (card 1ce518d9), even for an actively-quarantined selftest.
+    throw new AlwaysFatalSelftestError(
       `${file} left the shared tracked tree dirty (card 99a4a2d4): ${dirtied.join(', ')}. ` +
         `A selftest may read the shared tree freely, but must not modify or delete a tracked ` +
         `file in it -- write to a disposable copy/mktemp sandbox instead.\n${diffs}`,
@@ -500,25 +502,26 @@ describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b
       // around the SAME execFileSync this test needs to make anyway -- no separate invocation, so a
       // selftest that leaves tracked files dirty cannot slip through in the gap. It throws on its
       // own if the tree came out dirty; this is the ONLY place that decides pass/fail for that part.
-      try {
-        const out = runGuardedSelftest(REPO_ROOT, script.runner, script.file, script.args)
-        const matched = OK_SHAPES.some((re) => re.test(out))
-        expect(
-          matched,
-          `${script.file} exited 0 but printed no recognised non-zero PASS summary. ` +
-            `Either it ran no cases, or it reports in a shape this file does not know yet ` +
-            `(add it to OK_SHAPES rather than loosening one). Tail:\n${out.slice(-400)}`,
-        ).toBe(true)
-      } catch (e) {
-        // Card 1ce518d9: only a selftest with an ACTIVE quarantine entry is spared -- an expired
-        // one throws exactly as before, which is what makes it "block again automatically".
-        if (!ACTIVE_QUARANTINE.has(script.name)) throw e
-        const entry = QUARANTINE_ENTRIES.find((q) => q.selftest === script.name)!
-        console.warn(
-          `QUARANTINED (not blocking the land): ${script.file} failed -- card ${entry.card}, ` +
-            `owner ${entry.owner}, expires ${entry.expiry}.\n${(e as Error).message}`,
-        )
-      }
+      // Card 1ce518d9, narrowed per CYBERSEC NO-GO 39413 F-3: runQuarantined only ever swallows
+      // the selftest's OWN exec failure (quarantine, active entry only -- an expired one throws
+      // exactly as before, which is what makes it "block again automatically"). The dirty-tree
+      // guard (AlwaysFatalSelftestError above) and the OK_SHAPES check below are never swallowed,
+      // quarantined or not.
+      const out = runQuarantined(
+        script.name,
+        QUARANTINE_ENTRIES,
+        new Date(),
+        () => runGuardedSelftest(REPO_ROOT, script.runner, script.file, script.args),
+        (message) => console.warn(message),
+      )
+      if (out === undefined) return // swallowed: an actively-quarantined selftest's own failure
+      const matched = OK_SHAPES.some((re) => re.test(out))
+      expect(
+        matched,
+        `${script.file} exited 0 but printed no recognised non-zero PASS summary. ` +
+          `Either it ran no cases, or it reports in a shape this file does not know yet ` +
+          `(add it to OK_SHAPES rather than loosening one). Tail:\n${out.slice(-400)}`,
+      ).toBe(true)
     },
     200_000,
   )

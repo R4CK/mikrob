@@ -34067,3 +34067,47 @@ Ki döntött: backend2 (implementáció, mérés). Peti jóváhagyás: Telegram 
 "a MikroB által ajánlott sorrendben (1 és 4 most, 2 és 3 utánuk)").
 Hivatkozás: kártya 1ce518d9; `src/selftest-quarantine.ts`; `src/__tests__/selftest-quarantine.test.ts`;
 `src/__tests__/store-selftests-all-run.test.ts`; `store/selftest-quarantine.json`; Gate: QA + CYBERSEC.
+
+## 2026-11-27 -- Quarantine lane fix round: clock-trusted cap, pinned swallow/expire, narrowed catch (kártya 1ce518d9, CYBERSEC NO-GO 39413)
+
+PROBLÉMA: CYBERSEC NO-GO 39413 a 722ee7149 shán négy leletet talált. F-1 (MEDIUM): a 7 napos korlát
+csak a bejegyzés SAJÁT, szerző-választotta `added_at`-jához volt relatív, nem a valódi órához --
+egy jövőbe datált (pl. 2099) `added_at`/`expiry` pár minden ellenőrzésen átment és évekig aktív
+maradt volna (mérve: P2/P3/P7/P8 a NO-GO-ban). F-2 (MEDIUM): a swallow/lejárat elágazásnak nem volt
+tesztje a valódi `it.each` hurok szintjén -- egy "minden hibát elnyel" mutáns (M1) életben maradt.
+F-3 (LOW-MEDIUM): a `try/catch` a selftest saját hibáján kívül a megosztott fa "dirty tree" őrét
+(kártya 99a4a2d4) és a "nincs felismert PASS-összefoglaló" ellenőrzést is elnyelte volna egy aktívan
+karanténban lévő selftestnél.
+
+JAVÍTÁS: `src/selftest-quarantine.ts` -- `parseQuarantineEntries` mostantól egy megbízható `now`
+paramétert kap (alapértelmezésben a valódi óra betöltéskor), és elutasítja a jövőbe datált
+`added_at`-ot (5 perc toleranciával az óra-csúszásra), az `expiry`-t ha az a valódi órától számítva
+több mint 7 nap, a nem 8 hexa-karakteres `card` mezőt, és egy selftest-re a duplikált bejegyzést
+(a megújítás így mindig egy új, látható diff, nem párhuzamos lefedettség-lánc). Új `runQuarantined`
+függvény és `AlwaysFatalSelftestError` osztály: a swallow/lejárat döntés egy tiszta, injektált
+`run`/`now`/`onQuarantined` függvényekkel egységtesztelhető logikává vált, és `AlwaysFatalSelftestError`
+sosem nyelhető el -- a `store-selftests-all-run.test.ts` "dirty tree" dobása ezt az osztályt használja,
+az OK_SHAPES-ellenőrzés pedig a `try/catch`-en KÍVÜL fut, így a selftest saját kilépési hibáján kívül
+semmi más nem tűnhet el karantén mögött.
+
+MÉRVE (2026-11-27, ezen a shán): `src/__tests__/selftest-quarantine.test.ts` 30/30 PASS (9 új teszt:
+jövőbe datált `added_at` elutasítása, óra-csúszás tolerancia, valódi órától számított 7 napos sapka,
+duplikált selftest-név elutasítása, nem-hexa `card` elutasítása, `runQuarantined` mind a négy ága --
+aktív+hiba elnyelve, lejárt+hiba dobva, nincs-bejegyzés+hiba dobva [ez öli az M1 "mindent elnyel"
+mutánst], `AlwaysFatalSelftestError` mindig dobva). `store-selftests-all-run.test.ts`, szűrve az
+"every quarantine entry names a real" esetre: 1 PASS, 178 skip (a teljes valódi 179-selftest hurkot
+a landolási sor miatti fleet-test.sh tilalom alatt [MikroB 25529] szándékosan nem futtattam újra --
+ez a hurok logikája a modul-szintű `QUARANTINE_ENTRIES` betöltésen kívül nem változott). `npx tsc
+--noEmit -p .`: a saját fájljaimon tiszta, csak a meglévő, nem kapcsolódó parse5-hiba marad.
+
+NINCS BENNE (F-4 egy része, tudatosan kihagyva ebből a körből): a `store/selftest-quarantine.json`-t
+érintő diffet a landolási/gate-closure szkript strukturálisan még nem jelzi/nem utasítja el MikroB-
+döntés sor nélkül -- ez egy megosztott, minden kártyát érintő szkriptet (`gate-closure-check.py`)
+módosítana, ami a jelenlegi fleet-test.sh tilalom alatt nem ellenőrizhető biztonsággal; Cybersec saját
+re-gate-záró mondata ("a delta a validátoron, a hurok-teszten és a swallow-körön elég") is csak ezt a
+három pontot kéri. A `card` mező 8-hexa formátum-ellenőrzése (F-4 másik fele) megvan.
+
+Ki döntött: backend2 (gyökér-ok, javítás, mérés, a kimaradó rész indoklása).
+Hivatkozás: kártya 1ce518d9; CYBERSEC NO-GO 39413; `src/selftest-quarantine.ts`;
+`src/__tests__/selftest-quarantine.test.ts`; `src/__tests__/store-selftests-all-run.test.ts`;
+Gate: QA + CYBERSEC (delta re-gate).
