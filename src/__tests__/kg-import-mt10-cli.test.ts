@@ -30,6 +30,9 @@ const findingsReport: FindingsImportReport = {
   classEdges: 0,
   classifiedCount: 0,
   unclassifiedCount: 0,
+  cardTitleSkippedSecret: 0,
+  findingSkippedSecret: 0,
+  errorClassSkippedSecret: 0,
 }
 const decisionsReport: DecisionsImportReport = {
   entriesParsed: 0,
@@ -38,6 +41,7 @@ const decisionsReport: DecisionsImportReport = {
   cardRefsSkippedMissing: 0,
   entriesRejectedSecret: 0,
   secretRejectedLines: [],
+  cardRefsSkippedSecret: 0,
 }
 const coldMemoriesReport: ColdMemoriesImportReport = {
   memoriesScanned: 0,
@@ -130,6 +134,24 @@ describe('runImportMt10Cli', () => {
     expect(logs.find((l) => l.startsWith('decisions:'))).toContain('upserted=10')
     expect(logs.find((l) => l.startsWith('coldMemories:'))).toContain('upserted=7')
     expect(logs.find((l) => l.startsWith('antiPatterns:'))).toContain('upserted=2')
+  })
+
+  it('F-3 (CYBERSEC NO-GO 39527): the summary prints the F4/F-2 secret-skip counters, not just entriesRejectedSecret', () => {
+    const { deps, logs } = makeDeps({
+      importFindings: vi.fn(() => ({
+        ...findingsReport, verdictsSkippedSecret: 2, cardTitleSkippedSecret: 3, findingSkippedSecret: 4, errorClassSkippedSecret: 5,
+      })),
+      importDecisionsLog: vi.fn(() => ({ ...decisionsReport, entriesRejectedSecret: 11, cardRefsSkippedSecret: 12 })),
+    })
+    runImportMt10Cli([], deps)
+    const findingsLine = logs.find((l) => l.startsWith('findings:'))
+    const decisionsLine = logs.find((l) => l.startsWith('decisions:'))
+    expect(findingsLine).toContain('secretSkipped=2')
+    expect(findingsLine).toContain('cardTitleSkipped=3')
+    expect(findingsLine).toContain('findingSkipped=4')
+    expect(findingsLine).toContain('errorClassSkipped=5')
+    expect(decisionsLine).toContain('secretSkipped=11')
+    expect(decisionsLine).toContain('cardRefSkipped=12')
   })
 
   it('flagValue returns undefined when the flag is absent', () => {

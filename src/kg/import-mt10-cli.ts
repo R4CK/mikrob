@@ -155,10 +155,13 @@ export function runImportMt10Cli(argv: readonly string[], deps: ImportMt10CliDep
   const report = runImportMt10(mainDb, kgDb, decisionsMarkdown, decisionsProject, ROOT_DECISIONS_SOURCE_PATH, deps)
 
   deps.log(
-    `findings:      verdicts=${report.findings.verdictsSeen} upserted=${report.findings.findingsUpserted} classEdges=${report.findings.classEdges} unclassified=${report.findings.unclassifiedCount}`,
+    `findings:      verdicts=${report.findings.verdictsSeen} upserted=${report.findings.findingsUpserted} classEdges=${report.findings.classEdges} unclassified=${report.findings.unclassifiedCount} secretSkipped=${report.findings.verdictsSkippedSecret} cardTitleSkipped=${report.findings.cardTitleSkippedSecret} findingSkipped=${report.findings.findingSkippedSecret} errorClassSkipped=${report.findings.errorClassSkippedSecret}`,
   )
   deps.log(
-    `decisions:     entries=${report.decisions.entriesParsed} upserted=${report.decisions.decisionsUpserted} governsEdges=${report.decisions.governsEdges} secretSkipped=${report.decisions.entriesRejectedSecret}`,
+    // CYBERSEC F-3 (NO-GO 39527): cardRefsSkippedSecret (the F4 counter) used to be invisible in
+    // the cron log -- only entriesRejectedSecret was printed, so an operator could not see a
+    // referenced-card title secret-skip at all. Both are printed now.
+    `decisions:     entries=${report.decisions.entriesParsed} upserted=${report.decisions.decisionsUpserted} governsEdges=${report.decisions.governsEdges} secretSkipped=${report.decisions.entriesRejectedSecret} cardRefSkipped=${report.decisions.cardRefsSkippedSecret}`,
   )
   deps.log(
     `coldMemories:  scanned=${report.coldMemories.memoriesScanned} upserted=${report.coldMemories.lessonsUpserted} aboutEdges=${report.coldMemories.aboutEdges} secretSkipped=${report.coldMemories.rowsRejectedSecret}`,
