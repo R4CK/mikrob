@@ -22,4 +22,15 @@ if ! flock -n 9; then
 fi
 
 cd "$MARVEEN_MAIN"
-exec npx tsx scripts/kg-import-mt10.ts "$@"
+
+# CYBERED F-1 (NO-GO 39527): npx resolves an uncached package by fetching it from the registry
+# with no prompt when run with no TTY (cron). Never let this wrapper fall back to the registry --
+# require the repo's own installed tsx and fail loudly if it is missing, instead of silently
+# running whatever the registry currently serves against the live DBs.
+TSX_BIN="$MARVEEN_MAIN/node_modules/.bin/tsx"
+if [[ ! -x "$TSX_BIN" ]]; then
+  echo "kg-import-mt10: $MARVEEN_MAIN/node_modules/.bin/tsx not found or not executable -- refusing to fall back to npx (CYBERED NO-GO 39527 F-1). Run npm ci in $MARVEEN_MAIN first." >&2
+  exit 1
+fi
+
+exec "$TSX_BIN" scripts/kg-import-mt10.ts "$@"

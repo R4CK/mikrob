@@ -34005,3 +34005,43 @@ embedding backfill 2918/2918 embedded, 0 failed; Kesz-ha #3 on live 7/12 (58%), 
 Ki döntött: backend (F4 root-cause, fix, test, mutation proof, live measurement); MikroB (39435
 precondition sequencing: wait for 7f3cbe92 to land first). Hivatkozás: kártya 01b10349; commits
 11a0de013, ceb8e3308; `src/kg/import-decisions-log.ts`.
+
+## 2026-11-27 20:58 -- 01b10349 -- CYBERED NO-GO 39527 fix: wrapper tsx pin (F-1) + import-findings secret-shape catches (F-2/F-3)
+
+Delta on top of the F4 fix (ceb8e3308), per CYBERED NO-GO 39527 on Gate-SHA 30885e33.
+
+F-1: store/kg-import-mt10.sh ended with `exec npx tsx scripts/kg-import-mt10.ts`. CYBERED showed
+npx with no TTY (the cron's actual environment) silently fetches an uncached tsx from the npm
+registry and runs it, with real exposure during update.sh's npm ci window (half-installed
+node_modules). Fixed: the wrapper now resolves $MARVEEN_MAIN/node_modules/.bin/tsx by explicit
+path and exits 1 with a clear message if it is missing, never falling back to npx. New selftest
+cases (kg-import-mt10.selftest.sh) pin both directions: missing local tsx -> non-zero exit,
+never touches npx; local tsx present -> runs it directly. Mutation-confirmed: reverting to the
+npx line turns exactly these new cases red (4/13), restored clean (13/13).
+
+F-2: src/kg/import-findings.ts had 3 upsertNode call sites (card node, finding node, error_class
+node) with no KgSecretError catch -- same bug class as the F4 fix, just a fifth site. Real
+triggers: a referenced card's TITLE (same shape as b0396aa1) throws on the card-node write; a
+findings_ref that passes the SHARED secret-pattern pre-screen (F5) but matches a KG-LOCAL-only
+shape (e.g. "DB_PASSWORD=...") throws on the finding-node write. Both aborted the whole run
+before decisions/coldMemories could import (findings runs first in runImportMt10). Fixed: the
+same try/catch + skip-and-count pattern as F4, test-first (both new tests reproduce the real
+crash verbatim against the unfixed code), mutation-tested in both directions (removing the
+try/catch -> red; widening the catch to swallow-all, verified via a non-secret KgValidationError
+trigger at each site -> red). The error_class-node site got the same catch for defense-in-depth
+parity (CYBERED's explicit ask), though no realistic trigger exists today (its title is always
+one of a small fixed taxonomy string).
+
+F-3: the decisions importer's F4 skip counter (cardRefsSkippedSecret) existed but was never
+printed in the CLI run summary -- only entriesRejectedSecret was, so an operator reading the
+cron log could not see a referenced-card secret-skip at all. Now printed alongside it. The three
+new findings counters (cardTitleSkippedSecret, findingSkippedSecret, errorClassSkippedSecret)
+are printed the same way from the start.
+
+Verified: targeted vitest across the touched + sibling importer/CLI/wrapper test files, 111/111
+plus wrapper selftest 13/13 (up from 7/7); tsc --noEmit clean. No live run, no cron, no
+fleet-test (per MikroB 25684's scope).
+
+Ki döntött: CYBERED (NO-GO 39527, fix direction); backend (implementation, tests, mutation
+proof). Hivatkozás: kártya 01b10349; `src/kg/import-findings.ts`; `store/kg-import-mt10.sh`;
+`store/kg-import-mt10.selftest.sh`; `src/kg/import-mt10-cli.ts`.
