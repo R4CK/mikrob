@@ -34209,3 +34209,29 @@ a szakaszokat: az alkalmazáskód, külön jelzés ment róla MikroB-nak.
 
 Ki döntött: MikroB (kártya 36a5e39e szövege), végrehajtotta Prompty.
 Hivatkozás: kártya 36a5e39e; előzmény b89b859b (QA PASS 39284), 3e59d70e.
+
+## 2026-11-27 16:53 -- Kártya de0bd561: claude-md-split-reachability selftest 80s -> 18.6s, egy rögzített küszöbbel
+
+MIT: a `scripts/claude-md-split-reachability-check.py` `classify_missing_line` függvénye a
+`difflib.SequenceMatcher.ratio()` drága, teljes O(n*m) hívását futtatta MINDEN jelölt sorra a TELJES
+korpusz minden sora ellen, úgy, hogy a kizárási küszöb 0.0-ról indult és csak egy valódi találat után
+emelkedett. A javítás a küszöböt `REWORD_SIMILARITY_THRESHOLD`-nál (0.6) indítja -- ugyanaz a
+technika, amit a `difflib.get_close_matches` is használ belül --, így a legtöbb egymáshoz
+nem hasonló sorpárt a gyors `quick_ratio()`/`real_quick_ratio()` felső becslés zárja ki, mielőtt a
+drága összehasonlítás elindulna. A selftest (`claude-md-split-reachability-check.selftest.py`) kapott
+egy új equivalencia-tesztet, ami az optimalizált és a naiv brute-force eredményt hasonlítja össze egy
+olyan korpuszon, ahol a valódi legjobb találat egy alacsonyabb hasonlóságú "majdnem-találat" UTÁN áll
+-- egy hibás korai megállás itt elbukna.
+
+MIÉRT: a 7f3cbe92 landolás 3x pirosra futott ezen a selftesten (90s vitest timeout), a 3. alkalommal
+EGYMAGÁBAN futva. MikroB mérése (origin/develop 143c005ea, load avg ~1): 80s, a teszt saját
+megjegyzése szerint ~6s-nak kellene lennie csendes gépen -- a korpusz (CLAUDE.md + docs/rules)
+növekedésével a hívásszám és a korpuszméret is nőtt, négyzetesen dráguló futásidőt adva.
+
+MI MARADT: a 30 eredeti eset (RedHat 10 mutánsa A1-A10, a kontroll, QA1, duplikált fejléc, pinnelt
+19/8a, hiányzó baseline, a 3 reword/removal/pin-change blokk) mind megmaradt és zöld; a javítás nem
+vágott ki esetet és nem gyengített assertion-t.
+
+Ki döntött: MikroB (dispatch, üzenet 25559/25564), backend (root-cause + javítás).
+Hivatkozás: kártya de0bd561; Gate-SHA 92c5d495a6148b51ec77270865b6dd51bc8305c7;
+`scripts/claude-md-split-reachability-check.py`, `scripts/claude-md-split-reachability-check.selftest.py`.
