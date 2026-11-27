@@ -34209,3 +34209,36 @@ a szakaszokat: az alkalmazáskód, külön jelzés ment róla MikroB-nak.
 
 Ki döntött: MikroB (kártya 36a5e39e szövege), végrehajtotta Prompty.
 Hivatkozás: kártya 36a5e39e; előzmény b89b859b (QA PASS 39284), 3e59d70e.
+
+## 2026-11-27 16:48 -- Kártya c16cd98e: a worktree on_create-hook mechanizmus 3 látens hibája javítva, a null-pin marad kötelező
+
+MIT: `store/worktree-on-create.sh` + `store/agent-worktree-marveen.sh` három látens hibája javítva
+(CYBERED NO-GO 38923 F-2/F-3/F-4, GO 38955 után): (1) F-2 -- egy megszakított on_create hook
+(a hívó folyamat a `git worktree add` után, de a hook lefutása előtt/közben kilő) ezentúl nem
+számít készen állónak: egy új "worktree-on-create.done" jelölőfájl (a worktree saját git-dir-jében,
+nem a kijelölt fában) mondja meg, hogy a hook valóban lefutott, és egy jelölő nélküli `.git` a
+következő hívásnál felismerve, a fél-kész fa eltávolítva, a létrehozás elölről indul. (2) F-3 --
+a "jelen van/létrehozom" döntés + a hook teljes futása most egy, az ágra kulcsolt `flock`-kal védett
+(`store/agent-worktree-marveen.sh` új `.worktree-create-locks/` könyvtára), ezért két egyidejű
+hívás ugyanarra az új kártyára nem futhat bele egymásba (mérve: a javítás előtt a második hívás
+`git worktree add` "fatal: ... already exists" hibával bukott). (3) F-4 -- a konfiguráció-betöltő
+lépés stderr-je külön fájlba megy, soha nem keveredik a sikeres kimenetbe (`cfg_json`), és a
+második (on_create_script-kiolvasó) python3-hívás saját kilépőkódja is explicit ellenőrzött -- a
+javítás előtt egy sikeres (rc=0) futás stderr-zaja is belekeveredett a JSON-ba, a korrupt JSON-t a
+következő lépés csendben üres `on_create`-ként értelmezte, a hook soha nem futott le, hiba nélkül.
+Új pin-teszt: `store/projects-on-create-pin.selftest.sh` (LOW-1) -- pirosra fordul, ha BÁRMELYIK
+committolt `store/projects/*.json` nem null `on_create_script`-et állít be, amíg ez a kártya (vagy
+egy utódja) nincs legate-elve. Mindhárom hiba kártya-szintű viselkedési teszttel van rögzítve
+(megszakítás-szimuláció, valódi párhuzamos `&`+`wait` futás, zajos-stderr séma-helyettesítő).
+
+MIÉRT: a mechanizmus ma csak azért biztonságos, mert `store/projects/marveen.json` `on_create_script`
+mezője `null` -- semmi nem kényszerítette ki ezt, és a három látens hiba bármelyike éles hook
+mellett csendben fél-kész worktree-t vagy versenyhelyzetet eredményezett volna.
+
+MI MARADT: a pin-teszt továbbra is pirosra fordul minden olyan jövőbeli `store/projects/*.json`-nál,
+amely valódi `on_create_script`-et ad meg -- a pin feloldása saját, külön re-gate-elt lépés, nem
+ennek a kártyának a része.
+
+Ki döntött: Cybered (NO-GO 38923 F-2/F-3/F-4 felvetője, GO 38955). Végrehajtotta: fullstack (DevO).
+Hivatkozás: kártya c16cd98e (60e5a40e F6.2 follow-up); előzmény 60e5a40e; `store/worktree-on-create.sh`,
+`store/agent-worktree-marveen.sh`, `store/projects-on-create-pin.selftest.sh`.

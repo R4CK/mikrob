@@ -31,28 +31,78 @@ _worktree_on_create_rollback() {
   fi
 }
 
+# F-2 fix (card c16cd98e): a marker proving project_worktree_on_create ran to a successful
+# conclusion for THIS worktree -- written inside the worktree's own git-dir (never inside the
+# checked-out working tree itself, so it can't show up as an untracked file or collide with repo
+# content). Stored under the git-dir rather than the tree's visible contents because a linked
+# worktree's git-dir is private per-worktree storage (git -C "$tree" rev-parse --git-dir resolves
+# to "$main/.git/worktrees/<name>" for a linked worktree), unlike the checked-out files, which are
+# ordinary tracked/untracked content an agent could legitimately touch.
+_worktree_on_create_marker_path() {
+  local tree="$1" gitdir
+  gitdir="$(git -C "$tree" rev-parse --git-dir 2>/dev/null)" || return 1
+  printf '%s/worktree-on-create.done\n' "$gitdir"
+}
+
+worktree_on_create_is_complete() {
+  local tree="$1" marker
+  marker="$(_worktree_on_create_marker_path "$tree")" || return 1
+  [ -f "$marker" ]
+}
+
+_worktree_on_create_mark_complete() {
+  local tree="$1" marker
+  marker="$(_worktree_on_create_marker_path "$tree")" || return 1
+  : > "$marker"
+}
+
 project_worktree_on_create() {
   local project="$1" main="$2" tree="$3" branch_preexisted="$4" branch="${5:-}"
-  local config_file cfg_json rc on_create
+  local config_file cfg_json rc on_create on_create_rc stderr_file
 
   config_file="$main/store/projects/$project.json"
   # No config for this project at all: nothing to do (yet) -- same as before this mechanism
   # existed. Only a project that HAS opted in via a config file is held to the invariants below.
-  [ -f "$config_file" ] || return 0
+  if [ ! -f "$config_file" ]; then
+    _worktree_on_create_mark_complete "$tree"
+    return 0
+  fi
 
-  if ! cfg_json="$(python3 -I "$main/store/project-config-schema.py" "$project" 2>&1)"; then
-    echo "project-config: REFUSED for project '$project': $cfg_json" >&2
+  # F-4 fix (card c16cd98e): stderr is captured SEPARATELY, never merged into cfg_json (2>&1
+  # would corrupt the JSON with whatever the step wrote to stderr even on a successful run, and a
+  # corrupted cfg_json made the NEXT step fail silently instead of loudly -- see below).
+  stderr_file="$(mktemp)"
+  cfg_json="$(python3 -I "$main/store/project-config-schema.py" "$project" 2>"$stderr_file")"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "project-config: REFUSED for project '$project': $(cat "$stderr_file")" >&2
+    rm -f "$stderr_file"
     _worktree_on_create_rollback "$main" "$tree" "$branch_preexisted" "$branch"
     return 1
   fi
+  rm -f "$stderr_file"
 
+  # F-4 fix, second half: the parse step's own exit status is checked explicitly -- previously
+  # `on_create="$(... | python3 ...)"` discarded a nonzero rc from the pipeline, so a config that
+  # (for whatever reason) failed to parse here came back as an EMPTY on_create and the hook was
+  # skipped with no error at all, instead of being treated as the misconfiguration it is.
   on_create="$(printf '%s' "$cfg_json" | python3 -I -c 'import json,sys; v=json.load(sys.stdin).get("on_create_script"); print(v or "")')"
-  [ -n "$on_create" ] || return 0
+  on_create_rc=$?
+  if [ "$on_create_rc" -ne 0 ]; then
+    echo "project-config: could not read on_create_script from the validated config for '$project' -- treating as a misconfiguration" >&2
+    _worktree_on_create_rollback "$main" "$tree" "$branch_preexisted" "$branch"
+    return 1
+  fi
+  if [ -z "$on_create" ]; then
+    _worktree_on_create_mark_complete "$tree"
+    return 0
+  fi
 
   if ! bash "$main/$on_create" "$tree"; then
     echo "project-config: on_create ($on_create) failed for $tree -- removing half-made worktree" >&2
     _worktree_on_create_rollback "$main" "$tree" "$branch_preexisted" "$branch"
     return 1
   fi
+  _worktree_on_create_mark_complete "$tree"
   return 0
 }

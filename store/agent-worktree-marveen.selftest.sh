@@ -310,6 +310,67 @@ else
   echo "  FAIL expected exit 3 + removed worktree/branch -> rc=$bad_rc out=$bad_out"; fail=1
 fi
 
+n=$((n + 1))
+# F-2 (card c16cd98e): an INTERRUPTED hook (the caller killed between `git worktree add`
+# succeeding and project_worktree_on_create ever running) must not be accepted as "already
+# present" by the next call. Reproduce the interruption by hand: do exactly the `git worktree add`
+# step this script does, WITHOUT ever calling project_worktree_on_create -- that is what a kill
+# between those two steps leaves behind.
+printf '{"repo": "%s", "base_branch": "develop", "land_script": "notes.txt", "on_create_script": "good-hook.sh"}\n' "$MAIN" > "$MAIN/store/projects/marveen.json"
+rm -f "$hook_log"
+git -C "$MAIN" worktree add -q -b card/1a7e44ee01 "$ROOT/card/1a7e44ee01" develop >/dev/null
+resume_out="$(run backend --card 1a7e44ee01 2>&1)"
+resume_rc=$?
+hook_calls_after_resume="$(wc -l < "$hook_log" 2>/dev/null || echo 0)"
+if [ "$resume_rc" = 0 ] \
+  && [ "$hook_calls_after_resume" = "1" ] \
+  && ! printf '%s' "$resume_out" | grep -q "worktree already present"; then
+  echo "  ok   a worktree left behind by an interrupted hook is detected as incomplete and recovered -- hook runs, not silently accepted"
+else
+  echo "  FAIL expected recovery + exactly 1 hook call -> rc=$resume_rc calls=$hook_calls_after_resume out=$resume_out"; fail=1
+fi
+
+n=$((n + 1))
+# CONTROL for the case above: a worktree that DID complete the hook must still be reused as
+# "already present" on the next pickup, with no second hook call -- the fix must discriminate
+# complete from incomplete, not just always re-run.
+second_out="$(run backend --card 1a7e44ee01 2>&1)"
+hook_calls_after_second="$(wc -l < "$hook_log" 2>/dev/null || echo 0)"
+if printf '%s' "$second_out" | grep -q "worktree already present" && [ "$hook_calls_after_second" = "1" ]; then
+  echo "  ok   once complete, the SAME worktree is reused as present with no extra hook call"
+else
+  echo "  FAIL expected reuse + still 1 hook call -> calls=$hook_calls_after_second out=$second_out"; fail=1
+fi
+
+n=$((n + 1))
+# F-3 (card c16cd98e): two concurrent callers for the SAME new card must not race the
+# create-or-reuse decision. A slow hook (sleeps briefly) widens the window a pre-fix TOCTOU would
+# need; both calls are launched truly concurrently (backgrounded, then waited on).
+cat > "$MAIN/slow-hook.sh" <<EOF
+#!/usr/bin/env bash
+sleep 0.3
+echo "\$1" >> "$hook_log"
+EOF
+chmod +x "$MAIN/slow-hook.sh"
+printf '{"repo": "%s", "base_branch": "develop", "land_script": "notes.txt", "on_create_script": "slow-hook.sh"}\n' "$MAIN" > "$MAIN/store/projects/marveen.json"
+rm -f "$hook_log"
+out_a="$WORK/concurrent-a.out"
+out_b="$WORK/concurrent-b.out"
+( run backend --card c0cfed0001 > "$out_a" 2>&1; echo "$?" >> "$out_a.rc" ) &
+pid_a=$!
+( run backend --card c0cfed0001 > "$out_b" 2>&1; echo "$?" >> "$out_b.rc" ) &
+pid_b=$!
+wait "$pid_a"
+wait "$pid_b"
+rc_a="$(cat "$out_a.rc")"
+rc_b="$(cat "$out_b.rc")"
+concurrent_hook_calls="$(wc -l < "$hook_log" 2>/dev/null || echo 0)"
+if [ "$rc_a" = 0 ] && [ "$rc_b" = 0 ] && [ "$concurrent_hook_calls" = "1" ] && [ -e "$ROOT/card/c0cfed0001/.git" ]; then
+  echo "  ok   two concurrent pickups of a brand-new card serialize: exactly 1 hook call, both callers succeed, worktree intact"
+else
+  echo "  FAIL expected 2x rc=0 + exactly 1 hook call -> rc_a=$rc_a rc_b=$rc_b calls=$concurrent_hook_calls out_a=$(cat "$out_a") out_b=$(cat "$out_b")"; fail=1
+fi
+
 # Restore a harmless config (null hook) so it cannot leak into whatever runs after this file in
 # the same process -- not required for this file's own exit code, but keeps the fixture tidy.
 printf '{"repo": "%s", "base_branch": "develop", "land_script": "notes.txt", "on_create_script": null}\n' "$MAIN" > "$MAIN/store/projects/marveen.json"

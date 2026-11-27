@@ -147,6 +147,100 @@ else
   fi
 fi
 
+n=$((n + 1))
+# F-4 (card c16cd98e, F6.2 follow-up): stderr noise from the config-loading step must not silently
+# skip a configured hook. Swap in a schema stand-in that behaves exactly like a valid config load
+# (exit 0, correct JSON on stdout) but ALSO writes to stderr -- simulating e.g. a stray warning.
+# Before the fix, cfg_json captures stdout+stderr together even on success (2>&1), corrupting the
+# JSON; the unchecked second python3 parse then fails silently and on_create comes back empty, so
+# the hook never runs and nothing says why.
+cat > "$MAIN/store/project-config-schema.py" <<EOF
+#!/usr/bin/env python3
+import sys
+print("warning: something noisy", file=sys.stderr)
+print('{"repo": "$MAIN", "base_branch": "develop", "land_script": "notes.txt", "on_create_script": "good-hook.sh"}')
+EOF
+TREE7="$WORK/t7"
+make_worktree "$TREE7" card/t7
+rm -f "$CALL_LOG"
+if project_worktree_on_create marveen "$MAIN" "$TREE7" 0 card/t7 && [ -f "$CALL_LOG" ] && grep -qx "called: $TREE7" "$CALL_LOG"; then
+  echo "  ok   stderr noise on a successful config load does not stop the configured hook from running"
+else
+  echo "  FAIL stderr noise silently skipped the hook -> log: $(cat "$CALL_LOG" 2>/dev/null || echo '<none>')"; fail=1
+fi
+cp "$HERE/project-config-schema.py" "$MAIN/store/project-config-schema.py"
+
+n=$((n + 1))
+# F-4, second half: a config-loading step that actually FAILS (nonzero exit) must still be
+# refused, even if some of what it wrote looks like valid JSON on stdout before it died on
+# stderr -- the fix must not simply "ignore stderr" and only check stdout content.
+cat > "$MAIN/store/project-config-schema.py" <<'EOF'
+#!/usr/bin/env python3
+import sys
+print('{"repo": "/nope", "base_branch": "develop", "land_script": "x"}')
+print("REFUSED: fatal error after printing", file=sys.stderr)
+sys.exit(1)
+EOF
+TREE8="$WORK/t8"
+make_worktree "$TREE8" card/t8
+if project_worktree_on_create marveen "$MAIN" "$TREE8" 0 card/t8 2>/dev/null; then
+  echo "  FAIL expected failure when the config-loading step exits nonzero"; fail=1
+else
+  if [ ! -e "$TREE8" ]; then
+    echo "  ok   a nonzero exit from the config-loading step is refused even with JSON-looking stdout"
+  else
+    echo "  FAIL worktree survived a refused config load"; fail=1
+  fi
+fi
+cp "$HERE/project-config-schema.py" "$MAIN/store/project-config-schema.py"
+
+n=$((n + 1))
+# F-2 (card c16cd98e): a successful run (any of the three success paths) must leave the
+# completion marker behind, and an incomplete/interrupted one must not look complete. Exercise
+# all three success paths' marker-writing directly.
+rm -f "$MAIN/store/projects/marveen.json"
+TREE9="$WORK/t9"
+make_worktree "$TREE9" card/t9
+project_worktree_on_create marveen "$MAIN" "$TREE9" 0 card/t9 >/dev/null
+TREE10="$WORK/t10"
+make_worktree "$TREE10" card/t10
+write_config ""
+project_worktree_on_create marveen "$MAIN" "$TREE10" 0 card/t10 >/dev/null
+TREE11="$WORK/t11"
+make_worktree "$TREE11" card/t11
+write_config "good-hook.sh"
+project_worktree_on_create marveen "$MAIN" "$TREE11" 0 card/t11 >/dev/null
+if worktree_on_create_is_complete "$TREE9" && worktree_on_create_is_complete "$TREE10" && worktree_on_create_is_complete "$TREE11"; then
+  echo "  ok   all three success paths (no config / null hook / hook ran) leave the completion marker"
+else
+  echo "  FAIL expected the marker after all three success paths"; fail=1
+fi
+
+n=$((n + 1))
+# A tree that git worktree add created but where project_worktree_on_create never ran to
+# completion (simulating an interrupted caller) must NOT look complete.
+TREE12="$WORK/t12"
+make_worktree "$TREE12" card/t12
+if ! worktree_on_create_is_complete "$TREE12"; then
+  echo "  ok   a freshly git-worktree-add'ed tree, before project_worktree_on_create ever ran, is not complete"
+else
+  echo "  FAIL a brand-new tree should not already look complete"; fail=1
+fi
+
+n=$((n + 1))
+# A tree whose on_create hook FAILED (rolled back, removed) must not leave the marker in place
+# for whatever inherits that path next -- the rollback deletes the whole tree, so there is
+# nothing left to mark, but pin that the function never marks-then-fails.
+write_config "bad-hook.sh"
+TREE13="$WORK/t13"
+make_worktree "$TREE13" card/t13
+project_worktree_on_create marveen "$MAIN" "$TREE13" 0 card/t13 >/dev/null 2>&1
+if [ ! -e "$TREE13" ]; then
+  echo "  ok   a failed hook's rollback leaves nothing (tree removed), never a dangling complete marker"
+else
+  echo "  FAIL tree should have been removed by rollback"; fail=1
+fi
+
 rm -rf "$WORK"
 
 echo ""
