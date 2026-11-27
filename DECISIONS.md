@@ -34039,8 +34039,8 @@ Hivatkozás: kártya a1c38d36; CYBERSEC NO-GO 39270 + QA PASS 39267 (sha 68fe4d9
 ezen bejegyzés után következik; `store/wsl-cleanup.selftest.sh`; `store/wsl-cleanup.sh` (csak
 olvasva, nem módosult).
 
-## Quarantine lane a lassú/flaky selftestekre (kártya 1ce518d9, Peti jóváhagyás Telegram 14809,
-## onfejlesztes 2026-11-26 #4)
+## 2026-11-26 -- Quarantine lane a lassú/flaky selftestekre (kártya 1ce518d9, Peti jóváhagyás
+## Telegram 14809, onfejlesztes 2026-11-26 #4)
 
 PROBLÉMA: egyetlen lassú/flaky selftest (wsl-cleanup, kártya a1c38d36) délutántól estig blokkolt
 minden landolást, mert `src/__tests__/store-selftests-all-run.test.ts` a teljes suite-ot elbuktatja,
