@@ -9,6 +9,8 @@ the unmutated control.
 Run: python3 scripts/claude-md-split-reachability-check.selftest.py
 Exit: 0 = all pass, 1 = a failure.
 """
+import difflib
+import importlib.util
 import re
 import shutil
 import subprocess
@@ -538,6 +540,50 @@ try:
         bad("U3: --allow-pin-change 19 did not clear the pin change", out2[-800:])
 finally:
     shutil.rmtree(d)
+
+# --- perf fix (card de0bd561): classify_missing_line got a cheap quick_ratio()/real_quick_ratio()
+# upper-bound pre-filter in front of the expensive difflib.ratio() call (the selftest was taking
+# ~80s on a quiet box, 90s vitest budget, blocking every land -- profiled to 42 subprocess.run
+# calls each doing O(candidates x corpus) full SequenceMatcher.ratio() comparisons). The pre-
+# filter is a branch-and-bound prune (skip a candidate only when its cheap upper bound cannot
+# beat the current best), so it must return the IDENTICAL best match as brute force, never an
+# earlier/lower-ratio one. This corpus puts the TRUE best match LAST and a lower-but-tempting
+# near-miss EARLIER, so an incorrect early-stop would pick the wrong line.
+_spec = importlib.util.spec_from_file_location("claude_md_split_reachability_check", CHECKER)
+_checker_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_checker_mod)
+
+
+def _naive_classify(line: str, corpus_lines: list[str]) -> tuple[str | None, float]:
+    best_line, best_ratio = None, 0.0
+    for candidate in corpus_lines:
+        ratio = difflib.SequenceMatcher(None, line, candidate).ratio()
+        if ratio > best_ratio:
+            best_line, best_ratio = candidate, ratio
+    return best_line, best_ratio
+
+
+_EQUIV_CORPUS = [
+    "a wildly different sentence about nothing in particular",
+    "egy teljesen mas mondat, aminek semmi koze a kereseshez",
+    "the quick brown fox jumps over the lazy dog one more time",
+    "a KOTELEZO szabaly szerint mindenki ellenorzi a sajat munkajat",
+    "a KOTELEZO szabaly szerint senki nem ellenorzi a sajat munkajat",
+    "unrelated filler line number six for padding the corpus a bit more",
+    "unrelated filler line number seven for padding the corpus a bit more",
+    "a KOTELEZO szabaly szerint mindenki mindig ellenorzi a sajat munkajat",
+]
+_EQUIV_TARGET = "a KOTELEZO szabaly szerint mindenki ellenorzi mindig a sajat munkajat"
+
+_naive_line, _naive_ratio = _naive_classify(_EQUIV_TARGET, _EQUIV_CORPUS)
+_opt_kind, _opt_line, _opt_ratio = _checker_mod.classify_missing_line(_EQUIV_TARGET, _EQUIV_CORPUS)
+if _opt_line == _naive_line and abs(_opt_ratio - _naive_ratio) < 1e-9:
+    ok(f"classify_missing_line equivalence: optimized matches naive brute force (ratio={_naive_ratio:.3f})")
+else:
+    bad(
+        "classify_missing_line equivalence: optimized diverged from naive brute force",
+        f"naive={_naive_line!r} ({_naive_ratio:.3f}) vs optimized={_opt_line!r} ({_opt_ratio:.3f})",
+    )
 
 print()
 print(f"claude-md-split-reachability-check.selftest: {pass_count} passed, {fail_count} failed")

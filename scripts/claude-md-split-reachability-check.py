@@ -306,10 +306,34 @@ REWORD_SIMILARITY_THRESHOLD = 0.6
 
 def classify_missing_line(line: str, corpus_lines: list[str]) -> tuple[str, str | None, float]:
     """Returns (kind, best_match_or_None, ratio) where kind is "reword" (a similar line still
-    exists) or "removed" (nothing close to it does)."""
+    exists) or "removed" (nothing close to it does). When kind is "removed", `ratio` is only
+    guaranteed to be < REWORD_SIMILARITY_THRESHOLD, not the true maximum below it (see the prune
+    floor below) -- no caller reads that value in the removed branch, only in the reword one.
+
+    Card de0bd561: the selftest went from ~6s (test's own comment) to ~80s on a quiet box as
+    CLAUDE.md/docs/rules grew, because this used to call the full (expensive, O(n*m))
+    difflib.SequenceMatcher.ratio() against EVERY corpus line for every candidate, with the
+    prune floor starting at 0.0 and only climbing once a real match was found -- on a corpus of
+    mostly-unrelated lines that nonetheless share common short words/characters, quick_ratio()'s
+    loose upper bound stayed above a near-zero floor for most of the corpus, so almost nothing
+    got pruned until a genuine reword was found. Seeding the floor at REWORD_SIMILARITY_THRESHOLD
+    itself (the only value classification cares about) prunes against that fixed cutoff from the
+    start -- the same technique difflib.get_close_matches uses internally -- then switches to
+    tracking the running best only once a real reword (>= threshold) is found, to still pick the
+    single most-similar line for the printed message. This can only ever skip a candidate whose
+    upper bound proves its real ratio cannot reach the floor, so the reword/removed classification
+    and the reported best_line/ratio once above threshold are identical to brute force (pinned by
+    the selftest's classify_missing_line equivalence case, corpus with the true best match placed
+    AFTER a lower-ratio near-miss)."""
     best_line, best_ratio = None, 0.0
+    sm = difflib.SequenceMatcher(None, autojunk=True)
+    sm.set_seq2(line)
     for candidate in corpus_lines:
-        ratio = difflib.SequenceMatcher(None, line, candidate).ratio()
+        sm.set_seq1(candidate)
+        floor = best_ratio if best_ratio >= REWORD_SIMILARITY_THRESHOLD else REWORD_SIMILARITY_THRESHOLD
+        if sm.real_quick_ratio() <= floor or sm.quick_ratio() <= floor:
+            continue
+        ratio = sm.ratio()
         if ratio > best_ratio:
             best_line, best_ratio = candidate, ratio
     if best_ratio >= REWORD_SIMILARITY_THRESHOLD:
