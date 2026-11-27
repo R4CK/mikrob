@@ -3,6 +3,13 @@
 # 9ed32347 (unlazy Stop hook hash-pin wrapper), and its own tested rollback (CYBERED NO-GO 39489
 # F-6: "no committed or tested rollback" on the first attempt).
 #
+# --apply REFUSES unless the wrapper file is already in place, executable, and passes its own pin
+# check against the live skill (CYBERED NO-GO 39499 F-4): wiring settings.json to an absolute path
+# this script never checks for is exactly the incident class that bounced this card once already
+# (msg 25615 -- settings rewired before the wrapper existed in the live checkout, every agent's
+# Stop hook broken). --rollback has no such precondition (it only removes a reference to the
+# wrapper, it never requires the wrapper to be in a working state).
+#
 # RULE THIS SCRIPT EXISTS TO FOLLOW (MikroB decision 39490, msg 25618/25620, 2026-11-27): no live
 # settings.json / hook change happens before a card's gates pass AND it lands. The first attempt
 # at this card rewired 15 live settings.json files BEFORE store/unlazy-stop-hook-verified.sh
@@ -54,10 +61,33 @@ FILES+=("${ROOT}/home/neon/.claude/settings.json")
 FILES+=("${ROOT}/home/neon/marveen/agents/penzugy/.claude-config/settings.json")
 
 BACKUP_DIR="${ROOT}/home/neon/.claude/unlazy-stop-hook-cutover-backups/$(date +%Y%m%d-%H%M%S)-$MODE"
+WRAPPER_PATH="${ROOT}/home/neon/marveen/store/unlazy-stop-hook-verified.sh"
 
 echo "mode: $MODE"
 echo "backup dir (apply/rollback only): $BACKUP_DIR"
 echo ""
+
+# F-4: --apply must refuse unless the wrapper is already in place, executable, and its OWN pin
+# check currently passes against the live skill -- never wire settings.json to a path that is
+# missing, non-executable, or would immediately block every Stop of every agent.
+if [[ "$MODE" == "apply" ]]; then
+  if [[ ! -f "$WRAPPER_PATH" ]]; then
+    echo "REFUSING apply: wrapper not found at $WRAPPER_PATH -- wiring settings to a path that does not exist repeats the msg 25615 incident" >&2
+    exit 1
+  fi
+  if [[ ! -x "$WRAPPER_PATH" ]]; then
+    echo "REFUSING apply: wrapper at $WRAPPER_PATH exists but is not executable" >&2
+    exit 1
+  fi
+  precheck_out="$(printf '{"cwd":"/tmp"}' | bash "$WRAPPER_PATH" --unlazy 2>/dev/null)"
+  precheck_rc=$?
+  if [[ "$precheck_rc" != "0" ]] || printf '%s' "$precheck_out" | grep -q "unlazy-stop-hook-verified:"; then
+    echo "REFUSING apply: wrapper at $WRAPPER_PATH did not pass its own pin check (rc=$precheck_rc out=$precheck_out) -- fix the pin mismatch or re-vendor before wiring settings to it" >&2
+    exit 1
+  fi
+  echo "precondition ok: $WRAPPER_PATH exists, is executable, and passed its own pin check"
+  echo ""
+fi
 
 from_cmd="$OLD_CMD"; to_cmd="$NEW_CMD"
 [[ "$MODE" == "rollback" ]] && { from_cmd="$NEW_CMD"; to_cmd="$OLD_CMD"; }
@@ -94,7 +124,10 @@ for f in "${FILES[@]}"; do
   backup_name="$(printf '%s' "$f" | tr '/' '_').bak"
   cp "$f" "$BACKUP_DIR/$backup_name"
 
-  work="$(mktemp)"
+  # mktemp IN THE SAME DIRECTORY as $f, not the system temp dir: `mv` across filesystems silently
+  # falls back to copy+delete (no longer atomic, reintroducing the half-written-file risk the
+  # rename was meant to close). Same directory guarantees same filesystem.
+  work="$(mktemp "$(dirname "$f")/.unlazy-cutover.XXXXXX")"
   python3 -c "
 import sys
 p = sys.argv[1]
@@ -114,8 +147,12 @@ sys.stdout.write(text)
     continue
   fi
 
-  cp "$work" "$f"
-  rm -f "$work"
+  # preserve the original file's mode -- mktemp always creates 0600, which happens to match
+  # every live settings.json today, but nothing here should depend on that coincidence.
+  chmod --reference="$f" "$work" 2>/dev/null || true
+  # mv (same filesystem, atomic rename) instead of cp+rm: a reader can never observe a
+  # half-written $f (CYBERED 39499, LOW).
+  mv "$work" "$f"
   echo "$MODE done: $f (backup: $BACKUP_DIR/$backup_name)"
   changed=$((changed + 1))
 done

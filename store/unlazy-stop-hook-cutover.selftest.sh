@@ -43,6 +43,22 @@ seed_fixture() {
   make_settings "$root/home/neon/marveen/agents/penzugy/.claude-config/settings.json" "$OLD_CMD"
 }
 
+WRAPPER_PATH="$ROOT/home/neon/marveen/store/unlazy-stop-hook-verified.sh"
+
+# CYBERED 39499 F-4: --apply now REFUSES unless a wrapper is present, executable, and passes its
+# own pin check -- every --apply call in this selftest needs a passing dummy wrapper seeded first,
+# EXCEPT the cases that specifically test the refusal (those seed something else on purpose).
+seed_passing_wrapper() {
+  mkdir -p "$(dirname "$WRAPPER_PATH")"
+  cat > "$WRAPPER_PATH" <<'EOF'
+#!/usr/bin/env bash
+# selftest stand-in: a "passing" wrapper always emits nothing and exits 0.
+cat >/dev/null
+exit 0
+EOF
+  chmod +x "$WRAPPER_PATH"
+}
+
 # Scoped to settings.json files only -- a recursive grep over the whole root also matches the
 # .bak copies under the backups dir, double-counting (caught live: first run of this selftest).
 count_old() { find "$1" -name settings.json -exec grep -lF "$OLD_CMD" {} + 2>/dev/null | wc -l; }
@@ -67,6 +83,7 @@ else
 fi
 
 n=$((n + 1))
+seed_passing_wrapper
 apply_out="$("$SCRIPT" --apply --root "$ROOT" 2>&1)"
 after_apply_old=$(count_old "$ROOT"); after_apply_new=$(count_new "$ROOT")
 if [ "$after_apply_old" -eq 0 ] && [ "$after_apply_new" -eq 16 ] && printf '%s' "$apply_out" | grep -q "changed=16 fail=0"; then
@@ -129,6 +146,7 @@ fi
 n=$((n + 1))
 # A file with more than one occurrence of the source command must be REFUSED, never guessed at.
 seed_fixture "$ROOT"
+seed_passing_wrapper
 dup_file="$ROOT/home/neon/marveen/agents/backend/.claude/settings.json"
 python3 -c "
 import json, sys
@@ -144,6 +162,70 @@ if printf '%s' "$dup_out" | grep -q "REFUSING $dup_file" && printf '%s' "$dup_ou
   echo "  ok   a file with 2 occurrences of the source command is refused, not silently rewritten"
 else
   echo "  FAIL expected a REFUSING line for the duplicate-occurrence file -> out=$dup_out"; fail=1
+fi
+
+n=$((n + 1))
+# CYBERED NO-GO 39499 F-4: --apply must REFUSE when the wrapper is missing -- this is exactly the
+# incident class that bounced this card once already (msg 25615).
+seed_fixture "$ROOT"
+rm -f "$WRAPPER_PATH"
+missing_wrapper_out="$("$SCRIPT" --apply --root "$ROOT" 2>&1)"
+missing_wrapper_old=$(count_old "$ROOT"); missing_wrapper_new=$(count_new "$ROOT")
+if printf '%s' "$missing_wrapper_out" | grep -q "REFUSING apply: wrapper not found" \
+  && [ "$missing_wrapper_old" -eq 16 ] && [ "$missing_wrapper_new" -eq 0 ]; then
+  echo "  ok   F-4 closed: --apply refuses when the wrapper file does not exist, touches nothing"
+else
+  echo "  FAIL expected a wrapper-not-found refusal and no changes -> old=$missing_wrapper_old new=$missing_wrapper_new out=$missing_wrapper_out"; fail=1
+fi
+
+n=$((n + 1))
+# --apply must REFUSE when the wrapper exists but is not executable.
+seed_fixture "$ROOT"
+mkdir -p "$(dirname "$WRAPPER_PATH")"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WRAPPER_PATH"
+chmod -x "$WRAPPER_PATH"
+noexec_out="$("$SCRIPT" --apply --root "$ROOT" 2>&1)"
+noexec_old=$(count_old "$ROOT"); noexec_new=$(count_new "$ROOT")
+if printf '%s' "$noexec_out" | grep -q "REFUSING apply: wrapper at .* exists but is not executable" \
+  && [ "$noexec_old" -eq 16 ] && [ "$noexec_new" -eq 0 ]; then
+  echo "  ok   F-4 closed: --apply refuses when the wrapper exists but is not executable"
+else
+  echo "  FAIL expected a not-executable refusal and no changes -> old=$noexec_old new=$noexec_new out=$noexec_out"; fail=1
+fi
+
+n=$((n + 1))
+# --apply must REFUSE when the wrapper exists, is executable, but fails its OWN pin check (i.e.
+# it would immediately block every Stop of every wired agent).
+seed_fixture "$ROOT"
+mkdir -p "$(dirname "$WRAPPER_PATH")"
+cat > "$WRAPPER_PATH" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '{"decision": "block", "reason": "unlazy-stop-hook-verified: simulated pin mismatch (selftest)"}\n'
+exit 0
+EOF
+chmod +x "$WRAPPER_PATH"
+failing_out="$("$SCRIPT" --apply --root "$ROOT" 2>&1)"
+failing_old=$(count_old "$ROOT"); failing_new=$(count_new "$ROOT")
+if printf '%s' "$failing_out" | grep -q "REFUSING apply: wrapper at .* did not pass its own pin check" \
+  && [ "$failing_old" -eq 16 ] && [ "$failing_new" -eq 0 ]; then
+  echo "  ok   F-4 closed: --apply refuses when the wrapper fails its own pin check against the live skill"
+else
+  echo "  FAIL expected a pin-check-failure refusal and no changes -> old=$failing_old new=$failing_new out=$failing_out"; fail=1
+fi
+
+n=$((n + 1))
+# --rollback must NOT require the wrapper at all (it only removes a reference to it).
+seed_fixture "$ROOT"
+seed_passing_wrapper
+"$SCRIPT" --apply --root "$ROOT" >/dev/null 2>&1
+rm -f "$WRAPPER_PATH"
+rollback_no_wrapper_out="$("$SCRIPT" --rollback --root "$ROOT" 2>&1)"
+rb_nw_old=$(count_old "$ROOT"); rb_nw_new=$(count_new "$ROOT")
+if [ "$rb_nw_old" -eq 16 ] && [ "$rb_nw_new" -eq 0 ] && printf '%s' "$rollback_no_wrapper_out" | grep -q "changed=16 fail=0"; then
+  echo "  ok   --rollback works even when the wrapper file is absent (no precondition on rollback)"
+else
+  echo "  FAIL --rollback should not depend on the wrapper's presence -> old=$rb_nw_old new=$rb_nw_new out=$rollback_no_wrapper_out"; fail=1
 fi
 
 rm -rf "$WORK"

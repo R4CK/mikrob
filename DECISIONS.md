@@ -34275,7 +34275,7 @@ Ki döntött: QA (lelet 39447), backend (javítás + a második hiba felderíté
 Hivatkozás: kártya de0bd561; Gate-SHA (a következő commit, lásd REVIEW);
 `scripts/claude-md-split-reachability-check.py`, `scripts/claude-md-split-reachability-check.selftest.py`.
 
-## 2026-11-27 18:05 -- Kártya 9ed32347: unlazy Stop hook -- pinnelt hash-ellenőrző wrapper a detektív-only kontroll helyett (v1 NO-GO, v2 javítás)
+## 2026-11-27 18:05 -- Kártya 9ed32347: unlazy Stop hook -- pinnelt hash-ellenőrző wrapper a detektív-only kontroll helyett (v1 NO-GO, v2 NO-GO, v3 javítás)
 
 MIT: WhiteHat F2 MEDIUM lelete (e060a794, 2026-10-25): az unlazy Stop hook 15 flotta-session
 settings.json-jában (backend, backend2, cybered, cybersec, fron-ted, fron-teddy, fullstack,
@@ -34308,10 +34308,12 @@ KÜLÖN, EXPLICIT lépés UTÁNA. A visszaállítás (komment 39491): mind a 15 
 parancsra a mentésekből, JSON-validálva, `grep` 0 találat minden settings-rétegen (beleértve a
 `.claude-config`-ot is) az élő wrapper-fájl törlése ELŐTT.
 
-MÁSODIK KÖR (ez a landolás): a wrapper (v2) a PINNELT fájlokat egy FRISS, privát, 0700 temp
-könyvtárba MÁSOLJA ELŐSZÖR, és a MÁSOLATOT hash-eli és exec-eli -- a hash és a futtatott bájtok
-innentől garantáltan ugyanazok, nincs TOCTOU-ablak (élő race-teszt: 0/120 nyertes verseny,
-ugyanazzal a technikával, ami az első kört 22-50/120-szor legyőzte). `PATH=/usr/bin:/bin` és
+MÁSODIK KÖR (f5b8b136 -> 47b72ccf, QA PASS 39498 + CYBERED NO-GO 39499 -- a "nincs TOCTOU-ablak"
+állítás itt alább TÚLZÁS volt, lásd a HARMADIK KÖR-t): a wrapper (v2) a PINNELT fájlokat egy
+FRISS, privát, 0700 temp könyvtárba MÁSOLJA ELŐSZÖR, és a MÁSOLATOT hash-eli és exec-eli -- a
+skill-dir race-t ez TELJESEN lezárta (QA 0/300, CYBERED 0/120 független mérés), de CYBERED egy
+MÁSIK, a saját temp-másolat ELLEN futó race-t demonstrált (naiv poller, 2/240 nyertes verseny) --
+a privát másolat ugyanazon uid alatt ÍRHATÓ marad, tehát ez NEM zárt ablak, csak SZŰKEBB. `PATH=/usr/bin:/bin` és
 `NODE_OPTIONS` törlése a szkript ELSŐ sora, abszolút bináris útvonalak (élő teszt: hamis
 sha256sum/cut/node a PATH elején sosem fut, hamis NODE_OPTIONS --require sosem fut). stdin egyszeri
 beolvasása + `stop_hook_active` ellenőrzés: pin-eltérésnél, ha már `stop_hook_active=true`, a
@@ -34327,6 +34329,28 @@ fájlon): `--dry-run`/`--apply`/`--rollback`, mind a 16 réteget fedi (a 15 + pe
 `.claude-config`-ja), ez a kártya ÍRT ÉS TESZTELT rollback-útja (CYBERED F-6), és ez futtatja majd
 az élő átállást is -- de KÜLÖN, EXPLICIT lépésként, csak LANDOLÁS UTÁN, sosem ebben a körben.
 
+HARMADIK KÖR (ez a landolás, 47b72ccf -> jelen Gate-SHA, CYBERED NO-GO 39499 négy MEDIUM lelete):
+(F-1) a claim javítva őszintére -- a privát másolat NEM zár le minden ablakot, csak SZŰKÍTI
+(a fejkomment és ez a bejegyzés most ezt mondja ki), plusz olcsó keményítés: a másolt fájlok
+`chmod 400`, a könyvtárak `chmod 500` a hash ELŐTT (élő teszt igazolja a 400-as módot), ami a
+támadónak egy extra chmod-lépést ad hozzá, de nem zárja ki a same-uid írást -- a valódi lezárás a
+85a668aa. (F-2) a `stop_hook_active` kiolvasása mostantól egy shell-VÁLTOZÓBA kerül, MINDEN
+`mktemp` hívás ELŐTT (v2 ezt egy ideiglenes fájlba `cat`-elte, ami `mktemp`-től függött) -- egy
+törött `TMPDIR` (csak-olvasható, teli, hiányzó) így mostantól FELOLDÓDIK, nem blokkol örökre, ha
+`stop_hook_active=true` (élő teszt: csak-olvasható TMPDIR + active=true -> systemMessage, nincs
+block; active=false -> normál block, a feloldás nem szivárog át). (F-3) a `hash-eli a MÁSOLATOT`
+tulajdonság mostantól egy DETERMINISZTIKUS (nem véletlenszerű) oracle-lel van rögzítve: a
+selftest a másolási kör UTÁN, a hash-elés ELŐTT módosítja az EREDETI fájlt egy teszt-seam
+horgonyponton át -- a valódi wrapper (hash-eli a másolatot) ettől érintetlen marad, a "hash-eli
+az eredetit" mutáns (a 17-mutánsos CYBERED-sweep egyetlen túlélője) ezzel elbukik, determinisztikusan,
+nem statisztikailag. (F-4) `store/unlazy-stop-hook-cutover.sh --apply` mostantól ELŐFELTÉTELT
+ellenőriz, MIELŐTT bármit átír: a wrapper létezik, futtatható, ÉS átmegy a SAJÁT pin-ellenőrzésén
+a live skill ellen -- ellenkező esetben REFUSING és semmi nem változik (ez pontosan az a hiba-
+osztály, ami a kártyát egyszer már visszapattintotta: settings.json egy nem létező útvonalra
+drótozása). A `--apply` írás mostantól `mv`-vel (azonos könyvtárban `mktemp`-elt ideiglenes fájl
++ atomi átnevezés) megy, nem `cp`+`rm`-mel -- egy olvasó sosem lát félig-írt fájlt. 18/18 (wrapper)
++ 13/13 (cutover) selftest-eset PASS, kétszer lefuttatva stabilitásért.
+
 MIÉRT: ma nincs OS-szintű, ügynökönkénti felhasználó-szétválasztás (az a 85a668aa terve), ezért a
 tényleges, ELÉRHETŐ megelőzés nem egy nem-írható útvonal, hanem egy futtatás előtti
 hash-ellenőrzés + a másolat-majd-futtatás minta, ami a git-követett, review-n átmenő forráskódban
@@ -34339,11 +34363,13 @@ tudatosan elfogadott kör, mert a wrapper maga git-követett és landoláson/gat
 (unlazy re-vendorolásakor) deliberált lépés, a script fejkommentje írja le, és a vendor-skill.sh
 most emlékeztet rá. A valódi, teljes megoldás a 85a668aa (per-ágens OS-felhasználó) kártya.
 
-Ki döntött: fullstack (DevO), self-advance (11. szabály) pickup az elsőre; a visszaállítás és a
-javítási kör MikroB döntése (39490/msg 25620) és QA (39488) + CYBERED (39489) leletei alapján.
-A gate (QA + RedHat) ezen a körön még nincs lefuttatva.
+Ki döntött: fullstack (DevO), self-advance (11. szabály) pickup az elsőre; a visszaállítás és
+mindkét javítási kör MikroB dispatch-ei (39490/msg 25620, msg 25632, msg 25634) és QA (39488,
+39498) + CYBERED (39489, 39499) leletei alapján. A gate (QA + CYBERED) ezen a körön még nincs
+lefuttatva.
 Hivatkozás: kártya 9ed32347; WhiteHat F2 (e060a794 komment 24537); kártya 27db86f4 (komment
-39477); QA FAIL 39488; CYBERED NO-GO 39489; MikroB record 39487 + decision 39490;
+39477); QA FAIL 39488, QA PASS 39498; CYBERED NO-GO 39489, CYBERED NO-GO 39499; MikroB record
+39487 + decision 39490;
 `store/unlazy-stop-hook-verified.sh`, `store/unlazy-stop-hook-verified.selftest.sh`,
 `store/unlazy-stop-hook-cutover.sh`, `store/unlazy-stop-hook-cutover.selftest.sh`,
 `store/vendor-skill.sh`; mind a 16 settings-réteg (agents/*/.claude/settings.json +

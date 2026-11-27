@@ -306,6 +306,98 @@ else
   echo "  FAIL temp entries under \${TMPDIR:-/tmp} grew from $BEFORE_TMP_COUNT to $AFTER_TMP_COUNT after one successful call -- a leak"; fail=1
 fi
 
+n=$((n + 1))
+# CYBERED 39499 F-2: a broken TMPDIR (read-only, so every mktemp call fails) must not block
+# forever when stop_hook_active is already true -- it must release, same as a pin mismatch does.
+# v2 captured stdin via `mktemp` first, so this case would have hard-blocked; v3 decides
+# STOP_HOOK_ACTIVE from an in-memory read before any mktemp call.
+RO_TMPDIR="$WORK/readonly-tmpdir"
+mkdir -p "$RO_TMPDIR"
+chmod 500 "$RO_TMPDIR"
+tmpdir_wedge_out="$(printf '{"cwd": "%s", "stop_hook_active": true}' "$GATES_FIXTURE" | UNLAZY_SKILL_DIR="$GOOD_SKILL" TMPDIR="$RO_TMPDIR" bash "$WRAPPER" --unlazy 2>/dev/null)"
+chmod 700 "$RO_TMPDIR"
+if ! printf '%s' "$tmpdir_wedge_out" | grep -q '"decision"' && printf '%s' "$tmpdir_wedge_out" | grep -q '"systemMessage"'; then
+  echo "  ok   F-2 closed: a read-only TMPDIR + stop_hook_active=true releases instead of blocking forever"
+else
+  echo "  FAIL expected a release (systemMessage, no decision) with a broken TMPDIR + stop_hook_active=true -> out=$tmpdir_wedge_out"; fail=1
+fi
+
+n=$((n + 1))
+# Same broken TMPDIR with stop_hook_active=false must still block (the release path must not leak
+# into the default case just because TMPDIR is the trigger instead of a pin mismatch).
+RO_TMPDIR2="$WORK/readonly-tmpdir2"
+mkdir -p "$RO_TMPDIR2"
+chmod 500 "$RO_TMPDIR2"
+tmpdir_normal_out="$(printf '{"cwd": "%s", "stop_hook_active": false}' "$GATES_FIXTURE" | UNLAZY_SKILL_DIR="$GOOD_SKILL" TMPDIR="$RO_TMPDIR2" bash "$WRAPPER" --unlazy 2>/dev/null)"
+chmod 700 "$RO_TMPDIR2"
+if printf '%s' "$tmpdir_normal_out" | grep -q '"decision": "block"'; then
+  echo "  ok   a read-only TMPDIR + stop_hook_active=false still blocks normally"
+else
+  echo "  FAIL expected a normal block with a broken TMPDIR + stop_hook_active=false -> out=$tmpdir_normal_out"; fail=1
+fi
+
+n=$((n + 1))
+# CYBERED 39499 F-3 (guard blind, deterministic): the committed wrapper hashes the COPY, not the
+# live original -- a 17-mutant sweep found one survivor that reverses this (hash the ORIGINAL
+# instead of the copy), undetectable by any probabilistic race since it is not racy, it is simply
+# wrong. This builds a deterministic (non-racy) oracle: tamper the ORIGINAL file right after the
+# copy loop finishes (the TEST-SEAM-COPY-LOOP-DONE anchor), via a disposable sed-modified copy of
+# the wrapper for each side. The committed wrapper (hashes the copy) must be UNAFFECTED by a
+# post-copy tamper to the original; the "hash the original" mutant must be CAUGHT by it.
+DET_SKILL="$WORK/det-tamper-skill"
+mkdir -p "$DET_SKILL/scripts/lib"
+cp "$GOOD_SKILL/scripts/stop-hook.mjs" "$DET_SKILL/scripts/stop-hook.mjs"
+cp "$GOOD_SKILL/scripts/lib/gates.mjs" "$DET_SKILL/scripts/lib/gates.mjs"
+SEAM_INJECTION='printf "\\n// test-seam post-copy tamper\\n" >> "$SKILL_DIR/scripts/stop-hook.mjs"'
+
+DET_GOOD_WRAPPER="$WORK/wrapper-det-good.sh"
+sed "s|# TEST-SEAM-COPY-LOOP-DONE.*|# TEST-SEAM-COPY-LOOP-DONE\\n$SEAM_INJECTION|" "$WRAPPER" > "$DET_GOOD_WRAPPER"
+chmod +x "$DET_GOOD_WRAPPER"
+
+DET_MUTANT_WRAPPER="$WORK/wrapper-det-mutant.sh"
+sed -e "s|# TEST-SEAM-COPY-LOOP-DONE.*|# TEST-SEAM-COPY-LOOP-DONE\\n$SEAM_INJECTION|" \
+    -e 's|  copy="\$TMP_COPY_DIR/\$rel"|  copy="$SKILL_DIR/$rel"|' \
+    "$WRAPPER" > "$DET_MUTANT_WRAPPER"
+chmod +x "$DET_MUTANT_WRAPPER"
+
+if ! grep -q "test-seam post-copy tamper" "$DET_GOOD_WRAPPER" || ! grep -q 'copy="\$SKILL_DIR/\$rel"' "$DET_MUTANT_WRAPPER"; then
+  echo "  FAIL could not construct the deterministic tamper-after-copy wrapper variants (sed did not match)"; fail=1
+else
+  cp -r "$GOOD_SKILL"/. "$DET_SKILL"/
+  good_det_out="$(printf '{"cwd": "%s"}' "$GATES_FIXTURE" | UNLAZY_SKILL_DIR="$DET_SKILL" bash "$DET_GOOD_WRAPPER" --unlazy 2>/dev/null)"
+  cp -r "$GOOD_SKILL"/. "$DET_SKILL"/
+  mutant_det_out="$(printf '{"cwd": "%s"}' "$GATES_FIXTURE" | UNLAZY_SKILL_DIR="$DET_SKILL" bash "$DET_MUTANT_WRAPPER" --unlazy 2>/dev/null)"
+  if ! printf '%s' "$good_det_out" | grep -q '"decision": "block"' && printf '%s' "$mutant_det_out" | grep -q '"decision": "block".*stop-hook.mjs does not match'; then
+    echo "  ok   F-3 guard-blind survivor killed deterministically: hash-the-copy is unaffected by a post-copy tamper to the original, hash-the-original is caught by it"
+  else
+    echo "  FAIL deterministic oracle did not distinguish hash-the-copy from hash-the-original -> good=$good_det_out mutant=$mutant_det_out"; fail=1
+  fi
+fi
+
+n=$((n + 1))
+# F-1 hardening: the copied files must actually be read-only (0400) and their dirs 0500 after the
+# copy step, not just claimed in a comment.
+PERM_SKILL="$WORK/perm-skill"
+mkdir -p "$PERM_SKILL/scripts/lib"
+cp "$GOOD_SKILL/scripts/stop-hook.mjs" "$PERM_SKILL/scripts/stop-hook.mjs"
+cp "$GOOD_SKILL/scripts/lib/gates.mjs" "$PERM_SKILL/scripts/lib/gates.mjs"
+PERM_PROBE_WRAPPER="$WORK/wrapper-perm-probe.sh"
+sed "s|# TEST-SEAM-COPY-LOOP-DONE.*|# TEST-SEAM-COPY-LOOP-DONE\\nstat -c '%a %n' \"\$TMP_COPY_DIR/scripts/stop-hook.mjs\" \"\$TMP_COPY_DIR/scripts/lib/gates.mjs\" \"\$TMP_COPY_DIR/scripts\" \"\$TMP_COPY_DIR\" > \"$WORK/perm-report.txt\" 2>/dev/null|" "$WRAPPER" > "$PERM_PROBE_WRAPPER"
+chmod +x "$PERM_PROBE_WRAPPER"
+rm -f "$WORK/perm-report.txt"
+printf '{"cwd": "%s"}' "$GATES_FIXTURE" | UNLAZY_SKILL_DIR="$PERM_SKILL" bash "$PERM_PROBE_WRAPPER" --unlazy >/dev/null 2>&1
+# the stat probe runs BEFORE this script's own chmod step (it is inserted right after the copy
+# loop, chmod happens after) -- so re-run a second probe inserted AFTER the chmod block instead.
+sed "s|^chmod 500 \"\$TMP_COPY_DIR/scripts/lib\" \"\$TMP_COPY_DIR/scripts\" \"\$TMP_COPY_DIR\" 2>/dev/null\$|chmod 500 \"\$TMP_COPY_DIR/scripts/lib\" \"\$TMP_COPY_DIR/scripts\" \"\$TMP_COPY_DIR\" 2>/dev/null\\nstat -c '%a %n' \"\$TMP_COPY_DIR/scripts/stop-hook.mjs\" \"\$TMP_COPY_DIR/scripts/lib/gates.mjs\" > \"$WORK/perm-report.txt\" 2>/dev/null|" "$WRAPPER" > "$PERM_PROBE_WRAPPER"
+chmod +x "$PERM_PROBE_WRAPPER"
+rm -f "$WORK/perm-report.txt"
+printf '{"cwd": "%s"}' "$GATES_FIXTURE" | UNLAZY_SKILL_DIR="$PERM_SKILL" bash "$PERM_PROBE_WRAPPER" --unlazy >/dev/null 2>&1
+if [ -f "$WORK/perm-report.txt" ] && grep -q "^400 " "$WORK/perm-report.txt" && [ "$(grep -c "^400 " "$WORK/perm-report.txt")" -eq 2 ]; then
+  echo "  ok   F-1 hardening: both copied files are actually chmod'd 0400 after the copy step"
+else
+  echo "  FAIL expected both copied files at mode 400 -> report=$([ -f "$WORK/perm-report.txt" ] && cat "$WORK/perm-report.txt" || echo MISSING)"; fail=1
+fi
+
 rm -rf "$WORK"
 
 echo ""
