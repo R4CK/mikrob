@@ -34209,3 +34209,90 @@ a szakaszokat: az alkalmazáskód, külön jelzés ment róla MikroB-nak.
 
 Ki döntött: MikroB (kártya 36a5e39e szövege), végrehajtotta Prompty.
 Hivatkozás: kártya 36a5e39e; előzmény b89b859b (QA PASS 39284), 3e59d70e.
+
+## 2026-11-27 17:35 -- Kártya 5f522ec7: átvett repók hookjai -- teljes leltár, egyik sem lesz bekötve
+
+MIT: Peti kérdésére ("ponytail hookokat miért nem használjuk? Így nem megy végig a folyamat nem?
+De ez minden átvett skillre igaz kell legyen.") teljes leltár a store/adopted alatti 4 repó
+Claude Code hookjairól (ponytail, caveman/JuliusBrussee__caveman, agent-skills/
+addyosmani__agent-skills, token-optimizer-mcp). 7 valódi Claude Code hook azonosítva (plugin.json
+vagy hooks/hooks.json szerint tényleg bekötött eseményre futó), plusz 2 opcionális,
+felhasználó-kézzel-bekötendő companion hook (agent-skills dokumentációja szerint, nem a plugin
+saját hooks.json-jában). Mindegyikre (b) döntés: SZÁNDÉKOSAN NEM kötjük be.
+
+ponytail (3 hook: SessionStart/ponytail-activate.js, SubagentStart/ponytail-subagent.js,
+UserPromptSubmit/ponytail-mode-tracker.js -- node, saját fájljain kívül függőség nélkül). Indok:
+a watched-repos.json saját feljegyzése SZERINT ez már korábban eldöntött tény, nem új mérés --
+"we cherry-picked ONLY the 6 SKILL.md files into ~/.claude/skills/, never wired hooks/ or
+ponytail-mcp/" (2026-08-08-i bejegyzés). A ponytail ruleset (YAGNI/egyszerűség) redundáns a már
+meglévő kódminőségi-alapelvekkel és a karpathy-guidelines skillel, az activate-hook pedig
+kéretlen javaslatot (statusline-beállítás "proactively offer to set this up for the user")
+injektálna MINDEN session elejére -- ez ütközik a flotta hatókör-fegyelmével (önindított
+javaslattétel a kérésen túl).
+
+caveman (2 hook: SessionStart/caveman-activate.js, UserPromptSubmit/caveman-mode-tracker.js --
+node, saját fájljain kívül függőség nélkül, hálózati hívás nincs bennük). Indok: a vendorolt
+caveman skill saját VENDORED.md/watched-repos.json megjegyzése már kimondja a korlátot:
+"KORLATOZOTT: csak belso/gepi kimenetre, soha nem user-facing szoveghez." A hook viszont
+MINDEN SessionStart/UserPromptSubmit eseményre aktiválná a tömörített módot, Peti-felé irányuló
+magyar kimenetre is -- nincs benne semmilyen mechanizmus, ami a user-facing/gépi határt
+megtartaná. Ez direkt ütközik a Személyiség-szabály 1. pontjával (teljes ékezethasználat MINDEN
+magyar szövegben) és a protokoll-token-megőrzés szabállyal. A skill marad elérhető kézi
+hívással (`/caveman`), csak a hook nem.
+
+agent-skills/addyosmani__agent-skills (1 valódi plugin-hook: SessionStart/session-start.sh, jq
+függőséggel, a "using-agent-skills" meta-skill-flowchart teljes szövegét injektálná MINDEN
+session elejére; plusz 2 OPCIONÁLIS, a repó saját dokumentációja szerint kézzel a célprojekt
+.claude/settings.json-jába bekötendő companion hook, amik NEM részei a plugin saját
+hooks/hooks.json-jának: simplify-ignore.sh (PreToolUse Read + PostToolUse Edit|Write + Stop,
+`/code-simplify` skillhez) és sdd-cache-pre.sh/sdd-cache-post.sh (PreToolUse/PostToolUse
+WebFetch, `source-driven-development` skillhez)). Indok session-start.sh-ra: a flotta saját
+skill-kormányzása (kártya 3e59d70e: "más, itt nem listázott globális skill nem feltétlenül
+éred el") ügynökönkénti, szerep-specifikus skill-katalógust tart fenn -- egy általános
+"skill discovery flowchart" minden session elejére tolása ezt a kormányzást kerülné meg, nem
+erősítené. Indok simplify-ignore.sh-ra: Read/Edit/Write/Stop eseményre TRANSZPARENSEN
+átírja a lemezen lévő fájlt (blokkokat helyettesít placeholderrel, majd Stop-nál visszaállít) --
+egy session-összeomlás a szűrés és a visszaállítás között véglegesen placeholder-tartalmat
+hagyna egy TRACKELT fájlban, pont abban a megosztott checkout-fegyelemben, amit a
+shared-checkout-safe-commit skill és a per-agent worktree-izoláció épp megszüntetni próbál --
+biztonsági/adatintegritási kockázat, és egyébként sem a cherry-pickelt 5 skillünk
+(doubt-driven-development, context-engineering, interview-me, idea-refine,
+documentation-and-adrs) egyikéhez sem tartozik, `/code-simplify` és `source-driven-development`
+nálunk nincs telepítve. Indok sdd-cache-*.sh-ra: MINDEN WebFetch-et a quarantine-reader
+subagentre kötelező irányítani (lásd az Agent-tool saját szabálya), ami pont azért létezik,
+hogy a lekért web-tartalom sose kerüljön nyers formában a fő ügynök kontextusába feldolgozás
+nélkül -- ez a hook egy raw WebFetch-hívást cache-elne/szolgálna ki a quarantine-réteg
+MEGKERÜLÉSÉVEL, és egyébként is a nálunk nem telepített `source-driven-development` skillhez
+tartozik.
+
+token-optimizer-mcp (3 Claude Code-specifikus hook a plugin/hooks/hooks.json szerint: SessionStart/
+session-start.mjs, PreToolUse(Read|Grep|Glob|Edit|MultiEdit|Write|Bash)/pretooluse-router.mjs,
+PreCompact/precompact-optimize.mjs; a repó gyökerének hooks/hooks.json-ja valójában a Gemini CLI
+"${extensionPath}"/AfterTool formátuma, nem Claude Code-é). Indok: a pretooluse-router.mjs kódja
+(elolvasva) KÉPES megtagadni/helyettesíteni egy Read/Grep/Glob/Edit/Write/Bash hívást saját
+cache-elt/diffelt tartalommal ("enforce(reason, repeat)" ág) -- ez MINDEN ügynök MINDEN
+fájlműveletére/shell-hívására kiterjedő beavatkozás egy nálunk sosem futtatott, saját MCP-szervert
+igénylő, idegen döntési motorral. Ez pont az ellenkezője annak, amit a "Tények és találgatás" és
+a "Ellenőrizhető munka" szabályok (mért bizonyíték, nem gyorsítótárazott feltételezés) kérnek egy
+fájlolvasástól. A watched-repos.json saját megjegyzése szerint ez a klón "Nincs adoptálási döntés
+ebben a körben -- csak katalogizálás", sosem lett telepítve/futtatva -- ez a kör ezt nem
+változtatja meg.
+
+A card "Kész, ha" 3. pontja (élő aktiválás bizonyítása egy ügynökön, magyar kimenet és
+protokoll-tokenek épségének ellenőrzésével) ÜRES HALMAZON teljesül: mivel egyik hookot sem
+kötöttük be, nincs mit élőben bizonyítani -- ezt a REVIEW explicit kimondja, nem hallgat el.
+
+MIÉRT: mind a négy repó saját, korábban rögzített watched-repos.json/VENDORED.md megjegyzése MÁR
+tartalmazta a vonatkozó korlátot vagy a "sosem kötöttük be" tényt -- ez a kör nem új politikát
+hoz, hanem Peti kérdésére egy EXPLICIT, indokolt, hookonkénti táblázatot ad, ahol korábban csak
+"nem kötöttük be, mert nem arra vettük fel" prózai megjegyzés volt.
+
+MI MARADT: ha a jövőben bármelyik repó frissül és a hook-viselkedés megváltozik (pl. a
+pretooluse-router mjs már nem tud tagadni, vagy a caveman hook felvesz egy belső/user-facing
+kapcsolót), a döntés újramérésre szorul -- ez nem egyszeri, végleges "soha" záradék.
+
+Ki döntött: fullstack (DevO), self-advance (11. szabály) pickup a 5f522ec7 kártyán; a hookonkénti
+indoklás ehhez a körhöz tartozik, a korábbi cherry-pick/vendorolás-döntések (ponytail, caveman,
+agent-skills) MikroB/Peti korábbi köreiből valók (lásd watched-repos.json history).
+Hivatkozás: kártya 5f522ec7; `store/watched-repos.json` (ponytail, caveman, agent-skills,
+token-optimizer-mcp bejegyzések).
