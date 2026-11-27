@@ -34209,3 +34209,68 @@ a szakaszokat: az alkalmazáskód, külön jelzés ment róla MikroB-nak.
 
 Ki döntött: MikroB (kártya 36a5e39e szövege), végrehajtotta Prompty.
 Hivatkozás: kártya 36a5e39e; előzmény b89b859b (QA PASS 39284), 3e59d70e.
+
+## 2026-11-27 16:53 -- Kártya de0bd561: claude-md-split-reachability selftest 80s -> 18.6s, egy rögzített küszöbbel
+
+MIT: a `scripts/claude-md-split-reachability-check.py` `classify_missing_line` függvénye a
+`difflib.SequenceMatcher.ratio()` drága, teljes O(n*m) hívását futtatta MINDEN jelölt sorra a TELJES
+korpusz minden sora ellen, úgy, hogy a kizárási küszöb 0.0-ról indult és csak egy valódi találat után
+emelkedett. A javítás a küszöböt `REWORD_SIMILARITY_THRESHOLD`-nál (0.6) indítja -- ugyanaz a
+technika, amit a `difflib.get_close_matches` is használ belül --, így a legtöbb egymáshoz
+nem hasonló sorpárt a gyors `quick_ratio()`/`real_quick_ratio()` felső becslés zárja ki, mielőtt a
+drága összehasonlítás elindulna. A selftest (`claude-md-split-reachability-check.selftest.py`) kapott
+egy új equivalencia-tesztet, ami az optimalizált és a naiv brute-force eredményt hasonlítja össze egy
+olyan korpuszon, ahol a valódi legjobb találat egy alacsonyabb hasonlóságú "majdnem-találat" UTÁN áll
+-- egy hibás korai megállás itt elbukna.
+
+MIÉRT: a 7f3cbe92 landolás 3x pirosra futott ezen a selftesten (90s vitest timeout), a 3. alkalommal
+EGYMAGÁBAN futva. MikroB mérése (origin/develop 143c005ea, load avg ~1): 80s, a teszt saját
+megjegyzése szerint ~6s-nak kellene lennie csendes gépen -- a korpusz (CLAUDE.md + docs/rules)
+növekedésével a hívásszám és a korpuszméret is nőtt, négyzetesen dráguló futásidőt adva.
+
+MI MARADT: a 30 eredeti eset (RedHat 10 mutánsa A1-A10, a kontroll, QA1, duplikált fejléc, pinnelt
+19/8a, hiányzó baseline, a 3 reword/removal/pin-change blokk) mind megmaradt és zöld; a javítás nem
+vágott ki esetet és nem gyengített assertion-t.
+
+Ki döntött: MikroB (dispatch, üzenet 25559/25564), backend (root-cause + javítás).
+Hivatkozás: kártya de0bd561; Gate-SHA 92c5d495a6148b51ec77270865b6dd51bc8305c7;
+`scripts/claude-md-split-reachability-check.py`, `scripts/claude-md-split-reachability-check.selftest.py`.
+
+## 2026-11-27 17:35 -- Kártya de0bd561: QA FAIL 39447 javítva, két hiba a `classify_missing_line` pruningban
+
+MIT: a QA (39447) talált egy határeset-hibát az előző bejegyzésben leírt pruningban: a
+küszöb-összehasonlítás `<=` volt, de a `quick_ratio()`/`real_quick_ratio()` felső becslés
+EGYENLŐ is lehet a valódi aránnyal, nem csak felülről korlátozza -- egy pontosan a
+`REWORD_SIMILARITY_THRESHOLD`-on álló jelölt sort így "removed"-ként osztályozta a kód
+"reword" helyett. Javítás: szigorú `<`.
+
+A javítás ellenőrzése közben (fuzz-teszt) egy MÁSODIK, mélyebb hiba is kiderült: a korábbi
+verzió egyetlen `SequenceMatcher` objektumot használt újra a teljes korpusz-cikluson
+(`set_seq2(line)` egyszer, `set_seq1(candidate)` minden jelöltre, hogy ne kelljen az
+autojunk-indexet újraépíteni) -- ez `a=candidate, b=line` sorrendet ad, az ELLENTÉTES
+operandus-sorrendet a brute-force referencia `SequenceMatcher(None, line, candidate)`
+hívásához (`a=line, b=candidate`) képest. A `difflib.ratio()` NEM garantáltan szimmetrikus
+operandus-cserénél ismétlődő/ambiguus részstringű szövegeknél (a `find_longest_match`
+döntetlen-feloldása függ attól, melyik operandus `a` és melyik `b`). Valós szövegen ez ritka
+(becsülve 1-2%), egy ismétlődő-ABC fuzz-on viszont sokkal gyakoribb -- EZ magyarázza a QA
+saját 20 000-es fuzzjának ~13%-os eltérési arányát is, nem csak a `<=`/`<` határeset.
+Javítás: minden ciklusban új `SequenceMatcher`-t építünk a referenciával PONTOSAN egyező
+operandus-sorrenddel (`a=line, b=candidate`), és a `quick_ratio()`/`real_quick_ratio()`-t
+csak szűrőként használjuk a drága `ratio()` hívás előtt -- sosem egy újrafelhasznált
+matcher-objektumon át, változó operandus-pozícióval.
+
+A selftest kapott: QA két konkrét reprodukcióját (`ababa`/`ababab` határeset), plusz egy
+3000-elemű, fix seedű (20261127), ismétlődő ABC-ábécés fuzz-tesztet a naiv brute-force
+referenciával szemben. A `<=` mutáns mindkét új tesztet pirosra futtatja (ellenőrizve,
+visszaállítva), 34/34 zöld a javítással.
+
+MI MARADT: mind a 30 eredeti + 1 korábbi equivalencia + 3 új eset (2 határeset + 1 fuzz) zöld;
+semmilyen esetet nem vágtunk ki.
+
+Futásidő: 28,6s (az előző, hibás gyors-út 18,6s-áról nőtt, mert a `SequenceMatcher`
+újrafelhasználása -- ami éppen a hibát okozta -- megszűnt), a 90s vitest-keret alatt,
+~3,15x margóval.
+
+Ki döntött: QA (lelet 39447), backend (javítás + a második hiba felderítése).
+Hivatkozás: kártya de0bd561; Gate-SHA (a következő commit, lásd REVIEW);
+`scripts/claude-md-split-reachability-check.py`, `scripts/claude-md-split-reachability-check.selftest.py`.

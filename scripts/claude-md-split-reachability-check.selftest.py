@@ -9,6 +9,9 @@ the unmutated control.
 Run: python3 scripts/claude-md-split-reachability-check.selftest.py
 Exit: 0 = all pass, 1 = a failure.
 """
+import difflib
+import importlib.util
+import random
 import re
 import shutil
 import subprocess
@@ -538,6 +541,106 @@ try:
         bad("U3: --allow-pin-change 19 did not clear the pin change", out2[-800:])
 finally:
     shutil.rmtree(d)
+
+# --- perf fix (card de0bd561): classify_missing_line got a cheap quick_ratio()/real_quick_ratio()
+# upper-bound pre-filter in front of the expensive difflib.ratio() call (the selftest was taking
+# ~80s on a quiet box, 90s vitest budget, blocking every land -- profiled to 42 subprocess.run
+# calls each doing O(candidates x corpus) full SequenceMatcher.ratio() comparisons). The pre-
+# filter is a branch-and-bound prune (skip a candidate only when its cheap upper bound cannot
+# beat the current best), so it must return the IDENTICAL best match as brute force, never an
+# earlier/lower-ratio one. This corpus puts the TRUE best match LAST and a lower-but-tempting
+# near-miss EARLIER, so an incorrect early-stop would pick the wrong line.
+_spec = importlib.util.spec_from_file_location("claude_md_split_reachability_check", CHECKER)
+_checker_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_checker_mod)
+
+
+def _naive_classify(line: str, corpus_lines: list[str]) -> tuple[str | None, float]:
+    best_line, best_ratio = None, 0.0
+    for candidate in corpus_lines:
+        ratio = difflib.SequenceMatcher(None, line, candidate).ratio()
+        if ratio > best_ratio:
+            best_line, best_ratio = candidate, ratio
+    return best_line, best_ratio
+
+
+_EQUIV_CORPUS = [
+    "a wildly different sentence about nothing in particular",
+    "egy teljesen mas mondat, aminek semmi koze a kereseshez",
+    "the quick brown fox jumps over the lazy dog one more time",
+    "a KOTELEZO szabaly szerint mindenki ellenorzi a sajat munkajat",
+    "a KOTELEZO szabaly szerint senki nem ellenorzi a sajat munkajat",
+    "unrelated filler line number six for padding the corpus a bit more",
+    "unrelated filler line number seven for padding the corpus a bit more",
+    "a KOTELEZO szabaly szerint mindenki mindig ellenorzi a sajat munkajat",
+]
+_EQUIV_TARGET = "a KOTELEZO szabaly szerint mindenki ellenorzi mindig a sajat munkajat"
+
+_naive_line, _naive_ratio = _naive_classify(_EQUIV_TARGET, _EQUIV_CORPUS)
+_opt_kind, _opt_line, _opt_ratio = _checker_mod.classify_missing_line(_EQUIV_TARGET, _EQUIV_CORPUS)
+if _opt_line == _naive_line and abs(_opt_ratio - _naive_ratio) < 1e-9:
+    ok(f"classify_missing_line equivalence: optimized matches naive brute force (ratio={_naive_ratio:.3f})")
+else:
+    bad(
+        "classify_missing_line equivalence: optimized diverged from naive brute force",
+        f"naive={_naive_line!r} ({_naive_ratio:.3f}) vs optimized={_opt_line!r} ({_opt_ratio:.3f})",
+    )
+
+
+def _naive_classify_full(line: str, corpus_lines: list[str]) -> tuple[str, str | None, float]:
+    best_line, best_ratio = _naive_classify(line, corpus_lines)
+    if best_ratio >= _checker_mod.REWORD_SIMILARITY_THRESHOLD:
+        return "reword", best_line, best_ratio
+    return "removed", None, best_ratio
+
+
+# --- boundary fix (QA FAIL 39447, card de0bd561): the prune used `<=` against the floor, but
+# quick_ratio()/real_quick_ratio() are upper bounds that can EQUAL the true ratio exactly, not
+# just bound it above -- so a candidate whose true ratio sits exactly on REWORD_SIMILARITY_THRESHOLD
+# got silently pruned into "removed" instead of "reword". QA's two reproductions, pinned verbatim.
+_BOUNDARY_CASES = [
+    ("ababa", ["xxxxx", "abbbb"]),
+    ("ababab", ["yyyyyy", "ababaa"]),
+]
+for _b_line, _b_corpus in _BOUNDARY_CASES:
+    _b_naive_kind, _b_naive_line, _b_naive_ratio = _naive_classify_full(_b_line, _b_corpus)
+    _b_opt_kind, _b_opt_line, _b_opt_ratio = _checker_mod.classify_missing_line(_b_line, _b_corpus)
+    if (_b_opt_kind, _b_opt_line) == (_b_naive_kind, _b_naive_line) and abs(_b_opt_ratio - _b_naive_ratio) < 1e-9:
+        ok(f"classify_missing_line boundary case {_b_line!r}: matches brute force ({_b_naive_kind}, ratio={_b_naive_ratio:.3f})")
+    else:
+        bad(
+            f"classify_missing_line boundary case {_b_line!r}: diverged from brute force",
+            f"naive=({_b_naive_kind!r}, {_b_naive_line!r}, {_b_naive_ratio:.3f}) "
+            f"vs optimized=({_b_opt_kind!r}, {_b_opt_line!r}, {_b_opt_ratio:.3f})",
+        )
+
+# Seeded tie-biased fuzz (QA measured ~13% mismatch under the old `<=`): short alphabet strings
+# are deliberately likely to produce exact-tie ratios, to stress the floor boundary far more than
+# real CLAUDE.md prose would. Fixed seed, few thousand trials, fast (<1s) -- this is a regression
+# pin for the `<=` -> `<` fix, not a performance benchmark.
+_fuzz_rng = random.Random(20261127)
+_fuzz_mismatches = 0
+_FUZZ_TRIALS = 3000
+for _ in range(_FUZZ_TRIALS):
+    _alphabet = "ab"
+    _line = "".join(_fuzz_rng.choice(_alphabet) for _ in range(_fuzz_rng.randint(3, 6)))
+    _corpus = ["".join(_fuzz_rng.choice(_alphabet) for _ in range(_fuzz_rng.randint(3, 6))) for _ in range(3)]
+    _f_naive = _naive_classify_full(_line, _corpus)
+    _f_opt = _checker_mod.classify_missing_line(_line, _corpus)
+    # kind must always match; in the "reword" branch the line/ratio must match exactly (callers
+    # read them); in "removed" the ratio is documented as only < threshold, not the brute-force
+    # maximum, so it is deliberately NOT compared here (see classify_missing_line's docstring).
+    if _f_opt[0] != _f_naive[0]:
+        _fuzz_mismatches += 1
+    elif _f_opt[0] == "reword" and (_f_opt[1] != _f_naive[1] or abs(_f_opt[2] - _f_naive[2]) >= 1e-9):
+        _fuzz_mismatches += 1
+if _fuzz_mismatches == 0:
+    ok(f"classify_missing_line tie-biased fuzz: 0/{_FUZZ_TRIALS} mismatches vs brute force (seed 20261127)")
+else:
+    bad(
+        "classify_missing_line tie-biased fuzz: optimized diverged from brute force",
+        f"{_fuzz_mismatches}/{_FUZZ_TRIALS} trials mismatched (seed 20261127)",
+    )
 
 print()
 print(f"claude-md-split-reachability-check.selftest: {pass_count} passed, {fail_count} failed")
