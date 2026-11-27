@@ -25,14 +25,13 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SRC   = readFileSync(join(__dirname, '../../web/app-llm-ledger.js'), 'utf-8')
 const PGSW  = readFileSync(join(__dirname, '../../web/app-page-switch.js'), 'utf-8')
 const HTML  = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS   = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
-const HU    = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
-const EN    = readFileSync(join(__dirname, '../../web/lang/en.js'), 'utf-8')
 const SBGRP = readFileSync(join(__dirname, '../../web/app-sidebar-groups.js'), 'utf-8')
 
 function fnBody(source: string, startMarker: string, maxLen = 5000): string {
@@ -336,8 +335,8 @@ const LLM_LEDGER_KEYS = [
 describe('llm-ledger: i18n parity', () => {
   for (const key of LLM_LEDGER_KEYS) {
     it(`key "${key}" exists in both hu.js and en.js`, () => {
-      expect(HU).toContain(`'${key}'`)
-      expect(EN).toContain(`'${key}'`)
+      expect(langHasKey('hu', key)).toBe(true)
+      expect(langHasKey('en', key)).toBe(true)
     })
   }
 })

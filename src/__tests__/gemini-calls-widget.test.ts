@@ -28,6 +28,7 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildCallRows, buildSummary, type RawRow } from '../web/routes/gemini-calls.js'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_GEMINI   = readFileSync(join(__dirname, '../../web/app-gemini-calls.js'), 'utf-8')
@@ -35,8 +36,6 @@ const APP_OVERVIEW = readFileSync(join(__dirname, '../../web/app-overview.js'), 
 const APP_PAGESW   = readFileSync(join(__dirname, '../../web/app-page-switch.js'), 'utf-8')
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS  = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
-const HU   = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
-const EN   = readFileSync(join(__dirname, '../../web/lang/en.js'), 'utf-8')
 
 function fnBody(source: string, startMarker: string, maxLen = 4000): string {
   const start = source.indexOf(startMarker)
@@ -467,8 +466,8 @@ describe('gemini-calls: i18n parity (hu.js / en.js)', () => {
 
   for (const key of KEYS) {
     it(`'${key}' exists in both hu.js and en.js`, () => {
-      expect(HU).toContain(`'${key}'`)
-      expect(EN).toContain(`'${key}'`)
+      expect(langHasKey('hu', key)).toBe(true)
+      expect(langHasKey('en', key)).toBe(true)
     })
   }
 })

@@ -48,6 +48,10 @@ beforeAll(async () => {
   await import(/* @vite-ignore */ join(WEB, 'app-repo-freshness.js') as string)
   await import(/* @vite-ignore */ join(WEB, 'lang/hu.js') as string)
   await import(/* @vite-ignore */ join(WEB, 'lang/en.js') as string)
+  // Fork-overlay pilot (card ee132dfc): also load the fork-only/fork-overridden overlay, or
+  // this only checks the base-file subset of the real runtime dictionary.
+  await import(/* @vite-ignore */ join(WEB, 'lang/fork-hu.js') as string)
+  await import(/* @vite-ignore */ join(WEB, 'lang/fork-en.js') as string)
   win = g.window as unknown as Win
 })
 

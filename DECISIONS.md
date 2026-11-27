@@ -34510,3 +34510,62 @@ Ki döntött: CYBERED (NO-GO 39294, the validated fix direction); MikroB (39295,
 the per-case design rather than patch another case); backend (implementation, tests, mutation
 proof). Hivatkozás: kártya af3cd669; CYBERED NO-GO 39294; MikroB re-plan 39295;
 `store/vendor-skill.sh`; `src/__tests__/vendor-skill-symlink-safety.test.ts`.
+
+## 2026-11-26 -- fork-overlay pilot: web/lang/{hu,en}.js kulcsai kiszervezve (kártya ee132dfc)
+
+Peti jóváhagyása (Telegram 14539/14542, 2026-11-23) egy pilotra: a fork-tulajdonú tartalom
+kiszervezése az upstream-tulajdonú fájlokból, hogy csökkenjen az upstream-merge ütközési
+felület. Item 2 (teljes körű kulcs-szétválasztás) a jelen döntés tárgya; item 1 (`style.css`)
+külön kártyára került, item 3 (a 22+ widget-teszt kulcs-jelenlét-ellenőrzésének függetlenítése
+a fájltól) ugyanebben a menetben, korábban landolt.
+
+MikroB döntése a 38479 blokkoló kérdésre (option c, komment 39254): item 3 előbb, aztán item 2
+teljes körűen, egy menetben, hogy a widget-teszt-suite sose menjen pirosra a kulcsok
+mozgatásakor. Ez EGYÚTTAL FELÜLÍRJA a README "Upstream-owned vs fork-owned fájlok" szekciójának
+2026-09-04-es (kártya 368b77f7) döntését, ami akkor PONT EZT az overlay-szétválasztást vetette
+el -- a feltétel, amit az a döntés maga adott meg az újragondolásra ("ha az ütközések száma
+valaha nem nulla"), most bekövetkezett (24,5%-ról 33%-ra nőtt a fork-tulajdonú kulcsok aránya),
+és a tooling-ellenérv (rossz fájlba író kulcs-beszúró szkript kockázata) megszűnt: a
+`langHasKey`/`langSource` helper + a zero-drift pin strukturálisan kezeli a kulcs-elhelyezést,
+nem kézi szkript.
+
+Mérve (fa: `6b4573434761c4a7fad32348e9e0c06dc49a562a` merge-base, vm-exekvált valódi szótárak,
+nem sor-szintű diff): 2023 bázis-kulcs/nyelv; 945 új, 33 felülírt, 48 törölt kulcs/nyelv a
+jelenlegi fork-on. A 978 új+felülírt kulcs/nyelv átkerült `web/lang/fork-hu.js` / `fork-en.js`-be
+(`Object.assign` a bázis fölött, `web/index.html`-ben a bázis UTÁN betöltve); a bázis-fájlok
+visszaálltak a merge-base szövegére, mínusz a 48 törölt kulcs sora/nyelv.
+
+**Kivétel, 9 kulcs/nyelv (8 `activity.*` beszúrás + `activity.tooltip.mode` felülírás):** a
+bázisban maradt, nem az overlay-ben, mert `ACKNOWLEDGED_FORK_ANCHORS['web/lang/hu.js']`
+(`src/fork-upstream/acknowledged-conflicts.ts`) az `activity.page_title` FIZIKAI jelenlétét
+figyeli `hu.js`-ben (MikroB 2026-09-04-es döntése, a fork Activity-oldalának megtartásáról) --
+ezt mérte be a `fork-upstream-conflict-guard.test.ts` ÉLŐ futása (nem feltételezve, hanem
+tényleg vörösre váltva), mielőtt a kivétel bekerült volna.
+
+**Zéró-drift bizonyíték:** a split előtti pillanatban vett valós `window._i18n` szótár-fixture
+(`src/__tests__/fixtures/lang-overlay-pilot-snapshot-{hu,en}.json`, 2920 kulcs/nyelv) +
+`src/__tests__/lang-overlay-pilot-zero-drift.test.ts` -- a bázis+overlay vm-mergelt eredménye
+kulcsra és értékre pontosan egyezik a fixture-rel, mutáció-tesztelve (egy törölt overlay-sor
+pirosra vált).
+
+**Mért hatás (upstream-merge-ütközés, nem csak fájl-darabszám):** `hu.js`/`en.js` sor-szintű
+diffje a merge-base-hez képest **1015 beszúrás / 91 törlésről 15 beszúrás / 49 törlésre**
+csökkent (mindkét nyelven, azonos arány) -- ez a tényleges merge-ütközési felület, nem a
+"melyik fájlt érintette mindkét oldal" fájl-szintű számláló, ami a split után is 413 marad
+(hu.js/en.js attól még "mindkét oldal írta" fájl, csak a tartalmi átfedés tört le a kis
+kivétel-halmazra).
+
+**Fallout a teljes suite futtatásakor** (a kártya eredeti, 2026-10-29-es mérése -- 231 teszt,
+22 fájl -- elavult volt, a merge-base azóta tovább mozdult): a kulcs-jelenlét-ellenőrzésen
+(item 3) felül ~18 további teszt-fájl olvasta a `hu.js`/`en.js` SZÖVEGÉT közvetlenül (élő
+`t()`-harness `new Function`-nel, dinamikus `import()` egy saját `window._i18n`-hez, vagy egy
+konkrét kulcs ÉRTÉKÉT regex/indexOf-fal) -- mindegyik a `langSource()`/`langHasKey()` helperre
+állt át, vagy a hiányzó `fork-{hu,en}.js` importot kapta meg.
+
+Ki döntött: Peti (eredeti jóváhagyás, Telegram 14539/14542); MikroB (sorrend-döntés, komment
+39254); fullstack (implementáció, mérés, teszt).
+Hivatkozás: kártya ee132dfc; korábbi döntés kártya 368b77f7 (felülírva); anchor-forrás
+`src/fork-upstream/acknowledged-conflicts.ts` (`ACKNOWLEDGED_FORK_ANCHORS`); `web/lang/hu.js`,
+`web/lang/en.js`, `web/lang/fork-hu.js`, `web/lang/fork-en.js`, `web/index.html`,
+`src/web/routes/static.ts`, `src/__tests__/helpers/lang-overlay-key.ts`,
+`src/__tests__/lang-overlay-pilot-zero-drift.test.ts`.

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langSource } from './helpers/lang-overlay-key.js'
 
 // Card 98dbbcc9 -- the FRONTEND half. These are source-contract checks, not DOM tests: the
 // panel is plain DOM built by a classic script, and the failure modes worth pinning are
@@ -10,8 +11,11 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const JS = readFileSync(join(ROOT, 'web', 'app-settings-auth.js'), 'utf8')
-const HU = readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf8')
-const EN = readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf8')
+// Fork-overlay pilot item 2 (card ee132dfc) can move a names.* key out of hu.js/en.js into
+// fork-hu.js/fork-en.js -- langSource() checks base+overlay merged, same resolution rule the
+// runtime uses (web/index.html).
+const HU = langSource('hu')
+const EN = langSource('en')
 const INDEX = readFileSync(join(ROOT, 'web', 'index.html'), 'utf8')
 
 function definedKeys(src: string): Set<string> {

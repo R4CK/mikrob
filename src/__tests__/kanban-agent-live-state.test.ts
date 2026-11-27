@@ -8,11 +8,10 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const APP_JS = readFileSync(join(ROOT, 'web', 'app-kanban.js'), 'utf-8')
-const HU = readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf-8')
-const EN = readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf-8')
 
 function slice(src: string, startMarker: string, endMarker: string): string {
   const a = src.indexOf(startMarker)
@@ -95,8 +94,8 @@ describe('kanban live agent state', () => {
 
   it('has every label in both languages', () => {
     for (const k of ['elsewhere', 'working', 'idle', 'stalled', 'dead', 'stopped', 'unreachable', 'tooltip', 'last_signal']) {
-      expect(HU).toContain(`'kanban.agent_live.${k}':`)
-      expect(EN).toContain(`'kanban.agent_live.${k}':`)
+      expect(langHasKey('hu', `kanban.agent_live.${k}`)).toBe(true)
+      expect(langHasKey('en', `kanban.agent_live.${k}`)).toBe(true)
     }
   })
 

@@ -6,6 +6,7 @@ import { CONTEXTS, RULES, allowKey, contextAt, scanAppJs, type Interp } from './
 import { CSS_NAMED_COLORS, MAX_CSS_COLOR_LENGTH, normalizeCssColor, normalizeLabelColor } from '../css-color.js'
 import { DEADLINE_MS, adversarialColourInputs, longWhitespaceRuns } from './helpers/css-color-adversarial.js'
 import { parseFragment } from 'parse5'
+import { langSource } from './helpers/lang-overlay-key.js'
 
 // Stored-XSS guard for web/app.js.
 // The connector detail modal rendered the env KEYS of an agent's, a project's
@@ -90,8 +91,10 @@ function makeWindow(brand: Record<string, string>) {
   win.t = t
   return win
 }
+// Fork-overlay pilot (card ee132dfc): langSource concatenates the base file with its fork-*.js
+// overlay, so the real t() built from this still resolves a key moved to the overlay.
 const langSrc: Record<string, string> = Object.fromEntries(
-  ['en', 'hu'].map(l => [l, readFileSync(join(__dirname, '..', '..', 'web', 'lang', `${l}.js`), 'utf8')]),
+  (['en', 'hu'] as const).map((l) => [l, langSource(l)]),
 )
 
 function loadHelpers(win: Record<string, unknown> = makeWindow({ brand: 'Marveen', bot: 'Marveen', agentId: 'marveen' })) {

@@ -17,13 +17,12 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SRC = readFileSync(join(ROOT, 'web', 'app-overview.js'), 'utf8')
 const HTML = readFileSync(join(ROOT, 'web', 'index.html'), 'utf8')
 const CSS = readFileSync(join(ROOT, 'web', 'style.css'), 'utf8')
-const EN = readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf8')
-const HU = readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf8')
 
 function extract(name: string): string {
   const start = SRC.indexOf(`function ${name}(`)
@@ -241,6 +240,6 @@ describe('i18n: both locales carry every key the widget calls t() with', () => {
     'overview.quota.stale', 'overview.quota.none.no_file', 'overview.quota.none.unreadable',
     'overview.quota.none.no_rate_limits',
   ]
-  it.each(keys)('en.js has %s', (k) => { expect(EN).toContain(`'${k}':`) })
-  it.each(keys)('hu.js has %s', (k) => { expect(HU).toContain(`'${k}':`) })
+  it.each(keys)('en.js has %s', (k) => { expect(langHasKey('en', k)).toBe(true) })
+  it.each(keys)('hu.js has %s', (k) => { expect(langHasKey('hu', k)).toBe(true) })
 })

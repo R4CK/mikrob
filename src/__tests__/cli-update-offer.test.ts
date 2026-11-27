@@ -10,6 +10,7 @@ import {
 } from '../web/cli-update.js'
 import { tryHandleUpdates } from '../web/routes/updates.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 // CLIFRISSAJANLAS923: the update page OFFERS a Claude Code CLI update. Every
 // rule below is a measured constraint from the card, not a preference:
@@ -228,8 +229,6 @@ describe('the served client', () => {
   // lives in app-updates.js alongside the rest of the Updates-page helpers, not app.js --
   // app.js keeps only the upstream fork-overlay seam (loadUpdates/renderUpdatesVersion).
   const app = readFileSync(join(ROOT, 'web', 'app-updates.js'), 'utf-8')
-  const hu = readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf-8')
-  const en = readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf-8')
   it('has the offer box, posts only the offered target, and says that running sessions keep the old binary', () => {
     expect(html).toContain('id="updatesCli"')
     expect(app).toContain("fetch('/api/updates/cli'")
@@ -237,8 +236,8 @@ describe('the served client', () => {
     expect(app).toContain("t('updates.cli.sessions_note')")
     expect(app).toContain("t('updates.cli.confirm', { v: target })")
     for (const k of ['updates.cli.title', 'updates.cli.offer', 'updates.cli.btn', 'updates.cli.confirm', 'updates.cli.sessions_note', 'updates.cli.avx_note', 'updates.cli.done', 'updates.cli.failed']) {
-      expect(hu, k).toContain(`'${k}'`)
-      expect(en, k).toContain(`'${k}'`)
+      expect(langHasKey('hu', k), k).toBe(true)
+      expect(langHasKey('en', k), k).toBe(true)
     }
   })
 

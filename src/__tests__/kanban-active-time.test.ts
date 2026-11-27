@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 import {
   initDatabase, createKanbanCard, moveKanbanCard, listKanbanCards,
   sumInProgressSeconds, getKanbanCardEvents,
@@ -161,7 +162,7 @@ describe('formatActiveTime (card detail)', () => {
   it('every key the detail panel renders exists in both languages', () => {
     const keys = ['kanban.meta.active', 'kanban.active.none', 'kanban.active.tooltip', 'kanban.active.tooltip_none']
     for (const lang of ['en', 'hu'] as const) {
-      for (const k of keys) expect(LANG[lang]).toContain(`'${k}':`)
+      for (const k of keys) expect(langHasKey(lang, k)).toBe(true)
     }
     expect(APP_JS).toContain("t('kanban.meta.active')")
   })
