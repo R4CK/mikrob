@@ -161,6 +161,42 @@ print(summary if summary and len(summary) <= CAP else FALLBACK)
 ' "$log" "$SUMMARY_CHAR_CAP"
 }
 
+# Card 2f282a31: persistence to FLEET_TEST_LOG_DIR has ALWAYS been a side effect of
+# fleet_test_notify_finish below, which only runs when FLEET_TEST_CALLER_AGENT is set -- an
+# explicit, agent-initiated self-check opt-in (see its own call site in fleet_test_on_exit).
+# marveen-land.sh's land calls NEVER set that var, so a land run's own FAILURE was never durably
+# recoverable: measured live, the newest file in $FLEET_TEST_LOG_DIR was from 07:07 this morning,
+# and three subsequent land runs (one red, on mopsion-suite-run.selftest.sh) left nothing behind,
+# because land was the ONLY caller running fleet-test.sh in that window (every other agent was
+# told to hold off, land-queue priority) and land never opts into the notify path. This closes
+# that gap WITHOUT touching the notify/messaging mechanism at all (no HTTP call, no dashboard
+# token needed, so it cannot be affected by a missing/unreadable token either): any FAILING run
+# persists its log here regardless of FLEET_TEST_CALLER_AGENT, with bounded retention (oldest
+# pruned beyond FLEET_TEST_LOG_RETENTION) so an unattended land-only period cannot grow this
+# directory without limit. A PASSING, non-opted-in run still persists nothing -- the floor the
+# card asked for is failures, and the common case (most land runs are green) should not start
+# writing a file nobody asked for on every single one.
+FLEET_TEST_LOG_RETENTION="${FLEET_TEST_LOG_RETENTION:-200}"
+fleet_test_prune_log_dir() { # $1=dir $2=keep (newest N survive, by mtime)
+  local dir="$1" keep="$2" f
+  [ -d "$dir" ] || return 0
+  local -a old
+  mapfile -t old < <(ls -1t "$dir" 2>/dev/null | tail -n "+$((keep + 1))")
+  for f in "${old[@]:-}"; do
+    [ -n "$f" ] && rm -f "${dir:?}/$f" 2>/dev/null
+  done
+}
+
+fleet_test_persist_failure_log() { # $1=status $2=run_log_path
+  local st="$1" src_log="$2"
+  [ "$st" -ne 0 ] || return 0
+  [ -n "$src_log" ] && [ -r "$src_log" ] || return 0
+  mkdir -p "$FLEET_TEST_LOG_DIR" 2>/dev/null || return 0
+  local dest_log="$FLEET_TEST_LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$$-failure.log"
+  cp "$src_log" "$dest_log" 2>/dev/null || return 0
+  fleet_test_prune_log_dir "$FLEET_TEST_LOG_DIR" "$FLEET_TEST_LOG_RETENTION"
+}
+
 fleet_test_notify_finish() { # $1=caller_agent $2=status $3=run_log_path
   local caller="$1" st="$2" src_log="$3" tok="${FLEET_TEST_NOTIFY_TOKEN_FILE:-$ROOT/store/.dashboard-token}"
   [ -r "$tok" ] || return 0
@@ -258,7 +294,11 @@ fleet_test_on_exit() {
   # the rm -rf first meant mktemp for the placeholder failed silently (no dir to create the file
   # in) and a real run_log was deleted before fleet_test_notify_finish ever read it, so NOTHING
   # was ever posted, on every exit path, pass or die().
-  if [ -n "${FLEET_TEST_CALLER_AGENT:-}" ]; then
+  # Card 2f282a31: the placeholder-building logic below used to run ONLY inside the
+  # FLEET_TEST_CALLER_AGENT branch, so a caller that never opts into notify (every land) could
+  # never reach fleet_test_persist_failure_log either -- widened to "notify OR a failing exit",
+  # so a land's own die()-before-run_log-existed case still gets a (placeholder) log persisted.
+  if [ -n "${FLEET_TEST_CALLER_AGENT:-}" ] || [ "$st" -ne 0 ]; then
     local notify_log="${run_log:-}" made_placeholder=0
     if [ -z "$notify_log" ] || [ ! -r "$notify_log" ]; then
       notify_log="$(mktemp 2>/dev/null)" || notify_log=""
@@ -267,7 +307,11 @@ fleet_test_on_exit() {
         printf '(no test run output -- exited before vitest started or printed anything)\n' > "$notify_log"
       fi
     fi
-    [ -n "$notify_log" ] && fleet_test_notify_finish "$FLEET_TEST_CALLER_AGENT" "$st" "$notify_log"
+    if [ -n "${FLEET_TEST_CALLER_AGENT:-}" ]; then
+      [ -n "$notify_log" ] && fleet_test_notify_finish "$FLEET_TEST_CALLER_AGENT" "$st" "$notify_log"
+    else
+      [ -n "$notify_log" ] && fleet_test_persist_failure_log "$st" "$notify_log"
+    fi
     [ "$made_placeholder" -eq 1 ] && rm -f "$notify_log" 2>/dev/null
   fi
   rm -f "${run_log:-}" 2>/dev/null

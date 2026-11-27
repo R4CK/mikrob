@@ -131,10 +131,34 @@ function execWithKillRetry(runner: string, args: readonly string[], file: string
     return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env })
   } catch (e) {
     const err = e as { signal?: string | null; status?: number | null }
-    if (err.signal !== 'SIGKILL') throw e
+    if (err.signal !== 'SIGKILL') throw withCapturedOutput(e, file)
     console.error(`${file}: killed (SIGKILL) on first attempt, likely host-level memory contention -- retrying once`)
-    return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env })
+    try {
+      return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env })
+    } catch (e2) {
+      throw withCapturedOutput(e2, file)
+    }
   }
+}
+
+// Card 2f282a31 (fleet-test log persistence investigation): execFileSync's thrown error on a
+// non-zero exit already carries .stdout/.stderr as PROPERTIES of the error object, but Node's
+// default .message only folds in STDERR ("Command failed: <cmd>\n<stderr>") -- every OK_SHAPES
+// style above prints its [ok]/[FAIL] trace to STDOUT, so that trace was silently absent from the
+// thrown error's own message. Nothing downstream of this function ever reads .stdout/.stderr off
+// the error object (vitest's failure report prints .message, and fleet-test.sh's `tee` only ever
+// sees what got printed), so a selftest failing inside a full fleet-test run left only vitest's
+// own one-line summary in the persisted log -- the selftest's actual [FAIL] line was lost, even
+// though it was captured in memory the whole time. Bounded (last 4000 chars each) so one runaway
+// selftest's output cannot blow up a single test failure message.
+function withCapturedOutput(e: unknown, file: string): Error {
+  const err = e as { message?: string; stdout?: string; stderr?: string }
+  const tail = (s: string | undefined) => (s ?? '(none)').slice(-4000)
+  return new Error(
+    `${file} failed: ${err.message ?? String(e)}\n` +
+      `--- stdout (tail) ---\n${tail(err.stdout)}\n` +
+      `--- stderr (tail) ---\n${tail(err.stderr)}`,
+  )
 }
 
 // Card a88ebef5 reopened (MikroB, msg 22525): the dirt-check names WHICH selftest was running
@@ -614,6 +638,59 @@ describe('the shared-tracked-tree guard is name-independent (card 99a4a2d4)', ()
       writeFileSync(probe, `#!/bin/sh\necho "boom" >&2\nexit 1\n`)
       chmodSync(probe, 0o755)
       expect(() => runGuardedSelftest(repo, 'sh', 'probe.sh', [])).toThrow()
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  // Card 2f282a31: every OK_SHAPES style prints its per-case [ok]/[FAIL] trace to STDOUT, not
+  // stderr -- Node's default execFileSync error message only folds in stderr ("Command failed:
+  // <cmd>\n<stderr>"), so that trace used to vanish from the thrown error entirely, and with it
+  // from vitest's own failure report and anything (like fleet-test.sh's `tee`) that only ever
+  // sees what got printed. The thrown error's message must carry the selftest's own stdout.
+  it('a failing selftest\'s own STDOUT trace survives into the thrown error (card 2f282a31)', () => {
+    const repo = makeFixtureRepo()
+    try {
+      const probe = join(repo, 'store', 'probe.sh')
+      writeFileSync(
+        probe,
+        `#!/bin/sh\necho "  ok   first case"\necho "  FAIL second case: DISTINCTIVE-STDOUT-TRACE"\nexit 1\n`,
+      )
+      chmodSync(probe, 0o755)
+      let caught: unknown
+      try {
+        runGuardedSelftest(repo, 'sh', 'probe.sh', [])
+      } catch (e) {
+        caught = e
+      }
+      expect(caught, 'expected the probe to throw').toBeInstanceOf(Error)
+      expect((caught as Error).message).toContain('DISTINCTIVE-STDOUT-TRACE')
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  // Mutation check (guards-that-pin-behaviour point 7): the fix is withCapturedOutput wrapping
+  // the thrown error -- removing that wrapping (rethrowing the raw execFileSync error, as the
+  // code did before this card) must turn the case above red. Proven by calling execFileSync the
+  // SAME way the pre-fix code did, directly, rather than reasoning about the diff.
+  it('without the fix, the raw execFileSync error would have dropped the stdout trace (mutant)', () => {
+    const repo = makeFixtureRepo()
+    try {
+      const probe = join(repo, 'store', 'probe.sh')
+      writeFileSync(probe, `#!/bin/sh\necho "DISTINCTIVE-STDOUT-TRACE-MUTANT"\nexit 1\n`)
+      chmodSync(probe, 0o755)
+      let rawMessage = ''
+      try {
+        execFileSync('sh', [probe], { encoding: 'utf-8' })
+      } catch (e) {
+        rawMessage = (e as Error).message
+      }
+      expect(
+        rawMessage,
+        'this pins the PRE-FIX behaviour as a control: if the raw error message now also ' +
+          'contains stdout, the fix in withCapturedOutput is redundant and this control is stale',
+      ).not.toContain('DISTINCTIVE-STDOUT-TRACE-MUTANT')
     } finally {
       rmSync(repo, { recursive: true, force: true })
     }
