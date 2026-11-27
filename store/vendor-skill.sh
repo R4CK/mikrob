@@ -225,4 +225,19 @@ here. Re-vendoring is always a deliberate act (supply-chain rule: a skill steers
 upstream edit is reviewed before it lands).
 EOF
 
+# Re-pin reminder (card 9ed32347, CYBERED NO-GO 39489 suggestion 6): a hash-pinning wrapper that
+# execs a file under THIS skill's dir (e.g. store/unlazy-stop-hook-verified.sh pinning
+# ~/.claude/skills/unlazy/scripts/stop-hook.mjs) carries its own hardcoded sha256 hashes, computed
+# at the commit it was pinned against -- a re-vendor changes the live files but NOT those hashes,
+# so every re-vendor of a pinned skill is a deliberate-but-easy-to-forget two-step. Generic grep,
+# not hardcoded to unlazy: any *-verified.sh under store/ whose PINNED_FILES references this
+# skill's own install dir gets named here, loudly, so the re-pin is not silently skipped.
+_pin_hits="$(grep -rl "skills/$NAME/" "$HERE"/*-verified.sh 2>/dev/null || true)"
+if [[ -n "$_pin_hits" ]]; then
+  echo "RE-PIN REMINDER: $NAME was just re-vendored. The following wrapper(s) pin hashes against" >&2
+  echo "the PREVIOUS copy of $NAME and must be re-pinned (recompute sha256sum, update PINNED_FILES," >&2
+  echo "re-test, re-gate) before this re-vendor is trusted by them:" >&2
+  while IFS= read -r _f; do [[ -n "$_f" ]] && echo "  - $_f" >&2; done <<<"$_pin_hits"
+fi
+
 echo "VENDORED:$NAME:${SHA:0:8}:$dest"

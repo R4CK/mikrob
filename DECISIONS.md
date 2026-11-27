@@ -34275,7 +34275,7 @@ Ki döntött: QA (lelet 39447), backend (javítás + a második hiba felderíté
 Hivatkozás: kártya de0bd561; Gate-SHA (a következő commit, lásd REVIEW);
 `scripts/claude-md-split-reachability-check.py`, `scripts/claude-md-split-reachability-check.selftest.py`.
 
-## 2026-11-27 18:05 -- Kártya 9ed32347: unlazy Stop hook -- pinnelt hash-ellenőrző wrapper a detektív-only kontroll helyett
+## 2026-11-27 18:05 -- Kártya 9ed32347: unlazy Stop hook -- pinnelt hash-ellenőrző wrapper a detektív-only kontroll helyett (v1 NO-GO, v2 javítás)
 
 MIT: WhiteHat F2 MEDIUM lelete (e060a794, 2026-10-25): az unlazy Stop hook 15 flotta-session
 settings.json-jában (backend, backend2, cybered, cybersec, fron-ted, fron-teddy, fullstack,
@@ -34283,38 +34283,69 @@ jogasz, marketing, penzugy, qa, qa2, teszter, videooo, ~/.claude/settings.json) 
 `~/.claude/skills/unlazy/scripts/stop-hook.mjs`-t futtatta -- ez a könyvtár MINDEN ügynök (azonos
 uid) által írható, tehát egy jogosulatlan módosítás ott minden session végén kódfutássá válna, és
 csak egy periodikus, utólagos integritás-ellenőrzés (vendored-skill-integrity.py) venné észre,
-nem előzné meg. Fix: `store/unlazy-stop-hook-verified.sh`, egy fail-closed wrapper, amely a
-futtatás ELŐTT sha256-ellenőrzi a két végrehajtás-kritikus fájlt (`scripts/stop-hook.mjs` +
-`scripts/lib/gates.mjs`, amit az előbbi importál) a SAJÁT magában (nem egy külön store/*.json
-manifestben -- a store/ alap szerint gitignorolt, csak *.sh/*.py kivétel, egy külön .json
-manifest sosem kerülne verziókövetésbe, ez önmagában megsemmisítette volna a pin célját) rögzített
-hash ellen. Egyezésnél transzparensen exec-eli a valódi node hívást (bizonyítva: byte-azonos
-kimenet egy direkt node-híváshoz képest egyezés esetén); eltérésnél, hiányzó fájlnál vagy hiányzó
-sha256sum-nál a valódi unlazy script UGYANAZT a "block" JSON-protokollt adja vissza, amit maga az
-unlazy script használ -- hangos, látható elutasítás, nem csendes futás és nem csendes eltűnés.
-Mind az 15 settings.json át lett írva a közvetlen node-hívásról a wrapperre (azonos, mechanikus
-csere, visszaállítható -- biztonsági mentés a scratchpadben). Élő mutáns-teszt: a stop-hook.mjs
-módosítása, a lib/gates.mjs módosítása, egy hiányzó pinnelt fájl, és a hiányzó sha256sum mind
-pirosra fordítja a megfelelő selftest-esetet, majd visszaállítás után zöld (7/7, végül 6 eset a
-manifest-fájl eltávolítása után). Javítás a 27db86f4 téves előfeltevésére (hogy a Stop hook
-"nincs bekötve" backend/backend2-nél) is: komment 39477 jelzi, ez sosem volt igaz, a hook mind a
-15 session-ben futott a teljes idő alatt.
+nem előzné meg.
+
+ELSŐ KÖR (f5b8b136, QA FAIL 39488 + CYBERED NO-GO 39489): egy sha256-ellenőrző wrapper, ami a
+futtatás ELŐTT hash-eli a két végrehajtás-kritikus fájlt (`scripts/stop-hook.mjs` +
+`scripts/lib/gates.mjs`), majd a LIVE `~/.claude/skills/unlazy`-t exec-eli egyezésnél. Mindkét
+gate ugyanazt a TOCTOU-t demonstrálta élőben (QA 22/120, CYBERED 50/120 nyertes verseny): a hash a
+LIVE fájlt ellenőrizte, az exec ÚJRA beolvasta ugyanazt a live útvonalat -- egy egyidejű író
+(ugyanaz az uid, amely ellen a kártya készült) a két lépés közti ablakban kicserélhette a tartalmat.
+CYBERED három további hibát tett hozzá: a sha256sum/cut/node PATH-on keresztül futott (egy
+ügynök-írható `~/.bun/bin` megelőzte a `/usr/bin`-t); a selftest marker-oracle-je üres volt (a
+tamper-fájl a markert a VALÓDI script `process.exit(0)`-ja UTÁN írta, sosem futott le, M2 mutáns
+élve maradt); egy pin-eltérés örökre blokkolná az ÖSSZES Stop-ot minden drótozott ágensen
+(`stop_hook_active` figyelmen kívül hagyva); és penzugy KÜLÖN `.claude-config/settings.json`
+rétege kimaradt a drótozásból.
+
+ÖNOKOZOTT ÜZEMI INCIDENS (msg 25615): az élő drótozás (mind a 15 settings.json) MEGELŐZTE a
+`store/unlazy-stop-hook-verified.sh` landolását -- a fájl nem létezett a fő checkout-ban, minden
+ágens Stop hook-ja "command not found" lett egy ablakban, amíg egy azonnali élő stopgap-másolás
+(ellenőrzött sha256-tal) helyre nem állította. MikroB döntése (39490, msg 25620): TELJES
+visszaállítás a korábbi közvetlen exec-re, MIELŐTT bármilyen javítás indulna, és egy ÚJ szabály
+minden jövőbeli kártyára: élő config/hook-változás SOHA a gate+landolás ELŐTT, a live lépés mindig
+KÜLÖN, EXPLICIT lépés UTÁNA. A visszaállítás (komment 39491): mind a 15 fájl vissza a pontos régi
+parancsra a mentésekből, JSON-validálva, `grep` 0 találat minden settings-rétegen (beleértve a
+`.claude-config`-ot is) az élő wrapper-fájl törlése ELŐTT.
+
+MÁSODIK KÖR (ez a landolás): a wrapper (v2) a PINNELT fájlokat egy FRISS, privát, 0700 temp
+könyvtárba MÁSOLJA ELŐSZÖR, és a MÁSOLATOT hash-eli és exec-eli -- a hash és a futtatott bájtok
+innentől garantáltan ugyanazok, nincs TOCTOU-ablak (élő race-teszt: 0/120 nyertes verseny,
+ugyanazzal a technikával, ami az első kört 22-50/120-szor legyőzte). `PATH=/usr/bin:/bin` és
+`NODE_OPTIONS` törlése a szkript ELSŐ sora, abszolút bináris útvonalak (élő teszt: hamis
+sha256sum/cut/node a PATH elején sosem fut, hamis NODE_OPTIONS --require sosem fut). stdin egyszeri
+beolvasása + `stop_hook_active` ellenőrzés: pin-eltérésnél, ha már `stop_hook_active=true`, a
+wrapper FELOLDÓDIK (systemMessage, nincs "decision":"block") ahelyett, hogy örökre blokkolna --
+sosem futtat ellenőrizetlen kódot, csak nem ismétel egy olyan ellenőrzést, amit az ágens
+újrapróbálással nem tud megoldani. A selftest marker-oracle javítva (a tamper-fájl a markert a
+fájl ELEJÉRE írja, egy közvetlen-futtatásos kontroll bizonyítja, hogy a marker elérhető), plusz
+egy M2-stílusú mutáns (a `fail()` saját `exit`-je kiütve) él marad, mert minden hívási hely SAJÁT,
+redundáns `exit`-et is tartalmaz. `store/vendor-skill.sh` mostantól hangos emlékeztetőt ír ki, ha
+egy újra-vendorolt skillt egy `*-verified.sh` wrapper pinnel. Új script,
+`store/unlazy-stop-hook-cutover.sh` (+selftest, 9/9 PASS, scratch `--root` alatt, SOHA nem élő
+fájlon): `--dry-run`/`--apply`/`--rollback`, mind a 16 réteget fedi (a 15 + penzugy
+`.claude-config`-ja), ez a kártya ÍRT ÉS TESZTELT rollback-útja (CYBERED F-6), és ez futtatja majd
+az élő átállást is -- de KÜLÖN, EXPLICIT lépésként, csak LANDOLÁS UTÁN, sosem ebben a körben.
 
 MIÉRT: ma nincs OS-szintű, ügynökönkénti felhasználó-szétválasztás (az a 85a668aa terve), ezért a
 tényleges, ELÉRHETŐ megelőzés nem egy nem-írható útvonal, hanem egy futtatás előtti
-hash-ellenőrzés, ami a git-követett, review-n átmenő forráskódban él, nem az ügynök-írható
-skills-könyvtárban.
+hash-ellenőrzés + a másolat-majd-futtatás minta, ami a git-követett, review-n átmenő forráskódban
+él, nem az ügynök-írható skills-könyvtárban, és ami a bájtokat, nem csak egy korábbi mérést
+futtatja.
 
-MI MARADT: F-4 jellegű dormáns rés (CYBERSEC terminológiájával): a `git worktree add` és a
-sentinel-írás közti ablakhoz hasonlóan, itt a wrapper SAJÁT fájljának (store/
-unlazy-stop-hook-verified.sh) integritása a settings.json-on és a marveen repo git-fegyelmén
-nyugszik, nem egy újabb hash-rétegen -- ez tudatosan elfogadott kör, mert a wrapper maga
-git-követett és landoláson/gate-en megy át, míg a korábbi közvetlen hívás útja nem. A re-pin
-(unlazy re-vendorolásakor) deliberált lépés, a script fejkommentje írja le.
+MI MARADT: a wrapper SAJÁT fájljának (store/unlazy-stop-hook-verified.sh) integritása a
+settings.json-on és a marveen repo git-fegyelmén nyugszik, nem egy újabb hash-rétegen -- ez
+tudatosan elfogadott kör, mert a wrapper maga git-követett és landoláson/gate-en megy át. A re-pin
+(unlazy re-vendorolásakor) deliberált lépés, a script fejkommentje írja le, és a vendor-skill.sh
+most emlékeztet rá. A valódi, teljes megoldás a 85a668aa (per-ágens OS-felhasználó) kártya.
 
-Ki döntött: fullstack (DevO), self-advance (11. szabály) pickup; a gate (QA + RedHat) a kártya
-leírása szerint még nincs lefuttatva.
-Hivatkozás: kártya 9ed32347, WhiteHat F2 (e060a794 komment 24537); kártya 27db86f4 (komment
-39477); `store/unlazy-stop-hook-verified.sh`, `store/unlazy-stop-hook-verified.selftest.sh`,
-mind a 15 settings.json (agents/*/.claude/settings.json + ~/.claude/settings.json, utóbbi a
-marveen repón kívül él, nem git-követett).
+Ki döntött: fullstack (DevO), self-advance (11. szabály) pickup az elsőre; a visszaállítás és a
+javítási kör MikroB döntése (39490/msg 25620) és QA (39488) + CYBERED (39489) leletei alapján.
+A gate (QA + RedHat) ezen a körön még nincs lefuttatva.
+Hivatkozás: kártya 9ed32347; WhiteHat F2 (e060a794 komment 24537); kártya 27db86f4 (komment
+39477); QA FAIL 39488; CYBERED NO-GO 39489; MikroB record 39487 + decision 39490;
+`store/unlazy-stop-hook-verified.sh`, `store/unlazy-stop-hook-verified.selftest.sh`,
+`store/unlazy-stop-hook-cutover.sh`, `store/unlazy-stop-hook-cutover.selftest.sh`,
+`store/vendor-skill.sh`; mind a 16 settings-réteg (agents/*/.claude/settings.json +
+~/.claude/settings.json, utóbbi a marveen repón kívül él, nem git-követett, +
+agents/penzugy/.claude-config/settings.json).
