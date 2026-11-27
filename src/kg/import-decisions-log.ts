@@ -29,6 +29,14 @@ export interface DecisionsImportReport {
   /** The 1-indexed source line of each entry skipped for a secret shape, so a caller/operator can
    *  find and fix it without re-deriving it from the count alone. */
   secretRejectedLines: number[]
+  /** F4 (card 01b10349): a referenced card whose TITLE matches a secret shape (a real example:
+   *  card b0396aa1, "...bármilyen #token= fragmentet elfogad...", a false positive, not a leaked
+   *  credential) used to throw
+   *  out of this same transaction and crash the whole run, because this upsertNode call had no
+   *  try/catch, unlike the decision's own upsertNode above. Skipped and counted instead -- no card
+   *  node, no governs edge for that one reference, the decision itself and the rest of the run
+   *  still import. */
+  cardRefsSkippedSecret: number
 }
 
 interface CardRow {
@@ -127,6 +135,7 @@ export function importDecisionsLog(
     cardRefsSkippedMissing: 0,
     entriesRejectedSecret: 0,
     secretRejectedLines: [],
+    cardRefsSkippedSecret: 0,
   }
   const lookup = makeCardLookup(mainDb)
   const entries = parseEntries(markdown)
@@ -175,14 +184,27 @@ export function importDecisionsLog(
           // REFERENCED card's own project, same as import-from-relations.ts and MikroB's D2
           // decision (3f6fc4ce comment 20814) -- not the calling project, which is the DECISIONS.md
           // file's partition and may differ from the card it happens to mention.
-          upsertNode(kgDb, {
-            id: cardNodeId(cardId),
-            type: 'card',
-            project: mapProjectToPartition(card.project),
-            title: card.title,
-            source_ref: `kanban_cards:${cardId}`,
-            extractor: 'import:decisions_log',
-          })
+          //
+          // F4 (card 01b10349): same secret-shape guard as the decision's own upsertNode above --
+          // a referenced card's TITLE can trip it (e.g. card b0396aa1, "...#token= fragmentet..."),
+          // and that must only skip THIS card reference, not roll back the decision or the rest of
+          // the run.
+          try {
+            upsertNode(kgDb, {
+              id: cardNodeId(cardId),
+              type: 'card',
+              project: mapProjectToPartition(card.project),
+              title: card.title,
+              source_ref: `kanban_cards:${cardId}`,
+              extractor: 'import:decisions_log',
+            })
+          } catch (err) {
+            if (err instanceof KgSecretError) {
+              report.cardRefsSkippedSecret += 1
+              continue
+            }
+            throw err
+          }
         }
         if (
           upsertEdge(kgDb, {

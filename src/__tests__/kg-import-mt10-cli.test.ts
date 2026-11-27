@@ -38,6 +38,7 @@ const decisionsReport: DecisionsImportReport = {
   cardRefsSkippedMissing: 0,
   entriesRejectedSecret: 0,
   secretRejectedLines: [],
+  cardRefsSkippedSecret: 0,
 }
 const coldMemoriesReport: ColdMemoriesImportReport = {
   memoriesScanned: 0,

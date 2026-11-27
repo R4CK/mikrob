@@ -220,18 +220,24 @@ describe('importDecisionsLog (MT-10b, DECISIONS.md -> decision nodes + governs e
     expect(decisions.some((d) => d.title.includes('Titkot'))).toBe(false)
   })
 
-  // F4 (card 01b10349, found running the MT-10 CLI against live data: card 6a4e34c1's real title
-  // contains '?token=' as plain English ("SSE ?token= query"), which is a secret-shape FALSE
-  // POSITIVE, not a leaked credential). The REFERENCED card's own upsertNode call had no try/catch
-  // for KgSecretError, unlike the decision's own upsertNode a few lines above it -- the throw
-  // escaped the transaction and crashed the whole run, same class of bug F3 already fixed for the
-  // decision node itself, just missed on this second upsertNode call in the same function.
+  // F4 (card 01b10349, found running the MT-10 CLI against live data: card b0396aa1's real title
+  // contains '#token= fragmentet' as plain English ("...bármilyen #token= fragmentet elfogad..."),
+  // an 10-char value after '=' that trips the KV secret-shape guard -- a false positive, not a
+  // leaked credential. The REFERENCED card's own upsertNode call had no try/catch for
+  // KgSecretError, unlike the decision's own upsertNode a few lines above it -- the throw escaped
+  // the transaction and crashed the whole run, same class of bug F3 already fixed for the decision
+  // node itself, just missed on this second upsertNode call in the same function. (A shorter
+  // "token= query" value, as in card 6a4e34c1, stays under the KV regex's 8-char floor and does
+  // NOT trip the guard -- confirmed against src/kg/store.ts's KG_LOCAL_KV_SECRET_RX before picking
+  // this fixture, not assumed.)
   it('F4: a referenced card whose TITLE matches a secret shape is skipped (no edge, no throw), the decision itself still imports', () => {
     const mainDb = makeMainDbFixture()
-    mainDb.prepare(`INSERT INTO kanban_cards VALUES ('6a4e34c1', 'SSE ?token= query', 'mikrob')`).run()
+    mainDb
+      .prepare(`INSERT INTO kanban_cards VALUES ('b0396aa1', 'OAuth callback accepts any #token= fragmentet', 'mikrob')`)
+      .run()
     const kgDb = new Database(':memory:')
     migrateKg(kgDb)
-    const md = '## 2026-11-26 -- Heti önaudit\n\n**Döntés:** rendben.\n**Hivatkozás:** kártya 6a4e34c1.\n'
+    const md = '## 2026-11-26 -- Heti önaudit\n\n**Döntés:** rendben.\n**Hivatkozás:** kártya b0396aa1.\n'
 
     expect(() => importDecisionsLog(md, mainDb, kgDb, 'mikrob')).not.toThrow()
     const report = importDecisionsLog(md, mainDb, kgDb, 'mikrob')
@@ -239,7 +245,7 @@ describe('importDecisionsLog (MT-10b, DECISIONS.md -> decision nodes + governs e
     expect(report.decisionsUpserted).toBe(1)
     expect(report.cardRefsSkippedSecret).toBe(1)
     expect(report.governsEdges).toBe(0)
-    const cardNode = kgDb.prepare(`SELECT 1 FROM kg_nodes WHERE id = 'card:6a4e34c1'`).get()
+    const cardNode = kgDb.prepare(`SELECT 1 FROM kg_nodes WHERE id = 'card:b0396aa1'`).get()
     expect(cardNode).toBeUndefined()
     const decisionNode = kgDb.prepare(`SELECT 1 FROM kg_nodes WHERE type = 'decision'`).get()
     expect(decisionNode).toBeDefined()
