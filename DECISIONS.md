@@ -34037,3 +34037,54 @@ Ki döntött: MikroB (NO-GO + a két MUST pontos javítási iránya, msg 39208);
 (implementáció, mérés, teszt).
 Hivatkozás: kártya e99c3dc1; CYBERSEC NO-GO 39208; msg 25177; `store/fleet-test.sh`,
 `src/__tests__/fleet-test-land-priority-verified.test.ts`.
+
+## 2026-11-27 -- card e99c3dc1 fix-kör 3: F-1 teszt hermetikussá tétele valódi land-ősre (élő red landolásnál talált lelet)
+
+Tény: a kártya 2. gate-körének landolása (45c30ecb sha, QA PASS + CYBERSEC GO) VALÓS landolás
+közben pirosra fordult -- az `src/__tests__/fleet-test-land-priority-verified.test.ts` saját F-1
+tesztje ("MARVEEN_LAND_DEVELOP_LOCK_FILE no longer has ANY effect") `expect(out).toBe('normal')`
+helyett `'land'`-et kapott. MikroB diagnózisa (msg 25668): a teszt hibásan feltételezte, hogy
+sosincs VALÓS land-ős a saját futása közben -- ez minden olyan landoláskor hamis, ahol ez a
+tesztfájl maga is `marveen-land.sh`-n át fut (vagyis MINDEN landoláskor).
+
+Javítás (MikroB engedélye, msg 25668: "do NOT weaken the production check" -- a produkciós
+`fleet-test.sh` logikája NEM változott, csak a teszt-harness): az F-1 teszt p1-ese most
+DUPLA-FORK + `setsid`-del FUT ("( setsid bash target & )", a befogó subshell azonnal kilép és
+elárvul a child), így a kernel a legközelebbi subreaper alá (`systemd --user`) reparentálja --
+mérve ezen a gépen: a VALÓS ős-lánc sosem éri el a tesztet elindító landoló-láncot. Ugyanez a
+technika került a `runDetached` segédfüggvénybe, amit az eredeti F-1 teszt is használ.
+
+Nem-vacuitás bizonyítva két új teszttel (ÚJ describe blokk, "F-1 HERMETICITY"):
+1. A javított szkript egy VALÓS, a valódi kanonikus lock-ot tartó "fake land" ős alá ágyazva is
+   'normal'-t ad (a kanonikus útvonalat SOHA nem írjuk le literálban -- a futó SOURCE-ból
+   olvassuk ki `ROOT=`-ot, ugyanaz a "names no real install path" önteszt védi).
+2. Az F-1 hiba VISSZAÁLLÍTOTT mutánsa (env-override ismét hatásos) ugyanebben a beágyazott
+   forgatókönyvben és önállóan futtatva is 'land'-et ad -- a hermetikus javítás nem rejt el egy
+   valódi regressziót.
+
+MÉRÉSI MELLÉKHATÁS, útkeresés közben talált, ÖNMAGÁBAN is load-bearing: a "fake land" ős saját
+nyitott+flockolt fd-je (a kanonikus fájlon) öröklődik MINDEN leszármazott forkon át, akkor is, ha
+az ősi láncot egyébként detacheljük -- az ős-lánc (ppid-lánc) és az fd-öröklés KÉT KÜLÖNBÖZŐ
+dolog, a detach csak az elsőt törli. Emiatt az attacker p1-je (ami a saját argv-jében már eleve
+hordozza a 'store/marveen-land.sh' markert) öröklött fd-n át "tartja" a kanonikus lock-ot is,
+függetlenül az ős-lánc állapotától -- ez PONTOSAN az a hibaosztály, amit a `marveen-land.sh`
+`run_fg_killable`-je kártya 81c6fbb5 Q3 alatt már egyszer lezárt (minden subshell lezárja a SAJÁT
+fd-másolatát `exec`-elés előtt). A teszt-harness "fake land" ősének most ugyanez a fegyelme: a
+kanonikus fd-t a külső wrapper lezárja, MIELŐTT a detachelt láncot elágaztatja.
+
+Másik, függetlenül talált és javított hiba: a detach-wrapper eredetileg a kimeneti fájl
+MÉRETÉRE ("$OUT" nem üres) várt, nem a futás TÉNYLEGES befejezésére -- mivel a `fleet-test.sh`
+köztes sorokat (pl. `env_compat_get` figyelmeztetést) is írhat stdout-ra a végső válasz előtt, ez
+csonkolt capture-t eredményezett. Javítás: a detachelt futó maga írja ki a DONE-jelzőt, utolsó
+lépésként, a wrapper ARRA vár, nem a fájl méretére.
+
+Ellenőrzés: `fleet-test-land-priority-verified.test.ts` 17/17 (3 új teszt a 14-ből), háromszor
+egymás után lefuttatva stabilan zöld. `npx tsc --noEmit -p .` tiszta. Csak ez az egy fájl futott
+(MikroB: "Run only that test file directly, no fleet-test"), nincs teljes fleet-test ebben a
+körben. A valódi kanonikus develop-lock fájl a futás előtt és után is szabad (ellenőrizve
+`flock -n`-nel), semmilyen árva fd/folyamat nem maradt utána.
+
+Ki döntött: MikroB (diagnózis + a szűk javítási irány, msg 25668, "do NOT weaken the production
+check"); fullstack (gyökérok, implementáció, mérés).
+Hivatkozás: kártya e99c3dc1; MikroB msg 25667/25668; Gate-SHA 45c30ecb312180c6ddcbb6eda785e525e2234b6b
+(a landolás saját shája, változatlan); `src/__tests__/fleet-test-land-priority-verified.test.ts`.

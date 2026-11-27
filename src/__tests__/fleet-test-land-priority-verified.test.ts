@@ -56,10 +56,15 @@ function freshDir(): string {
   tmpDirs.push(d)
   return d
 }
+const tmpFiles: string[] = []
 afterEach(() => {
   while (tmpDirs.length) {
     const d = tmpDirs.pop()!
     rmSync(d, { recursive: true, force: true })
+  }
+  while (tmpFiles.length) {
+    const f = tmpFiles.pop()!
+    rmSync(f, { force: true })
   }
 })
 
@@ -128,6 +133,91 @@ function verifyUnderRealAncestorChain(opts: { lockFile: string; holdFlock: boole
   }).trim()
 }
 
+/** Launches `bash <targetPath> <args...>` DOUBLE-FORKED + in a new session (`( setsid ... & )`,
+ * the detaching subshell exits right after backgrounding it), so the kernel reparents it away
+ * from THIS test process's own ancestry -- measured on this platform: the orphan's new parent is
+ * the nearest subreaper (systemd --user here), never anything in the caller's own chain. Fix for
+ * round 3's real failure: this test file runs as `bash store/fleet-test.sh` itself, invoked BY a
+ * real `marveen-land.sh` (that is what landing a card means); without detaching, the ancestor
+ * walk under test does not stop at this test's own fake p1/p2 -- it keeps walking and can reach
+ * that REAL, genuinely land-holding outer process, which satisfies the production check's own
+ * criteria for real and returns 'land' for a scenario that should say 'normal'. Detaching the
+ * harness's own fake chain from whatever actually launched the test run is what makes the result
+ * independent of whether this file happens to be running nested inside a real land. The wrapper
+ * script, not this JS process, does the bounded poll-and-cat -- a single synchronous
+ * `execFileSync` call either way, no sleep-loop or setTimeout needed on the JS side. */
+function runDetached(targetPath: string, args: string[], env: Record<string, string>, pollTimeoutMs = 8000): string {
+  const dir = freshDir()
+  const outFile = join(dir, 'out')
+  const doneFile = join(dir, 'done')
+  const runnerPath = join(dir, 'runner.sh')
+  const wrapperPath = join(dir, 'wrapper.sh')
+  const deadlineS = Math.max(1, Math.ceil(pollTimeoutMs / 1000))
+  // The runner does the actual work and writes the DONE marker itself, as the LAST thing it
+  // does, after it (still detached) finishes -- polling for marker existence, not "$OUT" having
+  // any content, matters because fleet-test.sh can write intermediate lines (env_compat_get
+  // warnings etc.) to stdout well before its final land/normal answer; polling on non-empty size
+  // alone races ahead and `cat`s a truncated capture (measured: it DID, cutting output short).
+  writeFileSync(runnerPath, `#!/usr/bin/env bash\nset -uo pipefail\nbash "${targetPath}" "$@" >"${outFile}" 2>&1\n: > "${doneFile}"\n`)
+  writeFileSync(
+    wrapperPath,
+    `#!/usr/bin/env bash\nset -uo pipefail\n( setsid bash "${runnerPath}" "$@" </dev/null & )\ndeadline=$((SECONDS + ${deadlineS}))\nwhile [ ! -e "${doneFile}" ] && [ $SECONDS -lt $deadline ]; do sleep 0.02; done\ncat "${outFile}" 2>/dev/null\n`,
+  )
+  return execFileSync('bash', [wrapperPath, ...args], { encoding: 'utf-8', env: { ...process.env, ...env } }).trim()
+}
+
+/** The production ROOT constant, read live from SOURCE -- never typed as a literal in this file
+ * (see the "names no real install path" self-test below, which greps this file's own text for
+ * exactly that). Needed to build the REAL canonical develop-lock path for the hermeticity proof:
+ * the production call site hardcodes `${ROOT}/store/.marveen-land-develop.lock` (F-3/V4, pinned
+ * elsewhere in this file as a string match), so a fake land-ancestor that is supposed to satisfy
+ * that SAME production check for real has to hold its flock on that exact resolved path, not an
+ * arbitrary throwaway one. */
+function productionRootValue(): string {
+  const m = SOURCE.match(/^ROOT="([^"]+)"/m)
+  expect(m, 'could not find ROOT="..." in SOURCE -- script has changed shape').toBeTruthy()
+  return m![1]
+}
+
+/** Materializes a copy of fleet-test.sh with the F-1 vulnerability reintroduced (the
+ * env-override-reads-the-caller's-claim bug CYBERSEC NO-GO 39208 closed), same bash idiom as the
+ * existing F-2 CONTROL mutant (`"${VAR:-default}"`). Used to prove the hermeticity fix below is
+ * not vacuous: the fixed script must say 'normal' in both scenarios, and THIS mutant must still
+ * say 'land' in both -- never a coincidence of the fixed script simply never being asked.
+ * Written BESIDE the real script (dirname(SCRIPT), same dir as env-compat-lib.sh), not under a
+ * throwaway tmp dir: fleet-test.sh sources `env-compat-lib.sh` by a path relative to its own
+ * BASH_SOURCE before it ever reaches the --effective-priority arg check, so a copy anywhere else
+ * fails before the mutation under test is even exercised. Removed again in afterEach. */
+function materializeMutantScript(): string {
+  const mutantSource = SOURCE.replace(
+    'FLEET_TEST_LAND_LOCK_FILE="${ROOT}/store/.marveen-land-develop.lock"',
+    'FLEET_TEST_LAND_LOCK_FILE="${MARVEEN_LAND_DEVELOP_LOCK_FILE:-${ROOT}/store/.marveen-land-develop.lock}"',
+  )
+  expect(mutantSource, 'the F-1 production line has changed shape -- update this mutant').not.toBe(SOURCE)
+  const mutantPath = join(dirname(SCRIPT), `fleet-test-mutant-e99c3dc1-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.sh`)
+  tmpFiles.push(mutantPath)
+  writeFileSync(mutantPath, mutantSource)
+  return mutantPath
+}
+
+/** Builds the attacker's own chain (p1 self-flocks+self-impersonates, p2 closes its fd copy and
+ * runs `<scriptPath> --effective-priority` with the forged env override) against whichever
+ * script copy (real or mutant) is given, so the original F-1 test and the hermeticity proof
+ * below share one construction. Returns p1's path -- run it DETACHED (runDetached /
+ * runNestedUnderFakeLand), never directly, so an outer real-or-fake land ancestor elsewhere in
+ * the actual process tree cannot leak into the result. */
+function writeAttackerChain(scriptPath: string): string {
+  const dir = freshDir()
+  const p2Path = join(dir, 'p2.sh')
+  const p1Path = join(dir, 'p1.sh')
+  writeFileSync(
+    p2Path,
+    `#!/usr/bin/env bash\nset -uo pipefail\n{ exec {FD}>&-; } 2>/dev/null\nFLEET_TEST_PRIORITY=land MARVEEN_LAND_DEVELOP_LOCK_FILE="$LOCKFILE" bash "${scriptPath}" --effective-priority\n`,
+  )
+  writeFileSync(p1Path, `#!/usr/bin/env bash\nset -uo pipefail\nexec {FD}>>"$LOCKFILE"\nflock "$FD" || exit 9\nbash "${p2Path}"\n`)
+  return p1Path
+}
+
 describe('fleet-test.sh verifies a FLEET_TEST_PRIORITY=land claim before honouring it (card e99c3dc1)', () => {
   it('no ancestor at all (lock file does not even exist): falls back to normal (fail-closed default)', () => {
     const fnSrc = verifyFuncsSource()
@@ -169,19 +259,15 @@ describe('fleet-test.sh verifies a FLEET_TEST_PRIORITY=land claim before honouri
     // this attacker-controlled file is simply never consulted. Run through the REAL script
     // (--effective-priority), not the extracted function, so this is an end-to-end pin on the
     // actual call site CYBERSEC's probes hit -- not just the function the first round pinned.
+    // Run DETACHED (runDetached, not a direct child) -- this test file is itself `bash
+    // store/fleet-test.sh`'s own vitest suite, which during an actual land is invoked BY a real
+    // marveen-land.sh; undetached, the ancestor walk under test can keep going past this test's
+    // own fake p1/p2 and reach that real ancestor (see the hermeticity describe block below,
+    // which reproduces and fixes exactly that failure).
     const dir = freshDir()
     const attackerLock = join(dir, 'attacker-controlled.lock')
-    const p2Path = join(dir, 'p2.sh')
-    const p1Path = join(dir, 'p1.sh')
-    writeFileSync(
-      p2Path,
-      `#!/usr/bin/env bash\nset -uo pipefail\n{ exec {FD}>&-; } 2>/dev/null\nFLEET_TEST_PRIORITY=land MARVEEN_LAND_DEVELOP_LOCK_FILE="$LOCKFILE" bash "${SCRIPT}" --effective-priority\n`,
-    )
-    writeFileSync(p1Path, `#!/usr/bin/env bash\nset -uo pipefail\nexec {FD}>>"$LOCKFILE"\nflock "$FD" || exit 9\nbash "${p2Path}"\n`)
-    const out = execFileSync('bash', [p1Path, 'store/marveen-land.sh'], {
-      encoding: 'utf-8',
-      env: { ...process.env, LOCKFILE: attackerLock },
-    }).trim()
+    const p1Path = writeAttackerChain(SCRIPT)
+    const out = runDetached(p1Path, ['store/marveen-land.sh'], { LOCKFILE: attackerLock })
     expect(out).toBe('normal')
   })
 
@@ -236,6 +322,95 @@ fleet_test_pid_holds_lock_inode "$$" "$decoy_inode" && echo "decoy=yes" || echo 
   it('this file names no real install path anywhere (MikroB msg 25163 constraint)', () => {
     const text = readFileSync(join(ROOT, 'src', '__tests__', 'fleet-test-land-priority-verified.test.ts'), 'utf-8')
     expect(text).not.toMatch(/\/home\/neon\/marveen(?!-agent-worktrees)/)
+  })
+})
+
+describe('F-1 HERMETICITY (round 3, real land-run failure): detaching the probe survives a genuine land ancestor', () => {
+  /** Builds the "fake land" outer process: it holds a REAL flock on the REAL canonical develop
+   * lock (the path derived live from SOURCE's own ROOT, never typed in this file -- see
+   * productionRootValue) and carries 'store/marveen-land.sh' in its own argv, i.e. it satisfies
+   * the production check's (a) and (c) criteria exactly like a genuine marveen-land.sh would. It
+   * then runs the given target DETACHED (double-fork + setsid, same technique as runDetached) as
+   * its OWN immediate child -- so without detaching, this process is a real, qualifying ancestor
+   * sitting right above the attacker's chain; with detaching, the attacker's chain is orphaned
+   * away from it before the production check ever walks.
+   *
+   * The flock on the real canonical path is NON-BLOCKING (`flock -n`): this is the one real,
+   * shared, machine-wide file every actual land also locks, so a genuinely concurrent real land
+   * (however unlikely mid-test) must never be made to wait on this test, nor vice versa. If the
+   * lock is not free right now, the helper returns the sentinel string 'INCONCLUSIVE-CONTENDED'
+   * instead of hanging or corrupting anything -- the caller treats that as "could not run this
+   * round, not a failure" rather than asserting on it.
+   *
+   * CLOSES ITS OWN COPY of the canon fd in the outer wrapper BEFORE forking the detached chain
+   * (same discipline as marveen-land.sh's run_fg_killable, card 81c6fbb5 Q3) -- measured live:
+   * without this, the fake-land process's open+flocked fd is inherited across every fork down to
+   * the attacker's own p1 (nobody in the chain marks it close-on-exec or closes it), so
+   * fleet_test_pid_holds_lock_inode sees a "held" lock on p1 merely because it kept a COPY of the
+   * fd, regardless of detaching p1's ancestry -- inheritance and ancestry are not the same thing,
+   * and detaching only fixes the latter. p1 ALSO already carries 'store/marveen-land.sh' in its
+   * own argv (for the original F-1 test's cmdline-match requirement), so that inherited-fd
+   * artifact alone was enough to satisfy the production check for real, independent of detaching.
+   * Closing the outer wrapper's copy before it forks anything removes the artifact at the source,
+   * exactly like production does. */
+  function runNestedUnderFakeLand(targetPath: string, args: string[], env: Record<string, string>): string {
+    const canon = join(productionRootValue(), 'store', '.marveen-land-develop.lock')
+    const dir = freshDir()
+    const outFile = join(dir, 'nested-out')
+    const doneFile = join(dir, 'nested-done')
+    const runnerPath = join(dir, 'runner.sh')
+    const outerWrapperPath = join(dir, 'detach.sh')
+    // Same fix as runDetached: poll for a DONE marker the runner writes as its own last step,
+    // never "$OUT has any content" -- fleet-test.sh can write intermediate lines before its
+    // final answer, and polling on mere non-empty size races ahead and truncates the capture.
+    writeFileSync(runnerPath, `#!/usr/bin/env bash\nset -uo pipefail\nbash "${targetPath}" "$@" >"${outFile}" 2>&1\n: > "${doneFile}"\n`)
+    writeFileSync(
+      outerWrapperPath,
+      `#!/usr/bin/env bash\nset -uo pipefail\neval "exec \${CANON_LOCK_FD}>&-" 2>/dev/null || true\n( setsid bash "${runnerPath}" "$@" </dev/null & )\ndeadline=$((SECONDS + 8))\nwhile [ ! -e "${doneFile}" ] && [ $SECONDS -lt $deadline ]; do sleep 0.02; done\ncat "${outFile}" 2>/dev/null\n`,
+    )
+    const fakeLandPath = join(dir, 'fake-land.sh')
+    writeFileSync(
+      fakeLandPath,
+      `#!/usr/bin/env bash\nset -uo pipefail\nexec {FD}>>"$CANON"\nflock -n "$FD" || { echo INCONCLUSIVE-CONTENDED; exit 0; }\nCANON_LOCK_FD="$FD" bash "$OUTER_WRAPPER" "$@"\n`,
+    )
+    return execFileSync('bash', [fakeLandPath, 'store/marveen-land.sh', ...args], {
+      encoding: 'utf-8',
+      env: { ...process.env, ...env, CANON: canon, OUTER_WRAPPER: outerWrapperPath },
+    }).trim()
+  }
+
+  it('fixed script: the attacker probe still reports normal nested under a real land-holding ancestor', () => {
+    const dir = freshDir()
+    const attackerLock = join(dir, 'attacker-controlled.lock')
+    const p1Path = writeAttackerChain(SCRIPT)
+    const out = runNestedUnderFakeLand(p1Path, ['store/marveen-land.sh'], { LOCKFILE: attackerLock })
+    if (out === 'INCONCLUSIVE-CONTENDED') {
+      console.warn('F-1 hermeticity (nested): real canonical develop lock was held by someone else -- skipping this round, not a failure')
+      return
+    }
+    expect(out).toBe('normal')
+  })
+
+  it('CONTROL (non-vacuity): the F-1 mutant (env-override bypass reinstated) still says land, nested the same way', () => {
+    const mutantScript = materializeMutantScript()
+    const dir = freshDir()
+    const attackerLock = join(dir, 'attacker-controlled.lock')
+    const p1Path = writeAttackerChain(mutantScript)
+    const out = runNestedUnderFakeLand(p1Path, ['store/marveen-land.sh'], { LOCKFILE: attackerLock })
+    if (out === 'INCONCLUSIVE-CONTENDED') {
+      console.warn('F-1 hermeticity (nested, mutant): real canonical develop lock was held by someone else -- skipping this round, not a failure')
+      return
+    }
+    expect(out).toBe('land')
+  })
+
+  it('CONTROL (non-vacuity): the same F-1 mutant still says land when run detached and standalone (not nested)', () => {
+    const mutantScript = materializeMutantScript()
+    const dir = freshDir()
+    const attackerLock = join(dir, 'attacker-controlled.lock')
+    const p1Path = writeAttackerChain(mutantScript)
+    const out = runDetached(p1Path, ['store/marveen-land.sh'], { LOCKFILE: attackerLock })
+    expect(out).toBe('land')
   })
 })
 
