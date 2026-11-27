@@ -159,7 +159,17 @@ else
     # discard is exactly the failure both gates measured (176 live worktrees, 0 with the old
     # marker, 7 dirty -- that measurement predates this correction, but the same shape of mistake
     # applies to a genuinely-interrupted tree too). Refuse loudly instead of removing.
-    if [ -n "$(git -C "$TREE" status --porcelain 2>/dev/null)" ]; then
+    # F-2 fix (CYBERSEC NO-GO 39450 on 26523bf9b, LOW): the previous shape read the git status
+    # OUTPUT only -- a FAILED `git status --porcelain` (corrupt index, broken worktree metadata)
+    # prints nothing on stdout, same as a genuinely clean tree, and `[ -n "" ]` is false either
+    # way. Captured output and exit status separately: a nonzero rc is refused on its own, never
+    # silently folded into "clean -> safe to auto-remove".
+    status_rc=0
+    status_out="$(git -C "$TREE" status --porcelain 2>/dev/null)" || status_rc=$?
+    if [ "$status_rc" -ne 0 ]; then
+      die 3 "worktree at $TREE has an interrupted on_create hook AND \`git status\` itself failed (rc=$status_rc -- corrupt index or broken worktree metadata); refusing to treat an unreadable status as clean, resolve by hand, then re-run"
+    fi
+    if [ -n "$status_out" ]; then
       die 3 "worktree at $TREE has an interrupted on_create hook AND uncommitted/untracked changes -- refusing to auto-remove; resolve by hand (commit/stash the work, or confirm nothing valuable remains and remove it yourself), then re-run"
     fi
     echo "worktree at $TREE exists but never completed its on_create hook (interrupted earlier run) -- recovering"

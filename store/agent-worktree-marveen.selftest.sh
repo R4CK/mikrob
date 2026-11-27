@@ -392,6 +392,26 @@ else
 fi
 
 n=$((n + 1))
+# F-2 (CYBERSEC NO-GO 39450 on 26523bf9b, LOW): when `git status` itself FAILS (corrupt index),
+# the previous shape read the resulting empty stdout as "clean" and force-removed the tree anyway.
+# Corrupt the worktree's own index file to force a nonzero git-status rc, keep the sentinel present
+# (genuinely interrupted), and confirm the tree is refused (exit 3), never force-removed.
+git -C "$MAIN" worktree add -q -b card/c0221d0003 "$ROOT/card/c0221d0003" develop >/dev/null
+_worktree_on_create_begin "$ROOT/card/c0221d0003"
+echo "precious, do not delete" > "$ROOT/card/c0221d0003/precious.txt"
+corrupt_index="$(git -C "$ROOT/card/c0221d0003" rev-parse --git-dir)/index"
+printf 'not an index file' > "$corrupt_index"
+corrupt_out="$(run backend --card c0221d0003 2>&1)"
+corrupt_rc=$?
+if [ "$corrupt_rc" = 3 ] \
+  && [ -e "$ROOT/card/c0221d0003/.git" ] \
+  && [ -f "$ROOT/card/c0221d0003/precious.txt" ]; then
+  echo "  ok   a corrupt-index (git status itself failing) interrupted tree is refused (exit 3), not read as clean"
+else
+  echo "  FAIL expected refusal + surviving tree -> rc=$corrupt_rc out=$corrupt_out exists=$([ -e "$ROOT/card/c0221d0003/.git" ] && echo yes || echo no)"; fail=1
+fi
+
+n=$((n + 1))
 # F-3 (card c16cd98e): two concurrent callers for the SAME new card must not race the
 # create-or-reuse decision. A slow hook (sleeps briefly) widens the window a pre-fix TOCTOU would
 # need; both calls are launched truly concurrently (backgrounded, then waited on).

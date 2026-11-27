@@ -281,6 +281,96 @@ else
   echo "  FAIL tree should have been removed by rollback"; fail=1
 fi
 
+n=$((n + 1))
+# F-1 (CYBERSEC NO-GO 39450 on 26523bf9b, MEDIUM): the sentinel's write and its timing were
+# unpinned -- mutant M4 (the _worktree_on_create_begin call removed) and mutant M5 (the sentinel
+# cleared BEFORE the hook runs instead of after) both survived the whole suite, because every
+# existing sentinel case either fakes it by hand (_worktree_on_create_begin, TREE12/TREE12B) or
+# never looks at it DURING a real hook run. Use a real hook that checks, while it is actually
+# running, whether the sentinel file exists in the tree's own git-dir, and reports what it saw --
+# this observes the write-before-hook / clear-after-hook contract instead of assuming it.
+SENTINEL_OBS="$WORK/sentinel-observed.log"
+export SENTINEL_OBS
+cat > "$MAIN/sentinel-check-hook.sh" <<'EOF'
+#!/usr/bin/env bash
+tree="$1"
+gitdir="$(git -C "$tree" rev-parse --git-dir)"
+if [ -f "$gitdir/worktree-on-create.in-progress" ]; then
+  echo present > "$SENTINEL_OBS"
+else
+  echo absent > "$SENTINEL_OBS"
+fi
+exit 0
+EOF
+chmod +x "$MAIN/sentinel-check-hook.sh"
+write_config "sentinel-check-hook.sh"
+TREE15="$WORK/t15"
+make_worktree "$TREE15" card/t15
+project_worktree_on_create marveen "$MAIN" "$TREE15" 0 card/t15 >/dev/null
+SENTINEL15="$(git -C "$TREE15" rev-parse --git-dir 2>/dev/null)/worktree-on-create.in-progress"
+if [ "$(cat "$SENTINEL_OBS" 2>/dev/null)" = "present" ] && [ ! -f "$SENTINEL15" ]; then
+  echo "  ok   the in-progress sentinel exists while a real hook runs, and is gone after a successful return"
+else
+  echo "  FAIL expected sentinel present during the hook, absent after -- observed: $(cat "$SENTINEL_OBS" 2>/dev/null || echo '<none>'), post-sentinel exists: $([ -f "$SENTINEL15" ] && echo yes || echo no)"; fail=1
+fi
+unset SENTINEL_OBS
+
+n=$((n + 1))
+# F-1, other half: a hook that kills its own parent mid-run (simulating a crashed caller process,
+# CYBERSEC's probe p5 shape) must leave the sentinel BEHIND, not cleared -- so the next check
+# (worktree_on_create_is_complete, the function agent-worktree-marveen.sh's recovery/refusal logic
+# relies on) correctly reports "not complete" instead of silently reading the kill as success. Run
+# the call in a backgrounded subshell so the kill only takes down that subshell, not this script.
+cat > "$MAIN/kill-parent-hook.sh" <<'EOF'
+#!/usr/bin/env bash
+kill -9 "$PPID"
+sleep 2
+EOF
+chmod +x "$MAIN/kill-parent-hook.sh"
+write_config "kill-parent-hook.sh"
+TREE16="$WORK/t16"
+make_worktree "$TREE16" card/t16
+( project_worktree_on_create marveen "$MAIN" "$TREE16" 0 card/t16 ) >/dev/null 2>&1 &
+BGPID16=$!
+wait "$BGPID16" 2>/dev/null
+if [ -e "$TREE16" ] && ! worktree_on_create_is_complete "$TREE16"; then
+  echo "  ok   a hook that kills its own parent leaves the tree with its sentinel still present (not complete)"
+else
+  echo "  FAIL expected tree to survive with sentinel present after a crashed hook -> exists=$([ -e "$TREE16" ] && echo yes || echo no) complete=$(worktree_on_create_is_complete "$TREE16" 2>/dev/null && echo yes || echo no)"; fail=1
+fi
+
+n=$((n + 1))
+# F-3 (CYBERSEC NO-GO 39450 on 26523bf9b, LOW): fd 9 -- the per-branch creation lock the real
+# caller (agent-worktree-marveen.sh) holds open across the whole create call -- must be closed for
+# the hook child (CYBERED INFO on be3b70680, claimed fixed in REVIEW 39448 but never pinned: mutant
+# M8, removing the `9>&-` from the hook invocation, survived the whole suite because no case here
+# ever had fd 9 open before calling project_worktree_on_create). Open it the same way the real
+# caller does, then have the hook itself report whether it inherited it.
+FD9_OBS="$WORK/fd9-observed.log"
+export FD9_OBS
+cat > "$MAIN/fd9-check-hook.sh" <<'EOF'
+#!/usr/bin/env bash
+if [ -e "/proc/$$/fd/9" ]; then
+  echo open > "$FD9_OBS"
+else
+  echo closed > "$FD9_OBS"
+fi
+exit 0
+EOF
+chmod +x "$MAIN/fd9-check-hook.sh"
+write_config "fd9-check-hook.sh"
+TREE17="$WORK/t17"
+make_worktree "$TREE17" card/t17
+exec 9>"$WORK/fake-create-lock"
+project_worktree_on_create marveen "$MAIN" "$TREE17" 0 card/t17 >/dev/null
+exec 9>&-
+if [ "$(cat "$FD9_OBS" 2>/dev/null)" = "closed" ]; then
+  echo "  ok   fd 9 (the caller's per-branch creation lock) is closed inside the hook child"
+else
+  echo "  FAIL expected fd 9 closed inside the hook -> observed: $(cat "$FD9_OBS" 2>/dev/null || echo '<none>')"; fail=1
+fi
+unset FD9_OBS
+
 rm -rf "$WORK"
 
 echo ""
