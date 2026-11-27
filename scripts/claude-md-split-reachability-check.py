@@ -318,20 +318,30 @@ def classify_missing_line(line: str, corpus_lines: list[str]) -> tuple[str, str 
     loose upper bound stayed above a near-zero floor for most of the corpus, so almost nothing
     got pruned until a genuine reword was found. Seeding the floor at REWORD_SIMILARITY_THRESHOLD
     itself (the only value classification cares about) prunes against that fixed cutoff from the
-    start -- the same technique difflib.get_close_matches uses internally -- then switches to
-    tracking the running best only once a real reword (>= threshold) is found, to still pick the
-    single most-similar line for the printed message. This can only ever skip a candidate whose
-    upper bound proves its real ratio cannot reach the floor, so the reword/removed classification
-    and the reported best_line/ratio once above threshold are identical to brute force (pinned by
-    the selftest's classify_missing_line equivalence case, corpus with the true best match placed
-    AFTER a lower-ratio near-miss)."""
+    start -- the same technique difflib.get_close_matches uses internally.
+
+    Two bugs were found and fixed in this pruning (both pinned by selftest equivalence cases now):
+    (1) QA FAIL 39447: the floor comparison was `<=`, but quick_ratio()/real_quick_ratio() are
+    upper bounds that can EQUAL the true ratio exactly, not just bound it above -- a candidate
+    whose true ratio sat exactly on REWORD_SIMILARITY_THRESHOLD got silently pruned into "removed"
+    instead of "reword". Fixed to strict `<`: this can only ever skip a candidate whose upper bound
+    PROVES its real ratio falls strictly below the floor.
+    (2) Found while verifying fix (1) with a fuzz test: an earlier revision reused one
+    SequenceMatcher across the whole corpus_lines loop (sm.set_seq2(line) once, sm.set_seq1(candidate)
+    per candidate, to avoid rebuilding the autojunk index) -- but that assigns a=candidate, b=line,
+    the OPPOSITE operand order from the brute-force reference's SequenceMatcher(None, line, candidate)
+    (a=line, b=candidate). difflib's ratio() is NOT guaranteed symmetric under operand swap for
+    strings with repeated/ambiguous substrings (find_longest_match's tie-breaking depends on which
+    operand is a vs b) -- a ~1-2% real divergence rate on realistic text, confirmed far higher on a
+    repeated-alphabet fuzz. Fixed by matching the reference's exact operand order every iteration
+    (a=line, b=candidate, same as `SequenceMatcher(None, line, candidate)` would give) and relying
+    only on quick_ratio()/real_quick_ratio() as a pre-filter in front of the one true ratio() call --
+    never on reusing a matcher instance across a changing operand position."""
     best_line, best_ratio = None, 0.0
-    sm = difflib.SequenceMatcher(None, autojunk=True)
-    sm.set_seq2(line)
     for candidate in corpus_lines:
-        sm.set_seq1(candidate)
         floor = best_ratio if best_ratio >= REWORD_SIMILARITY_THRESHOLD else REWORD_SIMILARITY_THRESHOLD
-        if sm.real_quick_ratio() <= floor or sm.quick_ratio() <= floor:
+        sm = difflib.SequenceMatcher(None, line, candidate)
+        if sm.real_quick_ratio() < floor or sm.quick_ratio() < floor:
             continue
         ratio = sm.ratio()
         if ratio > best_ratio:

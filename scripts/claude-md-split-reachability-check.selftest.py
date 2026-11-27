@@ -11,6 +11,7 @@ Exit: 0 = all pass, 1 = a failure.
 """
 import difflib
 import importlib.util
+import random
 import re
 import shutil
 import subprocess
@@ -583,6 +584,62 @@ else:
     bad(
         "classify_missing_line equivalence: optimized diverged from naive brute force",
         f"naive={_naive_line!r} ({_naive_ratio:.3f}) vs optimized={_opt_line!r} ({_opt_ratio:.3f})",
+    )
+
+
+def _naive_classify_full(line: str, corpus_lines: list[str]) -> tuple[str, str | None, float]:
+    best_line, best_ratio = _naive_classify(line, corpus_lines)
+    if best_ratio >= _checker_mod.REWORD_SIMILARITY_THRESHOLD:
+        return "reword", best_line, best_ratio
+    return "removed", None, best_ratio
+
+
+# --- boundary fix (QA FAIL 39447, card de0bd561): the prune used `<=` against the floor, but
+# quick_ratio()/real_quick_ratio() are upper bounds that can EQUAL the true ratio exactly, not
+# just bound it above -- so a candidate whose true ratio sits exactly on REWORD_SIMILARITY_THRESHOLD
+# got silently pruned into "removed" instead of "reword". QA's two reproductions, pinned verbatim.
+_BOUNDARY_CASES = [
+    ("ababa", ["xxxxx", "abbbb"]),
+    ("ababab", ["yyyyyy", "ababaa"]),
+]
+for _b_line, _b_corpus in _BOUNDARY_CASES:
+    _b_naive_kind, _b_naive_line, _b_naive_ratio = _naive_classify_full(_b_line, _b_corpus)
+    _b_opt_kind, _b_opt_line, _b_opt_ratio = _checker_mod.classify_missing_line(_b_line, _b_corpus)
+    if (_b_opt_kind, _b_opt_line) == (_b_naive_kind, _b_naive_line) and abs(_b_opt_ratio - _b_naive_ratio) < 1e-9:
+        ok(f"classify_missing_line boundary case {_b_line!r}: matches brute force ({_b_naive_kind}, ratio={_b_naive_ratio:.3f})")
+    else:
+        bad(
+            f"classify_missing_line boundary case {_b_line!r}: diverged from brute force",
+            f"naive=({_b_naive_kind!r}, {_b_naive_line!r}, {_b_naive_ratio:.3f}) "
+            f"vs optimized=({_b_opt_kind!r}, {_b_opt_line!r}, {_b_opt_ratio:.3f})",
+        )
+
+# Seeded tie-biased fuzz (QA measured ~13% mismatch under the old `<=`): short alphabet strings
+# are deliberately likely to produce exact-tie ratios, to stress the floor boundary far more than
+# real CLAUDE.md prose would. Fixed seed, few thousand trials, fast (<1s) -- this is a regression
+# pin for the `<=` -> `<` fix, not a performance benchmark.
+_fuzz_rng = random.Random(20261127)
+_fuzz_mismatches = 0
+_FUZZ_TRIALS = 3000
+for _ in range(_FUZZ_TRIALS):
+    _alphabet = "ab"
+    _line = "".join(_fuzz_rng.choice(_alphabet) for _ in range(_fuzz_rng.randint(3, 6)))
+    _corpus = ["".join(_fuzz_rng.choice(_alphabet) for _ in range(_fuzz_rng.randint(3, 6))) for _ in range(3)]
+    _f_naive = _naive_classify_full(_line, _corpus)
+    _f_opt = _checker_mod.classify_missing_line(_line, _corpus)
+    # kind must always match; in the "reword" branch the line/ratio must match exactly (callers
+    # read them); in "removed" the ratio is documented as only < threshold, not the brute-force
+    # maximum, so it is deliberately NOT compared here (see classify_missing_line's docstring).
+    if _f_opt[0] != _f_naive[0]:
+        _fuzz_mismatches += 1
+    elif _f_opt[0] == "reword" and (_f_opt[1] != _f_naive[1] or abs(_f_opt[2] - _f_naive[2]) >= 1e-9):
+        _fuzz_mismatches += 1
+if _fuzz_mismatches == 0:
+    ok(f"classify_missing_line tie-biased fuzz: 0/{_FUZZ_TRIALS} mismatches vs brute force (seed 20261127)")
+else:
+    bad(
+        "classify_missing_line tie-biased fuzz: optimized diverged from brute force",
+        f"{_fuzz_mismatches}/{_FUZZ_TRIALS} trials mismatched (seed 20261127)",
     )
 
 print()
