@@ -34274,3 +34274,47 @@ Futásidő: 28,6s (az előző, hibás gyors-út 18,6s-áról nőtt, mert a `Sequ
 Ki döntött: QA (lelet 39447), backend (javítás + a második hiba felderítése).
 Hivatkozás: kártya de0bd561; Gate-SHA (a következő commit, lásd REVIEW);
 `scripts/claude-md-split-reachability-check.py`, `scripts/claude-md-split-reachability-check.selftest.py`.
+
+## 2026-11-27 18:05 -- Kártya 9ed32347: unlazy Stop hook -- pinnelt hash-ellenőrző wrapper a detektív-only kontroll helyett
+
+MIT: WhiteHat F2 MEDIUM lelete (e060a794, 2026-10-25): az unlazy Stop hook 15 flotta-session
+settings.json-jában (backend, backend2, cybered, cybersec, fron-ted, fron-teddy, fullstack,
+jogasz, marketing, penzugy, qa, qa2, teszter, videooo, ~/.claude/settings.json) közvetlenül a
+`~/.claude/skills/unlazy/scripts/stop-hook.mjs`-t futtatta -- ez a könyvtár MINDEN ügynök (azonos
+uid) által írható, tehát egy jogosulatlan módosítás ott minden session végén kódfutássá válna, és
+csak egy periodikus, utólagos integritás-ellenőrzés (vendored-skill-integrity.py) venné észre,
+nem előzné meg. Fix: `store/unlazy-stop-hook-verified.sh`, egy fail-closed wrapper, amely a
+futtatás ELŐTT sha256-ellenőrzi a két végrehajtás-kritikus fájlt (`scripts/stop-hook.mjs` +
+`scripts/lib/gates.mjs`, amit az előbbi importál) a SAJÁT magában (nem egy külön store/*.json
+manifestben -- a store/ alap szerint gitignorolt, csak *.sh/*.py kivétel, egy külön .json
+manifest sosem kerülne verziókövetésbe, ez önmagában megsemmisítette volna a pin célját) rögzített
+hash ellen. Egyezésnél transzparensen exec-eli a valódi node hívást (bizonyítva: byte-azonos
+kimenet egy direkt node-híváshoz képest egyezés esetén); eltérésnél, hiányzó fájlnál vagy hiányzó
+sha256sum-nál a valódi unlazy script UGYANAZT a "block" JSON-protokollt adja vissza, amit maga az
+unlazy script használ -- hangos, látható elutasítás, nem csendes futás és nem csendes eltűnés.
+Mind az 15 settings.json át lett írva a közvetlen node-hívásról a wrapperre (azonos, mechanikus
+csere, visszaállítható -- biztonsági mentés a scratchpadben). Élő mutáns-teszt: a stop-hook.mjs
+módosítása, a lib/gates.mjs módosítása, egy hiányzó pinnelt fájl, és a hiányzó sha256sum mind
+pirosra fordítja a megfelelő selftest-esetet, majd visszaállítás után zöld (7/7, végül 6 eset a
+manifest-fájl eltávolítása után). Javítás a 27db86f4 téves előfeltevésére (hogy a Stop hook
+"nincs bekötve" backend/backend2-nél) is: komment 39477 jelzi, ez sosem volt igaz, a hook mind a
+15 session-ben futott a teljes idő alatt.
+
+MIÉRT: ma nincs OS-szintű, ügynökönkénti felhasználó-szétválasztás (az a 85a668aa terve), ezért a
+tényleges, ELÉRHETŐ megelőzés nem egy nem-írható útvonal, hanem egy futtatás előtti
+hash-ellenőrzés, ami a git-követett, review-n átmenő forráskódban él, nem az ügynök-írható
+skills-könyvtárban.
+
+MI MARADT: F-4 jellegű dormáns rés (CYBERSEC terminológiájával): a `git worktree add` és a
+sentinel-írás közti ablakhoz hasonlóan, itt a wrapper SAJÁT fájljának (store/
+unlazy-stop-hook-verified.sh) integritása a settings.json-on és a marveen repo git-fegyelmén
+nyugszik, nem egy újabb hash-rétegen -- ez tudatosan elfogadott kör, mert a wrapper maga
+git-követett és landoláson/gate-en megy át, míg a korábbi közvetlen hívás útja nem. A re-pin
+(unlazy re-vendorolásakor) deliberált lépés, a script fejkommentje írja le.
+
+Ki döntött: fullstack (DevO), self-advance (11. szabály) pickup; a gate (QA + RedHat) a kártya
+leírása szerint még nincs lefuttatva.
+Hivatkozás: kártya 9ed32347, WhiteHat F2 (e060a794 komment 24537); kártya 27db86f4 (komment
+39477); `store/unlazy-stop-hook-verified.sh`, `store/unlazy-stop-hook-verified.selftest.sh`,
+mind a 15 settings.json (agents/*/.claude/settings.json + ~/.claude/settings.json, utóbbi a
+marveen repón kívül él, nem git-követett).
