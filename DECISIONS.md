@@ -34184,3 +34184,28 @@ hagyása). CYBERSEC (39190, a 4 lelet forrása). backend3 (implementáció, tesz
 Hivatkozás: kártya cd872e72; CYBERSEC GO 39190; CYBERED GO 39176 (F-1/F-3 eredeti
 felvetője); QA PASS 39182; `scripts/install-wsl-watchdog.sh`,
 `scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 20:15 -- Kártya 36a5e39e: a telepítősablonokból kikerülnek a régi sablonszakaszok, a backend3 ellentmondása megszűnik, három szerep skilljei bekerülnek a skill-térképbe
+
+MIT: (1) A `seed-fleet-agents/{backend3,cybered,qa2,fron-teddy,teszter,videooo}/CLAUDE.md` fájlokból
+kikerült ugyanaz a 12 régi sablonszakasz és a "Flotta-szabályok" 3., 5., 6. pontja, amit a b89b859b
+kártya a telepített promptokból már törölt (QA PASS 39284); a helyükre kétsoros "Ütemezés" megjegyzés
+került. A jogasz sablonból a "Mérnöki alap (dev szerepeknél)" szakasz ment ki. (2) A backend3
+sablonból kikerült a "Nem fejlesztesz a mikrob kódjába" sor, a 4. flotta-szabály új szövege: a
+marveen repót csak saját worktree-ben szerkeszti és `marveen-land.sh`-val landol, az élő klónba nem
+ír. (3) A `store/skill-role-map.json` jogasz, marketing és teszter szerepe megkapta azt a 19 skillt,
+amelyet a promptjuk megnevez, de a térkép nem adott oda (2 + 12 + 5).
+
+MIÉRT: (1) Friss telepítésnél a sablon visszahozta volna a törölt szakaszokat (kb. 6 000 karakter
+ügynökönként); ezek a gyökér CLAUDE.md-t ismétlik, az ütemezés-recept pedig olyat tanít, amit a
+self-pace kapu blokkol. (2) MikroB döntése a kártyán: a worktree-fegyelem (Peti 2026-08-17, kártya
+dc185b52) szerint a backend3 marveen-landolásai a szándékolt munkamenet (30 nap alatt 56 landolás),
+a tiltó sor ennek mondott ellent. (3) A megnevezett, de nem hívható skill "Unknown skill" hibát ad;
+mind a 19 megvan a globális skill-mappában, csak a térképből hiányzott.
+
+MI MARADT: a korlátozó flotta-szabályok (1., 2., 4., 7.) eredeti számmal a helyükön vannak. Az
+`agent-scaffold.ts` `generateClaudeMd()` függvénye új ügynöknél továbbra is legenerálja ugyanezeket
+a szakaszokat: az alkalmazáskód, külön jelzés ment róla MikroB-nak.
+
+Ki döntött: MikroB (kártya 36a5e39e szövege), végrehajtotta Prompty.
+Hivatkozás: kártya 36a5e39e; előzmény b89b859b (QA PASS 39284), 3e59d70e.
