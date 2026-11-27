@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, mkdirSync, symlinkSync, existsSync, lstatSync, copyFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, mkdirSync, symlinkSync, existsSync, copyFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 // EXCLUSION924 (card fd0b2180, Cybersec F1 on 728179d1): vendor-skill.sh had no memory of a
@@ -112,12 +112,18 @@ describe('vendor-skill.sh respects vendored-skill-sanctioned.json "missing:" exc
     expect(readdirSync(dest).sort()).toEqual(['CLOUD.md', 'SKILL.md', 'VENDORED.md'])
   })
 
-  it('refuses a sanctioned-exclusion entry whose resolved path escapes dest through a symlink', () => {
-    // SYMLINKESC924 (card f3a6f30a, RedHat): upstream ships a symlinked directory. Pre-fix,
-    // `cp -R` copied it AS a symlink into dest, and a sanctioned "missing:<path through it>"
-    // rm -rf would then delete the file OUTSIDE dest that the symlink pointed at. The -L copy
-    // fix dereferences the symlink into a real directory, so the deletion only ever reaches the
-    // copy inside dest -- the external original must survive untouched.
+  it('refuses to vendor a symlinked directory that escapes $src, before touching dest', () => {
+    // SYMLINKESC924 (card f3a6f30a, RedHat): upstream ships a symlinked directory. That fix made
+    // `cp -RL` dereference it into a real directory on copy, treating "safe because it's a copy,
+    // not a live symlink, once inside dest" as the containment guarantee -- which still let
+    // `cp -RL` read (dereference) whatever the symlink pointed at, no matter where that was.
+    // SYMLINKVALIDATE924 (card af3cd669, WhiteHat, canary-measured) supersedes that model: ANY
+    // upstream symlink resolving outside $src is now refused up front, before $dest is touched at
+    // all, because the earlier "dereference is safe" reasoning never actually stopped the local
+    // file's CONTENT from being pulled into the vendored skill. The REALPATH924 sanctioned-
+    // exclusion guard this test used to reach via a surviving upstream symlink is still reachable,
+    // just only via a DEST-side leftover at an exempt name -- see
+    // vendor-skill-symlink-safety.test.ts's own REALPATH924 test for that path.
     const outside = mkdtemp('vendor-skill-outside-')
     const sentinelPath = join(outside, 'sentinel.txt')
     writeFileSync(sentinelPath, 'do not delete me\n')
@@ -133,18 +139,9 @@ describe('vendor-skill.sh respects vendored-skill-sanctioned.json "missing:" exc
     const dest = join(skillsDir, 'foo')
 
     writeFileSync(sanctionedPath, JSON.stringify({ sanctioned: {} }))
-    let res = runVendor(upstream, skillsDir, sanctionedPath)
-    expect(res.status, res.stderr).toBe(0)
-    // Dereferenced by -L: a real directory holding a copy of sentinel.txt, not a symlink.
-    expect(lstatSync(join(dest, 'linked', 'target')).isSymbolicLink()).toBe(false)
-    expect(existsSync(join(dest, 'linked', 'target', 'sentinel.txt'))).toBe(true)
-
-    writeFileSync(sanctionedPath, JSON.stringify({ sanctioned: { [dest]: ['missing:linked/target/sentinel.txt'] } }))
-    res = runVendor(upstream, skillsDir, sanctionedPath)
-    expect(res.status, res.stderr).toBe(0)
-    // The copy inside dest is gone (the exclusion did apply, just to the copy)...
-    expect(existsSync(join(dest, 'linked', 'target', 'sentinel.txt'))).toBe(false)
-    // ...but the real file outside dest was never touched.
+    const res = runVendor(upstream, skillsDir, sanctionedPath)
+    expect(res.status).not.toBe(0)
+    expect(existsSync(dest)).toBe(false)
     expect(existsSync(sentinelPath)).toBe(true)
     expect(readFileSync(sentinelPath, 'utf-8')).toBe('do not delete me\n')
   })
@@ -160,13 +157,14 @@ describe('vendor-skill.sh respects vendored-skill-sanctioned.json "missing:" exc
     expect(res.stderr).toContain('unreadable/corrupt')
   })
 
-  it('a file upstream ships named VENDORED.md is never written through as a symlink', () => {
-    // WRITETHRU924 (card f3a6f30a, RedHat): upstream coincidentally shipping a file literally
-    // named VENDORED.md that is a symlink would, pre-fix, make this script's own
-    // `cat > dest/VENDORED.md` provenance write follow the symlink and overwrite whatever it
-    // points to. The -L copy dereferences it into a plain file; this proves the final write
-    // lands on a fresh file with OUR provenance content, not upstream's, and the symlink's
-    // original target is untouched.
+  it('refuses to vendor when upstream ships VENDORED.md itself as an escaping symlink', () => {
+    // WRITETHRU924 (card f3a6f30a, RedHat): this used to prove the `cat > dest/VENDORED.md`
+    // provenance write dereferenced upstream's own VENDORED.md symlink into a plain file instead
+    // of following it. SYMLINKVALIDATE924 (card af3cd669, WhiteHat, canary-measured) now refuses
+    // ANY upstream symlink escaping $src before $dest is touched, including one at this exact
+    // name -- the WRITETHRU924 guard itself is still reachable, just only via a DEST-side leftover
+    // symlink surviving a re-vendor; see vendor-skill-symlink-safety.test.ts's own WRITETHRU924
+    // test for that path.
     const outside = mkdtemp('vendor-skill-outside-')
     const sentinelPath = join(outside, 'sentinel.txt')
     writeFileSync(sentinelPath, 'untouched\n')
@@ -182,9 +180,8 @@ describe('vendor-skill.sh respects vendored-skill-sanctioned.json "missing:" exc
     writeFileSync(sanctionedPath, JSON.stringify({ sanctioned: {} }))
 
     const res = runVendor(upstream, skillsDir, sanctionedPath)
-    expect(res.status, res.stderr).toBe(0)
-    expect(lstatSync(join(dest, 'VENDORED.md')).isSymbolicLink()).toBe(false)
-    expect(readFileSync(join(dest, 'VENDORED.md'), 'utf-8')).toContain('VENDORED -- do not edit here')
+    expect(res.status).not.toBe(0)
+    expect(existsSync(dest)).toBe(false)
     expect(readFileSync(sentinelPath, 'utf-8')).toBe('untouched\n')
   })
 
