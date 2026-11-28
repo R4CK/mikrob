@@ -34983,3 +34983,19 @@ every time.
 Ki döntött: backend2 (investigation, fix, mutation proof); MikroB (verification protocol:
 hold the real lock for the duration, max 5 runs). Hivatkozás: kártya 18cd7193; 7f3cbe92;
 2f282a31; `store/mopsion-suite-run.selftest.sh`.
+
+## 2026-11-26 -- dabc1058 -- Vendored-skill sanctioned baseline: 8 known deltas re-recorded
+(kártya dabc1058, Peti 14791, 2026-11-26).** A 15:12-es cybersec gate-incidens (msg 25105)
+visszaállította `store/vendored-skill-sanctioned.json`-t a committolt verzióra, elvesztve egy
+korábbi, nem committolt `--record`-ot. A 16:40-es heartbeat 8 unsanctioned deltát jelzett
+(ALERT:yes). CYBERED step-1 áttekintése (komment 39226, kártya dabc1058) mind a 8-at KNOWN-nak
+minősítette (0 ismeretlen, 0 titok-szerű): a `documentation-and-adrs` (4 másolat) és
+`doubt-driven-development` (3 másolat + 1 extra fájl) deltái egy ÚJABB upstream verzió tartalmával
+byte-azonosak, a `context-engineering` (prompty) deltája ugyanígy, és mindhárom hash már
+sanctioned máshol a flottán (globális vagy másik ügynök másolata). `python3
+store/vendored-skill-integrity.py --record` a TELJES baseline-t újraírja (nincs per-path
+kapcsolója), ezért az eredményt kézzel szűkítettem a 8 kulcsra az origin/develop-hez képest
+(27 beszúrás, 0 törlés, pontosan a 8 útvonal) -- a --record minden más, a legutóbbi baseline-futás
+óta máshogy szkennelt könyvtárra vonatkozó eltérését NEM vettem át. Utána `--quiet` a végső fájllal:
+ALERT:no unsanctioned=0.
+Hivatkozás: kártya dabc1058 (predecessor: cybered step-1, komment 39226); commit 819cfacae.

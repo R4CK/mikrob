@@ -314,6 +314,9 @@
     "~/marveen/agents/fron-ted/.claude/skills/create-design-md": [
       "changed:SKILL.md@22f01706fc0a28635b9769351e64a7e6e0a1be7751d00ab75fc5c77dcfc5cd91"
     ],
+    "~/marveen/agents/fron-ted/.claude/skills/documentation-and-adrs": [
+      "changed:SKILL.md@359b22460045583b0233ec3f80223459c4096b0fa513f5c29ade9c3985207d65"
+    ],
     "~/marveen/agents/fron-ted/.claude/skills/emil-design-eng": [],
     "~/marveen/agents/fron-ted/.claude/skills/find-animation-opportunities": [],
     "~/marveen/agents/fron-ted/.claude/skills/fixing-accessibility": [],
@@ -341,6 +344,13 @@
     "~/marveen/agents/fron-teddy/.claude/skills/break-ui": [],
     "~/marveen/agents/fron-teddy/.claude/skills/create-design-md": [
       "changed:SKILL.md@22f01706fc0a28635b9769351e64a7e6e0a1be7751d00ab75fc5c77dcfc5cd91"
+    ],
+    "~/marveen/agents/fron-teddy/.claude/skills/documentation-and-adrs": [
+      "changed:SKILL.md@359b22460045583b0233ec3f80223459c4096b0fa513f5c29ade9c3985207d65"
+    ],
+    "~/marveen/agents/fron-teddy/.claude/skills/doubt-driven-development": [
+      "extra:references/orchestration-patterns.md@61e543d86f19f86b83074f8c1c769455c7085a2c72dd47b1da21a8c63785be4a",
+      "changed:SKILL.md@2fe3beb2e8e3eaaa45efe214a1b381ae341dfea2f21fd5fa3d4f27d41e98be47"
     ],
     "~/marveen/agents/fron-teddy/.claude/skills/emil-design-eng": [],
     "~/marveen/agents/fron-teddy/.claude/skills/find-animation-opportunities": [],
@@ -378,6 +388,9 @@
     ],
     "~/marveen/agents/jogasz/.claude/skills/soc2-audit-prep": [
       "changed:SKILL.md@0f2f2540d3cf3575d29696cbe25082a8915c5b769cb19090c2b84e703859ffca"
+    ],
+    "~/marveen/agents/prompty/.claude/skills/context-engineering": [
+      "changed:SKILL.md@8b736cb9e55b82b265ab6ff78349c0e826e8a6df550deddf665b7fb3ff858b63"
     ],
     "~/marveen/agents/qa/.claude/skills/a11y-audit": [],
     "~/marveen/agents/qa/.claude/skills/browser-testing-with-devtools": [
@@ -557,6 +570,13 @@
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/create-design-md": [
       "changed:SKILL.md@15c8583c8a700253448251c170451f8053a14da6a9cb0784161e25648a2909ad"
     ],
+    "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/documentation-and-adrs": [
+      "changed:SKILL.md@359b22460045583b0233ec3f80223459c4096b0fa513f5c29ade9c3985207d65"
+    ],
+    "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/doubt-driven-development": [
+      "extra:references/orchestration-patterns.md@61e543d86f19f86b83074f8c1c769455c7085a2c72dd47b1da21a8c63785be4a",
+      "changed:SKILL.md@2fe3beb2e8e3eaaa45efe214a1b381ae341dfea2f21fd5fa3d4f27d41e98be47"
+    ],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/emil-design-eng": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/find-animation-opportunities": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/fixing-accessibility": [],
@@ -584,6 +604,13 @@
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/break-ui": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/create-design-md": [
       "changed:SKILL.md@15c8583c8a700253448251c170451f8053a14da6a9cb0784161e25648a2909ad"
+    ],
+    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/documentation-and-adrs": [
+      "changed:SKILL.md@359b22460045583b0233ec3f80223459c4096b0fa513f5c29ade9c3985207d65"
+    ],
+    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/doubt-driven-development": [
+      "extra:references/orchestration-patterns.md@61e543d86f19f86b83074f8c1c769455c7085a2c72dd47b1da21a8c63785be4a",
+      "changed:SKILL.md@2fe3beb2e8e3eaaa45efe214a1b381ae341dfea2f21fd5fa3d4f27d41e98be47"
     ],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/emil-design-eng": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/find-animation-opportunities": [],
