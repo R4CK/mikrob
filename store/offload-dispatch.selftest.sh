@@ -146,18 +146,24 @@ done
 # fresh(100s)/stale(700s) pair above only pins the true default somewhere in [100s, 700s]. This
 # boundary pair, with OFFLOAD_STALE_IN_PROGRESS_SECONDS UNSET (the real default path, not an
 # explicit override), pins it at exactly 600s.
+# BOUNDARY_NOW (card bd60ea87): freezing dispatched_at a fixed 599/601s before BOUNDARY_NOW and
+# feeding that SAME BOUNDARY_NOW to the script via OFFLOAD_DISPATCH_NOW -- a real "now" at fixture-
+# write time would otherwise race the script's own later read of the real clock: under fleet-test
+# CPU contention more than 1s can pass between the two, so a 599s-old leaf can age past 600 before
+# the script reads it and this pin would flip to FAIL though offload-dispatch.sh is unchanged.
+BOUNDARY_NOW="$(python3 -c 'import time; print(int(time.time()))')"
 python3 -c "
-import json, time
-now = int(time.time())
+import json
+now = $BOUNDARY_NOW
 cards = [
     {'id':'justUnderCard','title':'599s','description':'x','status':'in_progress','assignee':'backend','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[],'dispatched_at':now-599},
     {'id':'justOverCard','title':'601s','description':'x','status':'in_progress','assignee':'backend','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[],'dispatched_at':now-601},
 ]
 json.dump(cards, open('$TMPDIR/fixture-stale-boundary.json', 'w'))
 "
-just_under_out="$(CARD=justUnderCard bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-boundary.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
+just_under_out="$(CARD=justUnderCard OFFLOAD_DISPATCH_NOW="$BOUNDARY_NOW" bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-boundary.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
 check "S PIN: with OFFLOAD_STALE_IN_PROGRESS_SECONDS unset, a leaf dispatched 599s ago (just under the true 600s default) still resolves" "$just_under_out" "justUnderCard"
-just_over_out="$(CARD=justOverCard bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-boundary.json")"
+just_over_out="$(CARD=justOverCard OFFLOAD_DISPATCH_NOW="$BOUNDARY_NOW" bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-boundary.json")"
 check "S PIN: with OFFLOAD_STALE_IN_PROGRESS_SECONDS unset, a leaf dispatched 601s ago (just over the true 600s default) is excluded" "$just_over_out" "[]"
 
 # S DEFAULT MUTANT PIN (card 81025eb5, Cybered GO 33203 on 27c54ceb): the 599/601 boundary pair
@@ -166,13 +172,16 @@ check "S PIN: with OFFLOAD_STALE_IN_PROGRESS_SECONDS unset, a leaf dispatched 60
 # excluded under BOTH the real default (600) and a 601 mutant alike; neither age differs between the
 # two. Age EXACTLY 600 is the only value where the two defaults disagree: real 600 -> 600>=600 true ->
 # excluded; mutant 601 -> 600>=601 false -> resolves. This is that exact age.
+# Same BOUNDARY_NOW freeze as the 599/601 pair above -- an exact-600s age leaves zero margin, so
+# this is the pin most exposed to the fixture-write-vs-script-read gap under load.
+EXACT_NOW="$(python3 -c 'import time; print(int(time.time()))')"
 python3 -c "
-import json, time
-now = int(time.time())
+import json
+now = $EXACT_NOW
 cards = [{'id':'exactCard','title':'600s','description':'x','status':'in_progress','assignee':'backend','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[],'dispatched_at':now-600}]
 json.dump(cards, open('$TMPDIR/fixture-stale-exact.json', 'w'))
 "
-exact_out="$(CARD=exactCard bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-exact.json")"
+exact_out="$(CARD=exactCard OFFLOAD_DISPATCH_NOW="$EXACT_NOW" bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-exact.json")"
 check "S DEFAULT MUTANT PIN: with OFFLOAD_STALE_IN_PROGRESS_SECONDS unset, a leaf dispatched EXACTLY 600s ago is excluded (kills a 600->601 default mutant that 599/601 alone cannot)" "$exact_out" "[]"
 
 # S FALLBACK-LITERAL MUTANT PIN (card 81025eb5): the invalid-input loop above (OFFLOAD_STALE_IN_PROGRESS_SECONDS
@@ -180,8 +189,19 @@ check "S DEFAULT MUTANT PIN: with OFFLOAD_STALE_IN_PROGRESS_SECONDS unset, a lea
 # under any fallback >= 101s -- it cannot tell a correct fallback (600) from a mutated one (601).
 # Same exact-600-age trick as above, but WITH an invalid env value, so this pins the FALLBACK literal
 # itself, not the `:-600` default-expansion literal (two different lines in offload-dispatch.sh).
-stale_fallback_exact_out="$(CARD=exactCard OFFLOAD_STALE_IN_PROGRESS_SECONDS=nope bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-exact.json")"
+stale_fallback_exact_out="$(CARD=exactCard OFFLOAD_STALE_IN_PROGRESS_SECONDS=nope OFFLOAD_DISPATCH_NOW="$EXACT_NOW" bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-exact.json")"
 check "S FALLBACK-LITERAL MUTANT PIN: an invalid OFFLOAD_STALE_IN_PROGRESS_SECONDS falls back to exactly 600s (a 601s-aged leaf would still resolve under a 601 fallback, this one is excluded)" "$stale_fallback_exact_out" "[]"
+
+# FLAKE REGRESSION PIN (card bd60ea87): reproduces the exact failure MikroB measured under
+# fleet-test load -- 2+ wall-clock seconds elapse between the fixture's dispatched_at (599s before
+# a frozen NOW) and the script's read. Without OFFLOAD_DISPATCH_NOW, is_stale_in_progress() would
+# read the REAL clock at that later point, age the leaf past 600s, and this would flip to "[]"
+# (empty) exactly like the measured failure. Freezing NOW to the fixture's own "now" makes the
+# result depend only on the frozen 599s margin, never on how much real time the sleep (standing in
+# for fleet-test contention) actually took.
+sleep 2
+flake_regression_out="$(CARD=justUnderCard OFFLOAD_DISPATCH_NOW="$BOUNDARY_NOW" bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-boundary.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
+check "FLAKE REGRESSION: a 599s-margin leaf still resolves even after 2 real wall-clock seconds pass before the script reads it (the exact flake class MikroB measured under fleet-test load)" "$flake_regression_out" "justUnderCard"
 
 # --- decompose wrapper (card 501c489f, MikroB verdikt komment 6007) -------------------------------
 # ISOLATION (d39fc5e7 QA finding): card_decompose_candidates() reads DECOMPOSE_STOP_STATE_FILE to
