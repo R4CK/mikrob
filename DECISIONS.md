@@ -34955,3 +34955,30 @@ teszt-újraírás).
 **Hivatkozás:** kártya 090ab223 (korábban 234306ca, aacb8ceb, 79aeaeb1, 4eb3743e); store/card-build-
 route.sh, store/route-classify.sh, store/local-llm-rag.sh, store/gate-pretriage.sh, store/vram-guard-
 wiring.selftest.sh, store/card-build-route.selftest.sh.
+
+----
+Erintett fajl(ok): store/offload-dispatch.sh, store/offload-dispatch.selftest.sh
+## 2026-11-28 -- bd60ea87 -- offload-dispatch.selftest S 599/600/601 boundary pin volt egy valodi, nem c16cd98e-regresszio timing-flake
+
+**Kontextus:** MikroB meresse (fullstack msg 25794): c16cd98e land piros lett fleet-teszten merge
+0eddcb129-on, 1/53043 -- a "S PIN: ... 599s ago ... still resolves" eset uresre futott. GYOKEROK
+(LEVEZETES): a selftest a `dispatched_at`-et `time.time()`-bol szamitotta FIXTURE-IRAS idoben, az
+`offload-dispatch.sh` `is_stale_in_progress()`-e viszont a VALODI orat olvasta ujra kesobb,
+SCRIPT-OLVASAS idoben -- fleet-test terheles alatt 1 masodpercnel tobb is elmulhat a ketto kozott,
+egy 599s-margoju level a 600s default fole oregitve, a pin FAIL-re fordulva. Nem c16cd98e-regresszio
+(a 07:13-as teljes futason d404d3abb-on zold volt).
+
+**Dontes:** `OFFLOAD_DISPATCH_NOW` env-seam `is_stale_in_progress()` oraolvasasahoz -- valodi hivoknal
+no-op (sosem allitjak), a selftest harom hatar-pin blokkja (599/601 par, pontos-600 mutans-pin,
+fallback-literal mutans-pin) ugyanazt a fagyasztott erteket adja at fixture-iraskor ES a
+`DISPATCH`-hivaskor, igy az eredmeny csak a fagyasztott margotol fugg, sosem a valodi ora
+elmulasatol. Uj regresszios teszt (2s valodi sleep a fixture-iras es az olvasas kozott) mutacio-
+igazolva reprodukalja a eredeti flaket a seam nelkul, es zold marad vele. 10x parhuzamos futas:
+mind a S-PIN/boundary/flake-regressziós esetek 10/10 zoldek (egy MASIK, ettol fuggetlen, elozetesen
+letezo flake -- "M1 (c)" a FreeLLM capacity-hold valodi-beleponton -- 3/10-szer piros lett ugyanezen
+terheles alatt, de ez a kartya nem erinti azt a kodutat, kulon triage kell).
+
+**Ki döntött:** a lelet MikroB mereseböl jon (fullstack msg 25794, komment bd60ea87-en), a javitast
+backend3 irta.
+**Hivatkozás:** kártya bd60ea87 (elozmeny c16cd98e, 27c54ceb, 81025eb5), store/offload-dispatch.sh,
+store/offload-dispatch.selftest.sh.
