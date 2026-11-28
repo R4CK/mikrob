@@ -836,5 +836,119 @@ command git clone -q "$FAKE_MAIN" "$locks3_dir" >/dev/null 2>&1
 find "$locks3_dir" -exec touch -d '2 days ago' {} +
 pin_no_optional_locks "remove_entry/unregistered" "$locks3_dir" remove_entry
 
+# --- ORPHAN regression cases (CYBERSEC NO-GO 39669 HIGH-1 / QA FAIL 39674, card 9918f78d) ------
+# Pins the exact 4 old-kept -> new-removed regressions CYBERSEC's probe found, now that ORPHAN is
+# a refinement of the DISPOSABLE name+age gate instead of a bypass that ran before it.
+make_dangling_worktree() {
+  # $1 = dir to create, $2 = gitdir target to point at (created or not, caller's choice)
+  mkdir -p "$1"
+  echo "gitdir: $2" > "$1/.git"
+}
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+rm -rf "$FAKE_HOME"; mkdir -p "$FAKE_HOME"
+
+# Case 1 (cc-fresh): DISPOSABLE name, dangling gitdir, edited JUST NOW -- must stay UNKNOWN, the
+# age gate alone must keep it out of ORPHAN (and out of DISPOSABLE too).
+case1_dir="$FAKE_HOME/cc-fresh"
+make_dangling_worktree "$case1_dir" "$tmp/nonexistent-gitdir-1/worktrees/cc-fresh"
+[ "$(classify cc-fresh "$case1_dir")" = UNKNOWN ] \
+  && ok "ORPHAN regression 1/4: a DISPOSABLE-named, freshly-edited dangling-gitdir dir stays UNKNOWN (age gate still applies)" \
+  || bad "ORPHAN regression 1/4: freshly-edited dangling-gitdir dir did not stay UNKNOWN (CYBERSEC cc-fresh row)"
+
+# Case 2 (unknownname-proj): name matches no DISPOSABLE pattern, dangling gitdir, edited just now
+# -- must stay UNKNOWN, the name gate alone must keep it out of ORPHAN.
+case2_dir="$FAKE_HOME/unknownname-proj"
+make_dangling_worktree "$case2_dir" "$tmp/nonexistent-gitdir-2/worktrees/unknownname-proj"
+[ "$(classify unknownname-proj "$case2_dir")" = UNKNOWN ] \
+  && ok "ORPHAN regression 2/4: a non-matching-name dangling-gitdir dir stays UNKNOWN (name gate still applies)" \
+  || bad "ORPHAN regression 2/4: non-matching-name dangling-gitdir dir did not stay UNKNOWN (CYBERSEC unknownname-proj row)"
+
+# Case 3 (cc-oldorphan): DISPOSABLE name, 3 days old, dangling gitdir whose PARENT is reachable --
+# now correctly classifies ORPHAN (an improvement over the old DISPOSABLE-but-always-SKIPped
+# behaviour, safe because it still goes through the same fresh re-check tail as DISPOSABLE).
+case3_dir="$FAKE_HOME/cc-oldorphan"
+mkdir -p "$tmp/reachable-repo/worktrees"
+make_dangling_worktree "$case3_dir" "$tmp/reachable-repo/worktrees/cc-oldorphan"
+find "$case3_dir" -exec touch -d '3 days ago' {} +
+touch -d '3 days ago' "$case3_dir"
+[ "$(classify cc-oldorphan "$case3_dir")" = ORPHAN ] \
+  && ok "ORPHAN regression 3/4: an old DISPOSABLE-named dangling-gitdir dir with a reachable gitdir parent IS classified ORPHAN" \
+  || bad "ORPHAN regression 3/4: old dangling-gitdir dir with reachable parent did not classify ORPHAN (CYBERSEC cc-oldorphan row)"
+if remove_orphan_entry "$case3_dir" >/dev/null 2>&1 && [ ! -d "$case3_dir" ]; then
+  ok "ORPHAN regression 3/4b: remove_orphan_entry() actually removes a genuinely dead, old, idle orphan"
+else
+  bad "ORPHAN regression 3/4b: remove_orphan_entry() did not remove a dead/old/idle orphan it should have"
+fi
+
+# Case 4 (unmounted-mopsion): DISPOSABLE name, old, BUT the gitdir's own PARENT directory does not
+# exist either (fix-direction c: indistinguishable from an unmounted filesystem) -- must stay
+# DISPOSABLE (ordinary guard-gated removal path), never upgrade to ORPHAN.
+case4_dir="$FAKE_HOME/cc-unmounted"
+make_dangling_worktree "$case4_dir" "$tmp/totally-unreachable-mount/worktrees/cc-unmounted"
+find "$case4_dir" -exec touch -d '3 days ago' {} +
+touch -d '3 days ago' "$case4_dir"
+[ "$(classify cc-unmounted "$case4_dir")" = DISPOSABLE ] \
+  && ok "ORPHAN regression 4/4: a dangling gitdir whose PARENT is also unreachable stays DISPOSABLE, never upgrades to ORPHAN" \
+  || bad "ORPHAN regression 4/4: unreachable-parent gitdir wrongly upgraded away from DISPOSABLE (CYBERSEC unmounted-mopsion row)"
+
+# Case 5: live-cwd-in-orphan TOCTOU -- classify ORPHAN at a point when nothing is live, THEN a
+# process starts cwd'd into it, THEN remove_orphan_entry() must still catch it via its own fresh
+# re-check (mirrors remove_entry()'s N1 pattern, now exercised for the orphan removal path too).
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+case5_dir="$FAKE_HOME/cc-orphan-toctou"
+mkdir -p "$tmp/reachable-repo2/worktrees"
+make_dangling_worktree "$case5_dir" "$tmp/reachable-repo2/worktrees/cc-orphan-toctou"
+find "$case5_dir" -exec touch -d '3 days ago' {} +
+touch -d '3 days ago' "$case5_dir"
+[ "$(classify cc-orphan-toctou "$case5_dir")" = ORPHAN ] \
+  || bad "ORPHAN regression 5/5: setup failed -- cc-orphan-toctou did not classify ORPHAN before the race"
+( cd "$tmp" && exec sleep 10 ) &
+case5_pid=$!
+( cd "$case5_dir" && exec sleep 10 ) &
+case5_live_pid=$!
+for _ in $(seq 1 30); do
+  readlink -f /proc/"$case5_live_pid"/cwd 2>/dev/null | grep -qF "$case5_dir" && break
+  sleep 0.2
+done
+if remove_orphan_entry "$case5_dir" >/dev/null 2>&1; then
+  bad "ORPHAN regression 5/5: remove_orphan_entry() must SKIP when a live process has cwd under it, it did not"
+else
+  [ -d "$case5_dir" ] \
+    && ok "ORPHAN regression 5/5: remove_orphan_entry()'s fresh live-process re-check catches a TOCTOU race" \
+    || bad "ORPHAN regression 5/5: orphan dir removed despite a live process cwd'd into it"
+fi
+kill "$case5_pid" "$case5_live_pid" 2>/dev/null
+wait "$case5_pid" "$case5_live_pid" 2>/dev/null
+
+# --- QA2 FAIL 39673: generated-content-only dirt no longer blocks removal, real dirt still does -
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+genonly_dir="$FAKE_HOME/qa-gen-only"
+git -C "$FAKE_MAIN" branch qa-gen-only-branch >/dev/null 2>&1
+git -C "$FAKE_MAIN" worktree add -q "$genonly_dir" qa-gen-only-branch >/dev/null 2>&1
+mkdir -p "$genonly_dir/node_modules/.pnpm" "$genonly_dir/dist"
+: > "$genonly_dir/node_modules/.pnpm/marker"
+: > "$genonly_dir/dist/bundle.js"
+find "$genonly_dir" -exec touch -d '2 days ago' {} +
+WORKTREE_OWNER["$genonly_dir"]="$FAKE_MAIN"
+reason="$(would_skip_removal "$genonly_dir")"
+[ -z "$reason" ] \
+  && ok "QA2 fix: generated-content-only dirt (node_modules/, dist/) does not block would_skip_removal()" \
+  || bad "QA2 regression: generated-content-only dirt still flagged as a skip reason: $reason"
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+realdirt_dir="$FAKE_HOME/qa-real-dirt"
+git -C "$FAKE_MAIN" branch qa-real-dirt-branch >/dev/null 2>&1
+git -C "$FAKE_MAIN" worktree add -q "$realdirt_dir" qa-real-dirt-branch >/dev/null 2>&1
+mkdir -p "$realdirt_dir/node_modules"
+: > "$realdirt_dir/node_modules/marker"
+echo "real uncommitted change" > "$realdirt_dir/f"
+find "$realdirt_dir" -exec touch -d '2 days ago' {} +
+WORKTREE_OWNER["$realdirt_dir"]="$FAKE_MAIN"
+reason="$(would_skip_removal "$realdirt_dir")"
+[ -n "$reason" ] \
+  && ok "QA2 fix control: real dirt mixed with generated-content dirt is STILL flagged (not over-widened)" \
+  || bad "QA2 regression: real uncommitted change alongside generated content was wrongly treated as clean"
+
 echo "selftest: $passed passed, $fail failed"
 [ "$fail" = 0 ] || exit 1
