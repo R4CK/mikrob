@@ -301,6 +301,25 @@ function scanTree(dir: string, base: string = dir): string[] {
   return out
 }
 
+// Card 9aa41834 (QA2 FAIL 39589, following up the `drafts` fix above): a directory-name exclusion
+// only covers ONE known live-churning path. INSTALLED_AGENTS_DIR (the live agents/ tree) is scanned
+// the same way, and the set of runtime-cache files a live agent session creates/removes under its
+// own agents/<agent>/.claude-config/ is open-ended -- e.g. agents/backend2/.claude-config/
+// mcp-needs-auth-cache.json existed at scanTree()'s collection-time snapshot and was gone by the
+// time an it.each case here called readFileSync() on it (reproduced live, 2/6 solo runs). A file
+// that vanished between scan and read was never a stable part of the shipped corpus to begin with,
+// so this treats that ENOENT as "skip this case", not a failure -- unlike the `drafts` fix, this
+// applies to ANY readFileSync over a scanTree() result, because the live-churning path is not
+// fixed to one name.
+function readLiveFile(dir: string, file: string): string | null {
+  try {
+    return readFileSync(join(dir, file), 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
+  }
+}
+
 // Card b8859278 (QA2 FAIL 8977 + Cybersec NO-GO on 971f7d4f): scanDir only read the DIRECT children
 // of store/ and scripts/, filtered to .sh -- so scripts/hooks/ (53 .py files + 2 .sh, none scanned),
 // store/'s own subdirectories, and every non-.sh source anywhere under either tree were invisible to
@@ -604,7 +623,8 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   ]
 
   it.each(cases)('$file: every curl reads its auth header from a file, never argv', ({ dir, file }) => {
-    const source = readFileSync(join(dir, file), 'utf8')
+    const source = readLiveFile(dir, file)
+    if (source === null) return
     const isMarkdown = file.endsWith('.md')
     const isNarrative = dir === INSTALLED_AGENTS_DIR && isLiveNarrativeDocPath(file)
     const offenders = findCurlInvocations(source)
@@ -631,7 +651,8 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   // rather than exempted here, because a hand-kept allowlist is the failure mode this card exists
   // to fix. The three CURL-shaped rules above DO run over src/ -- those inspect a command line.
   it.each(shellCases)('$file: no line builds a URL with a credential query parameter', ({ dir, file }) => {
-    const source = readFileSync(join(dir, file), 'utf8')
+    const source = readLiveFile(dir, file)
+    if (source === null) return
     const isMarkdown = file.endsWith('.md')
     const isNarrative = dir === INSTALLED_AGENTS_DIR && isLiveNarrativeDocPath(file)
     const offenders = credentialUrlLines(source).filter(
@@ -649,7 +670,8 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   })
 
   it.each(cases)('$file: no curl -G builds a credential into the query string', ({ dir, file }) => {
-    const source = readFileSync(join(dir, file), 'utf8')
+    const source = readLiveFile(dir, file)
+    if (source === null) return
     const offenders = findCurlInvocations(source).filter((c) => leaksTokenInGetQuery(c.text))
     if (offenders.length > 0) {
       const detail = offenders.map((o) => `  line ${o.startLine}: ${o.text.trim().slice(0, 100)}`).join('\n')
@@ -837,7 +859,8 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   })
 
   it.each(cases)('$file: a path-embedded bot token is read from a curl config, not argv', ({ dir, file }) => {
-    const source = readFileSync(join(dir, file), 'utf8')
+    const source = readLiveFile(dir, file)
+    if (source === null) return
     const offenders = findCurlInvocations(source).filter((c) => leaksTokenInUrlPath(c.text))
     if (offenders.length > 0) {
       const detail = offenders.map((o) => `  line ${o.startLine}: ${o.text.trim().slice(0, 100)}`).join('\n')
@@ -876,7 +899,8 @@ describe('no shipped script hands the dashboard Bearer token to python3 as a pos
   // "$TOKEN" here (no such property on {dir, file}) rendered as "undefined" in every test
   // name. Spelled without the leading $ so it reads as prose, not a second placeholder.
   it.each(corpus)('$file: no python3 positional-argument TOKEN shape', ({ dir, file }) => {
-    const source = readFileSync(join(dir, file), 'utf-8')
+    const source = readLiveFile(dir, file)
+    if (source === null) return
     // Only the text AFTER the `python3` token counts as ITS argv -- `"$TOKEN"` appearing BEFORE
     // it on the same line belongs to an earlier pipe segment (printf feeding curl, e.g. `printf
     // ... "$TOKEN" | curl -H @- ... | python3 -c "..."`, the SAFE pattern used everywhere else in
@@ -1353,5 +1377,31 @@ describe('scanTree excludes a `drafts` directory (card 9aa41834)', () => {
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'x.md'), 'hello\n')
     expect(scanTree(root)).toEqual([join('draft-notes', 'x.md')])
+  })
+})
+
+describe('readLiveFile tolerates a file that vanishes between scan and read (card 9aa41834, QA2 FAIL 39589)', () => {
+  let root: string
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'token-argv-guard-vanish-test-')) })
+  afterEach(() => { rmSync(root, { recursive: true, force: true }) })
+
+  it('returns null, not a thrown ENOENT, for a file removed after scanTree listed it', () => {
+    const file = 'mcp-needs-auth-cache.json'
+    writeFileSync(join(root, file), '{}\n')
+    expect(scanTree(root)).toEqual([file]) // present at "collection time"
+    rmSync(join(root, file)) // a live session removes it before the "read time" below
+    expect(readLiveFile(root, file)).toBeNull()
+  })
+
+  it('CONTROL: a file that is still present reads normally', () => {
+    const file = 'still-here.json'
+    writeFileSync(join(root, file), '{"ok":true}\n')
+    expect(readLiveFile(root, file)).toBe('{"ok":true}\n')
+  })
+
+  it('CONTROL: a non-ENOENT read error (a directory, not a file) still throws', () => {
+    const dir = join(root, 'a-directory')
+    mkdirSync(dir)
+    expect(() => readLiveFile(root, 'a-directory')).toThrow()
   })
 })

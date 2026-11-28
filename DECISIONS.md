@@ -34650,3 +34650,20 @@ Ki döntött: MikroB (kártya felvétele, komment 1795811127, harmadik flake hoz
 `src/__tests__/kg-graph-activity-route.test.ts`; `src/__tests__/self-pace-wrapper-and-keyword-positions.test.ts`;
 `src/__tests__/token-in-argv-guard.test.ts`. Fix commit: 47df10abb54c62c8c69c386e99e8beb5d183068d
 (unlanded, card/9aa41834 branch).
+
+2026-11-28 (follow-up): QA2 FAIL 39589 on e5c1d9f5a reproduced live the SAME flake class as the
+drafts-dir fix above, against a DIFFERENT live-churning path: token-in-argv-guard.test.ts's
+scanTree() enumerates the live `agents/` tree at collection time (INSTALLED_AGENTS_DIR), and a
+later readFileSync() in several it.each cases raced a live agent session creating/removing its own
+runtime cache file (agents/backend2/.claude-config/mcp-needs-auth-cache.json), 2/6 solo runs and
+2/4 combined runs failed with ENOENT. Per CYBERED Fix-Direction (same comment): a name-based
+exclusion does not generalize (the set of live-churning paths under agents/ is open-ended, not one
+fixed name) -- added `readLiveFile(dir, file)`, a readFileSync wrapper that returns null (treated
+as skip-this-case) on ENOENT and rethrows any other error, used in all 5 it.each bodies that read
+from the live-scanned corpus (`cases`/`shellCases`/`corpus`). Mutation-tested: reverting the
+helper back to a bare readFileSync reproduces the exact ENOENT QA2 measured. Reproduced the repeat-
+run check QA2 used: 6/6 solo runs green, 10/10 combined runs green (3/3 files, 26717/26717 tests
+each), under current live fleet activity (multiple agents landing post land-hold-lift).
+
+Ki döntött: QA2 (FAIL 39589, fix direction); backend (implementation, tests, mutation proof).
+Hivatkozás: kártya 9aa41834; `src/__tests__/token-in-argv-guard.test.ts`.
