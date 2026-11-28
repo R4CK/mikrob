@@ -34629,3 +34629,74 @@ fleet-test (per MikroB 25684's scope).
 Ki döntött: CYBERED (NO-GO 39527, fix direction); backend (implementation, tests, mutation
 proof). Hivatkozás: kártya 01b10349; `src/kg/import-findings.ts`; `store/kg-import-mt10.sh`;
 `store/kg-import-mt10.selftest.sh`; `src/kg/import-mt10-cli.ts`.
+
+
+## 2026-11-27 -- 090ab223 -- Opció A levéve 4/6 dispatcherből, megtartva a maradék 2-ben (supersedes the "Opció A marad" closing line of the 2026-09-25 234306ca entry)
+
+**A döntés.** A 2026-09-25-i 234306ca bejegyzés zárósora ("Opció A marad... az eltávolítás KÜLÖN
+follow-up kártya lesz, egy hét tiszta mérés után") szerinti mérés lefutott. DECISIONS.md append-only
+(root CLAUDE.md), ezért ez a bejegyzés ÚJ sorban rögzíti a kimenetét, nem írja át a régit -- a régi
+bejegyzés a döntés akkori indoka, ez itt a mérés utáni frissítés.
+
+**A mérés (MikroB döntés 18807, 2026-10-14; nyitott kérdés 18035).** A kapcsoló (`local-first-draft`)
+2026-10-12 óta folyamatosan ON (a fájl mtime-ja változatlan, ellenőrizve `stat`-tal), tehát a mérési
+ablak valójában ~46 nap, jóval a kért 7 fölött. A kártya aacb8ceb (hiányzó guard-fájl a törökpontnál)
+közben lezárult, és a második nyitott kérdésre -- fedi-e a törökpont a 79aeaeb1 gpu-util-hold ágát is
+-- a válasz IGEN, élő próbával igazolva: a `vram-guard-check.sh` a VRAM és az util-tier HOLD-ot egy
+közös exit-kóddá vonja össze (`verdict = HOLD if vram_hold_now or util_hold_now`), és a törökpont
+(`local-llm.sh`) csak ezt a kódot nézi (`-ne 0`), tier-independensen -- reprodukálva egy tiszta
+util-hold állapottal, a törökpont ugyanúgy exit 6-ot adott, mint VRAM-HOLD-nál.
+
+**Eltávolítva 4/6 dispatcherből** (card-build-route.sh, route-classify.sh, local-llm-rag.sh,
+gate-pretriage.sh): mind a négyen UGYANAZT az alapértelmezett `vram-guard-check.sh` utat hívták,
+amit a törökpont is hív, ugyanabban a "`-ne 0` -> online" irányban -- a kettő sosem volt
+megkülönböztethető viselkedés szerint, csak afelől, melyik fut előbb. Az eltávolítás után a HOLD egy
+hívással később, a törökpontnál csapódik le; a költség a kieső elő-szűrés miatt NÖVEKEDETT, de csak
+olcsó, GPU-t nem használó előkészítő munkával (API-olvasás, regex, max 1 extra model-call-kísérlet,
+ami maga is gyorsan HOLD-dal tér vissza) -- részletesen a 090ab223 kártya FINDING-kommentjeiben
+(39550, 39553).
+
+**MEGTARTVA 2/6 dispatcherben** (offload-dispatch.sh, i18n-draft.sh) -- ez ÚJ felismerés ehhez a
+kártyához, nem volt benne a 234306ca eredeti elemzésében: ezeknél a saját hívás NEM puszta
+védelmi-többlet, hanem VISELKEDÉST hordoz.
+- `i18n-draft.sh`: a kulcsonkénti fordító-ciklusban NINCS busy-break logika (a `route-classify.sh`/
+  `card-build-route.sh` ablak-ciklusaival szemben) -- HOLD alatt az eltávolítás akár `--limit`
+  (alapértelmezés 40) darab halálra ítélt `local-llm.sh` hívást indítana egymás után, és a kimenet
+  alakja is megváltozna (üres `.draft.json` íródna, a mai tiszta `exit 3`, fájl nélkül helyett).
+- `offload-dispatch.sh`: a `CAPACITY_HOLD` zászló (kártya 4eb3743e) nem védelmi többlet, hanem
+  ROUTING -- HOLD esetén minden leaf a FreeLLM-fallback-ra megy (`freellm_fallback_capacity_hold_site`)
+  a lokális próbálkozás (`try_leaf`) helyett. Az eltávolítás NÉMÁN kiiktatta volna a 4eb3743e által
+  bevezetett FreeLLM-fallbacket minden GPU-HOLD alatti sweep-ciklusra.
+MikroB jóváhagyása (msg 25721): mindkét fájlban a hívásnál egy rövid komment rögzíti, miért marad --
+"load-bearing pre-check itt, nem védelmi-többlet" -- ne csak ez a bejegyzés mondja.
+
+**Új teszt offload-dispatch.sh-ra (MikroB kérése, msg 25721): pin, hogy a FreeLLM-fallback valóban
+elsül forszírozott HOLD alatt.** `offload-dispatch.selftest.sh` M1 (a) már megvolt (egy BLOKKOLT leaf
+sosem éri el a freellm-call.sh-t forszírozott `OFFLOAD_VRAM_GUARD` HOLD alatt, a VALÓDI belépési
+ponton, `bash DISPATCH <card>`) -- ez önmagában csak a negatívot igazolta. Új M1 (c) eset: egy
+AZONOS leaf, de "gemini-ok" labellel (a pozitív-marker kapu, lásd `is_gemini_blocked`), ugyanazon
+forszírozott HOLD alatt TÉNYLEG eléri a freellm-call.sh-t (a marker-fájl létrejön) -- ez a pozitív
+komplementer, ami nélkül (a) mutánsa (minden leaf "blocked"-ra esik HOLD alatt, a FreeLLM-fallback
+sosem fut) is zölden futna. 328/328 PASS a teljes `offload-dispatch.selftest.sh`-on (a case-szám
++1 az M1 (c)-vel).
+
+**Tesztek (MÉRVE, mutáció-pinnelve).** `vram-guard-wiring.selftest.sh` újraírva: a négy levett
+dispatcher ÉS a megmaradt kettő is egy sorban szerepel -- a négynél a `local-llm.sh`-ból SED-del
+kinyert (nem újraírt) valódi törökpont-blokkot egy stub-ba csomagolva igazolja, hogy HOLD alatt
+helyesen ONLINE/UNKNOWN-ra esnek, ADMIT alatt eléri a modellt, ÉS egy "fail-open" mutáns (a kinyert
+blokk nélkül) ugyanazon HOLD alatt NEM azt az eredményt adja -- bizonyítva, hogy a teszt a valódi
+védelemtől függ, nem vákuum. `local-llm-rag.sh` és `gate-pretriage.sh` esetén a VALÓDI `local-llm.sh`-t
+hívtuk (nincs LLM-override náluk), `LOCAL_LLM_VRAM_GUARD`-dal kényszerített HOLD-dal -- élő ollama
+nélkül is determinisztikus, mert a törökpont a hálózati hívás ELŐTT fut. `i18n-draft.sh` és
+`offload-dispatch.sh` saját, változatlan VRAM_GUARD-hívását a selftest külön, érintetlen szekcióban
+továbbra is lefedi. 23/23 PASS, standalone bash futással (nincs fleet-test.sh). `card-build-route.
+selftest.sh`-ból a két, most már nem-létező viselkedést (0b VRAM-hold ág, PAUSED-VRAM komment)
+tesztelő szekció (B4, B4b) törölve, 64/64 PASS marad. `local-llm-vram-choke-point.test.ts`
+(a törökpont saját tesztje, érintetlen kód) 6/6 zöld ugyanezen a Gate-SHA-n. `tsc --noEmit` tiszta.
+
+**Ki döntött:** MikroB (card 090ab223, msg 25717: "GO for the removal... check one thing before you
+cut"); backend3 (a per-dispatcher kockázat-elemzés, ami a 2/6 megtartását eredményezte, és a
+teszt-újraírás).
+**Hivatkozás:** kártya 090ab223 (korábban 234306ca, aacb8ceb, 79aeaeb1, 4eb3743e); store/card-build-
+route.sh, store/route-classify.sh, store/local-llm-rag.sh, store/gate-pretriage.sh, store/vram-guard-
+wiring.selftest.sh, store/card-build-route.selftest.sh.
