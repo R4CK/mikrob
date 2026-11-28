@@ -35024,3 +35024,134 @@ terheles alatt, de ez a kartya nem erinti azt a kodutat, kulon triage kell).
 backend3 irta.
 **Hivatkozás:** kártya bd60ea87 (elozmeny c16cd98e, 27c54ceb, 81025eb5), store/offload-dispatch.sh,
 store/offload-dispatch.selftest.sh.
+
+## 2026-11-27 16:48 -- Kártya c16cd98e: a worktree on_create-hook mechanizmus 3 látens hibája javítva, a null-pin marad kötelező
+
+MIT: `store/worktree-on-create.sh` + `store/agent-worktree-marveen.sh` három látens hibája javítva
+(CYBERED NO-GO 38923 F-2/F-3/F-4, GO 38955 után): (1) F-2 -- egy megszakított on_create hook
+(a hívó folyamat a `git worktree add` után, de a hook lefutása előtt/közben kilő) ezentúl nem
+számít készen állónak: egy új "worktree-on-create.done" jelölőfájl (a worktree saját git-dir-jében,
+nem a kijelölt fában) mondja meg, hogy a hook valóban lefutott, és egy jelölő nélküli `.git` a
+következő hívásnál felismerve, a fél-kész fa eltávolítva, a létrehozás elölről indul. (2) F-3 --
+a "jelen van/létrehozom" döntés + a hook teljes futása most egy, az ágra kulcsolt `flock`-kal védett
+(`store/agent-worktree-marveen.sh` új `.worktree-create-locks/` könyvtára), ezért két egyidejű
+hívás ugyanarra az új kártyára nem futhat bele egymásba (mérve: a javítás előtt a második hívás
+`git worktree add` "fatal: ... already exists" hibával bukott). (3) F-4 -- a konfiguráció-betöltő
+lépés stderr-je külön fájlba megy, soha nem keveredik a sikeres kimenetbe (`cfg_json`), és a
+második (on_create_script-kiolvasó) python3-hívás saját kilépőkódja is explicit ellenőrzött -- a
+javítás előtt egy sikeres (rc=0) futás stderr-zaja is belekeveredett a JSON-ba, a korrupt JSON-t a
+következő lépés csendben üres `on_create`-ként értelmezte, a hook soha nem futott le, hiba nélkül.
+Új pin-teszt: `store/projects-on-create-pin.selftest.sh` (LOW-1) -- pirosra fordul, ha BÁRMELYIK
+committolt `store/projects/*.json` nem null `on_create_script`-et állít be, amíg ez a kártya (vagy
+egy utódja) nincs legate-elve. Mindhárom hiba kártya-szintű viselkedési teszttel van rögzítve
+(megszakítás-szimuláció, valódi párhuzamos `&`+`wait` futás, zajos-stderr séma-helyettesítő).
+
+MIÉRT: a mechanizmus ma csak azért biztonságos, mert `store/projects/marveen.json` `on_create_script`
+mezője `null` -- semmi nem kényszerítette ki ezt, és a három látens hiba bármelyike éles hook
+mellett csendben fél-kész worktree-t vagy versenyhelyzetet eredményezett volna.
+
+MI MARADT: a pin-teszt továbbra is pirosra fordul minden olyan jövőbeli `store/projects/*.json`-nál,
+amely valódi `on_create_script`-et ad meg -- a pin feloldása saját, külön re-gate-elt lépés, nem
+ennek a kártyának a része.
+
+Ki döntött: Cybered (NO-GO 38923 F-2/F-3/F-4 felvetője, GO 38955). Végrehajtotta: fullstack (DevO).
+Hivatkozás: kártya c16cd98e (60e5a40e F6.2 follow-up); előzmény 60e5a40e; `store/worktree-on-create.sh`,
+`store/agent-worktree-marveen.sh`, `store/projects-on-create-pin.selftest.sh`.
+
+## 2026-11-27 17:10 -- Kártya c16cd98e: az F-2 javítás elso alakja élo adatvesztést okozott, a
+sentinel-logika megfordítva
+
+MIT: a `be3b70680`-on landolt F-2 javítás "completion marker" alakja NO-GO-t kapott mindkét
+biztonsági gate-től (Cybersec NO-GO 39444, Cybered NO-GO 39445, HIGH mindkettőnél): a hiányzó
+marker "befejezetlen" jelentése nem tudott különbséget tenni egy VALÓDI megszakítás és egy
+"ez a mechanizmus létezése előtt készült worktree" között -- élő, olvasás-only cenzus szerint a
+176 futó worktree közül 0 hordozott markert, 7 pedig commitolatlan munkát (jogasz 16 bejegyzés,
+backend 2, backend3 1, card/3ae2411d 1, card/7f112c2f 3, card/ac0bf02d 1, card/bb562959 3) -- az
+első újra-dispatch mindegyiket törölte volna `git worktree remove --force`-szal, csendben, rc 0.
+A javítás erre: a marker helyett egy IN-PROGRESS SENTINEL, megfordított logikával -- a sentinel
+HIÁNYA jelenti a "kész" állapotot, nem a jelenléte. `project_worktree_on_create` a sentinelt saját
+első lépésként írja, és minden sikeres `return 0` előtt törli; egy ilyet soha nem hívott fa
+(minden élő worktree ma) tehát automatikusan "kész"-nek olvas, pont úgy, mint egy valóban
+befejezett. Csak az a fa olvas megszakítottnak, amelyiken a sentinel tényleg túlélte a hívást.
+Második réteg: a felvevő szkript (`agent-worktree-marveen.sh`) egy VALÓDI megszakítást (sentinel
+jelen) sem távolít el többé automatikusan, ha a fa `git status --porcelain` szerint piszkos --
+ilyenkor hangosan megáll (exit 3, megnevezi az útvonalat), nem tippel rá, hogy biztonságos
+törölni. Harmadik, kisebb javítás (Cybersec F-3, LOW): a pin-teszt (`projects-on-create-pin.
+selftest.sh`) egy sikertelenül feldolgozható (malformed) committolt configot eddig csendben
+null-ként olvasott (stderr elnyelve, kilépőkód ellenőrizetlen) -- most ez is FAIL. Negyedik
+(Cybered INFO): a felvevő lock (fd 9) most zárva van a hook gyerekfolyamata felé (`9>&-`), hogy egy
+daemonizáló hook ne tarthassa a lockot a szkript saját kilépése után.
+Minden eset élő mutánssal igazolva: a sentinel-megfordítás, a piszkos-fa-megállás és az ME mutáns
+(on_create-kiolvasás kilépőkódja erőltetve 0-ra) mind pirosra fordítják a hozzájuk tartozó új
+tesztesetet, visszaállítás után ismét zöld.
+
+MIÉRT: egy "soha ne töröld más munkáját" védelem, amelyik a leggyakoribb, idempotens hívási úton
+(minden kártya-dispatch, minden self-advance-pickup) pont ezt tette volna, nem védelem, hanem egy
+beépített, csendes adatvesztési mechanizmus -- és mindkét gate ugyanerre az irányra jutott
+egymástól függetlenül (Cybersec a (c) opciónál állt meg, Cybered -- a kettő összevetése után --
+a sentinel-megfordítást javasolta erősebbnek, mert valódi hook mellett is működik).
+
+MI MARADT: egy szűk, elfogadott rés él tovább, amíg `on_create_script` mindenhol `null` (LOW-1
+pin kényszeríti): ha a folyamat PONT a `git worktree add` sikere és a sentinel első megírása
+között szakad meg, a fa ugyanúgy "kész"-nek olvas, mint egy legacy fa, és egy VALÓDI hook ebben a
+szűk ablakban soha nem futna le. Ez a döntés tudatos (kisebb kockázat, mint 176 élő worktree
+törlése), és az első valódi `on_create_script` re-gate-jének kötelező eleme, hogy ezt az ablakot
+újra megmérje. Az fd 9 öröklésének dormáns rése (hosszan futó vagy daemonizáló hook) és a
+mktemp stderr-fájl SIGKILL-en túli lehetséges elszivárgása is dokumentált, nem élő hiba.
+
+Ki döntött: Cybersec (NO-GO 39444) + Cybered (NO-GO 39445), a javítási irány Cybered összevetése
+alapján konvergált; dispatch: MikroB (25574). Végrehajtotta: fullstack (DevO).
+Hivatkozás: kártya c16cd98e; előzmény be3b70680; `store/worktree-on-create.sh`,
+`store/agent-worktree-marveen.sh`, `store/projects-on-create-pin.selftest.sh`,
+`store/worktree-on-create.selftest.sh`, `store/agent-worktree-marveen.selftest.sh`.
+
+## 2026-11-27 17:20 -- Kártya c16cd98e: harmadik, szűk kör -- a sentinel-javítás maga nem volt lepinnelve
+
+MIT: Cybersec NO-GO 39450 (delta re-gate a 26523bf9b-n) három leletet talált a HIGH lezárása
+után. F-1 (MEDIUM, blokkoló): a sentinel írásának és időzítésének semmilyen tesztje nem volt --
+minden korábbi eset vagy kézzel hamisította a sentinelt (`_worktree_on_create_begin` direkt
+hívással), vagy sosem nézte meg élő hook futása KÖZBEN. Mutáns M4 (a begin-hívás kivéve) és M5 (a
+sentinel a hook ELŐTT törölve, nem utána) mindkettő túlélte a teljes suite-ot zöld állapotban --
+ez éppen az eredeti F-2 hiba lett volna vissza, minden teszttel zölden. Javítás:
+`worktree-on-create.selftest.sh`-ba egy VALÓDI hook, amelyik a saját futása KÖZBEN megnézi, létezik-e
+a sentinel-fájl a fa git-dirjében (igennek kell lennie), és egy másik eset, amelyik a hook-kal
+SIGKILL-elteti a saját szülőjét (az `agent-worktree-marveen.sh` becsapott felvevő-hívás helyett
+egy háttérbe tett subshellben futtatva a `project_worktree_on_create`-et, hogy a kill csak azt a
+subshellt vigye el, ne a teszt-szkriptet) -- utána `worktree_on_create_is_complete` a fára "nem
+kész"-t kell adjon. Mindkét mutáns (M4, M5) élőben pirosra fordítva, visszaállítás után zöld.
+
+F-2 (LOW): a piszkos-fa-megállás csak a `git status --porcelain` KIMENETÉT nézte -- egy
+SIKERTELEN `git status` (sérült index) is üres stdout-ot ad, pont mint egy valóban tiszta fa, és
+`[ -n "" ]` mindkét esetben hamis. Javítás (`agent-worktree-marveen.sh`): a kimenet és a
+kilépőkód KÜLÖN elmentve; nemnulla kilépőkód önmagában exit 3-mal elutasítva, mielőtt a
+tartalom-ellenőrzés egyáltalán lefutna. Új teszteset: egy megszakított (sentinel jelen) fa,
+aminek az indexét szemét bájtokkal felülírtam -- a mutáns (a kilépőkód-ellenőrzés kivéve) a
+`precious.txt`-t elveszti és a fát törli; a javítással a fa és a fájl túléli, exit 3.
+
+F-3 (LOW): a Cybered INFO (fd 9 zárva a hook gyerek felé) a REVIEW 39448-ban állítva volt, de
+sosem pinnelve -- mutáns M8 (a `9>&-` kivéve) túlélte a suite-ot, mert korábban semelyik teszt sem
+nyitotta meg fd 9-et a hívás előtt. Új eset: a teszt maga nyit egy fd 9-et (ugyanúgy, mint a
+valódi felvevő a saját branch-lock-jához), a hook pedig megnézi `/proc/$$/fd/9` létezik-e, és ezt
+jelenti. M8 élőben pirosra fordítva, visszaállítás után zöld.
+
+Mindhárom lelet önmagában dormáns volt (on_create_script mindenhol null, LOW-1 pin kényszeríti),
+de a card célja pont ez: a mechanizmus pinnelve legyen MIELŐTT bármelyik projekt valódi hookot
+kap. Direkt selftest-futás mindhárom fájlra (17/26/2 eset, mind PASS), a két src/__tests__
+wrapper (store-selftests-all-run, selftests-do-not-mutate-the-shared-tree) és `tsc --noEmit`
+tiszta. Fleet-test nem futott (MikroB 25586/39452 utasítása szerint).
+
+MIÉRT: a 26523bf9b-s javítás helyes IRÁNYA (sentinel-megfordítás) állt, de a saját viselkedését
+igazoló teszt hiányzott -- egy olyan guard, amit nem lehet mutálva megbuktatni, nem bizonyít
+semmit, csak úgy néz ki, mintha bizonyítana (`guards-that-pin-behaviour` 7. tétel: run the
+mutant). A gate ezt helyesen MEDIUM-ként, nem HIGH-ként sorolta, mert a hiba csak egy jövőbeli,
+sosem-megmért módosítás mellett válna élővé, nem a jelen kódban.
+
+MI MARADT: ugyanaz a szűk rés él tovább, amit a 17:10-es bejegyzés is dokumentált (a
+`git worktree add` sikere és a sentinel első megírása közti ablak, F-4, Cybersec INFO,
+szándékosan NEM ebben a körben) -- ezt a kört MikroB (25586/39452) kifejezetten kizárta a
+hatókörből.
+
+Ki döntött: Cybersec (NO-GO 39450); a kör hatókörét MikroB rögzítette (gate-bounce döntés,
+komment 39452, harmadik egymást követő NO-GO után). Végrehajtotta: fullstack (DevO).
+Hivatkozás: kártya c16cd98e; előzmény 26523bf9b; `store/agent-worktree-marveen.sh`,
+`store/worktree-on-create.selftest.sh`, `store/agent-worktree-marveen.selftest.sh`.

@@ -31,28 +31,99 @@ _worktree_on_create_rollback() {
   fi
 }
 
+# F-2 fix, CORRECTED (card c16cd98e; the first shape of this fix was CYBERSEC NO-GO 39444 /
+# CYBERED NO-GO 39445 on be3b70680). The first attempt used a COMPLETION marker: "absent" meant
+# "not complete", so a worktree created by any version of this script before the marker existed
+# -- i.e. every single one of the 176 live worktrees at NO-GO time -- looked identical to a
+# genuinely interrupted one, and the caller's recovery path force-removed whichever got picked up
+# next, discarding uncommitted/untracked work on 7 of them (both gates' live, read-only census).
+#
+# This is now an IN-PROGRESS SENTINEL instead, and the logic is inverted: "absent" means complete.
+# project_worktree_on_create writes it as its OWN first action and removes it on every successful
+# return. A tree this function has never been called for -- a legacy tree, or one created before
+# this mechanism existed at all -- never had a sentinel written and reads as complete, exactly
+# like one that finished normally; only a tree where the sentinel survives (this function started
+# and never reached a `return 0`) is treated as interrupted. Written inside the worktree's own
+# git-dir, never inside the checked-out working tree itself, so it can't show up as an untracked
+# file or collide with repo content -- a linked worktree's git-dir is private per-worktree storage
+# (git -C "$tree" rev-parse --git-dir resolves to "$main/.git/worktrees/<name>"), unlike the
+# checked-out files, which are ordinary tracked/untracked content an agent could legitimately touch.
+_worktree_on_create_sentinel_path() {
+  local tree="$1" gitdir
+  gitdir="$(git -C "$tree" rev-parse --git-dir 2>/dev/null)" || return 1
+  printf '%s/worktree-on-create.in-progress\n' "$gitdir"
+}
+
+worktree_on_create_is_complete() {
+  local tree="$1" sentinel
+  sentinel="$(_worktree_on_create_sentinel_path "$tree")" || return 1
+  [ ! -f "$sentinel" ]
+}
+
+_worktree_on_create_begin() {
+  local tree="$1" sentinel
+  sentinel="$(_worktree_on_create_sentinel_path "$tree")" || return 1
+  : > "$sentinel"
+}
+
+_worktree_on_create_end() {
+  local tree="$1" sentinel
+  sentinel="$(_worktree_on_create_sentinel_path "$tree")" || return 1
+  rm -f "$sentinel"
+}
+
 project_worktree_on_create() {
   local project="$1" main="$2" tree="$3" branch_preexisted="$4" branch="${5:-}"
-  local config_file cfg_json rc on_create
+  local config_file cfg_json rc on_create on_create_rc stderr_file
+
+  _worktree_on_create_begin "$tree"
 
   config_file="$main/store/projects/$project.json"
   # No config for this project at all: nothing to do (yet) -- same as before this mechanism
   # existed. Only a project that HAS opted in via a config file is held to the invariants below.
-  [ -f "$config_file" ] || return 0
+  if [ ! -f "$config_file" ]; then
+    _worktree_on_create_end "$tree"
+    return 0
+  fi
 
-  if ! cfg_json="$(python3 -I "$main/store/project-config-schema.py" "$project" 2>&1)"; then
-    echo "project-config: REFUSED for project '$project': $cfg_json" >&2
+  # F-4 fix (card c16cd98e): stderr is captured SEPARATELY, never merged into cfg_json (2>&1
+  # would corrupt the JSON with whatever the step wrote to stderr even on a successful run, and a
+  # corrupted cfg_json made the NEXT step fail silently instead of loudly -- see below).
+  stderr_file="$(mktemp)"
+  cfg_json="$(python3 -I "$main/store/project-config-schema.py" "$project" 2>"$stderr_file")"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "project-config: REFUSED for project '$project': $(cat "$stderr_file")" >&2
+    rm -f "$stderr_file"
     _worktree_on_create_rollback "$main" "$tree" "$branch_preexisted" "$branch"
     return 1
   fi
+  rm -f "$stderr_file"
 
+  # F-4 fix, second half: the parse step's own exit status is checked explicitly -- previously
+  # `on_create="$(... | python3 ...)"` discarded a nonzero rc from the pipeline, so a config that
+  # (for whatever reason) failed to parse here came back as an EMPTY on_create and the hook was
+  # skipped with no error at all, instead of being treated as the misconfiguration it is.
   on_create="$(printf '%s' "$cfg_json" | python3 -I -c 'import json,sys; v=json.load(sys.stdin).get("on_create_script"); print(v or "")')"
-  [ -n "$on_create" ] || return 0
+  on_create_rc=$?
+  if [ "$on_create_rc" -ne 0 ]; then
+    echo "project-config: could not read on_create_script from the validated config for '$project' -- treating as a misconfiguration" >&2
+    _worktree_on_create_rollback "$main" "$tree" "$branch_preexisted" "$branch"
+    return 1
+  fi
+  if [ -z "$on_create" ]; then
+    _worktree_on_create_end "$tree"
+    return 0
+  fi
 
-  if ! bash "$main/$on_create" "$tree"; then
+  # CYBERED NO-GO 39445, INFO: fd 9 (the per-branch creation lock held by the caller across this
+  # whole call) is closed for the hook child so a hook that daemonizes a background process can
+  # never hold the lock past this script's own exit.
+  if ! bash "$main/$on_create" "$tree" 9>&-; then
     echo "project-config: on_create ($on_create) failed for $tree -- removing half-made worktree" >&2
     _worktree_on_create_rollback "$main" "$tree" "$branch_preexisted" "$branch"
     return 1
   fi
+  _worktree_on_create_end "$tree"
   return 0
 }
