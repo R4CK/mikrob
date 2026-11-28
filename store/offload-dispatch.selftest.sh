@@ -212,6 +212,32 @@ check "FLAKE REGRESSION: a 599s-margin leaf still resolves even after 2 real wal
 export DECOMPOSE_STOP_STATE_FILE="$TMPDIR/decompose-type-disabled-test.json"
 printf '{}' > "$DECOMPOSE_STOP_STATE_FILE"
 
+# ISOLATION (card 531ffca2): every decompose fixture below (decompCard/vetoCard/allFourCard/...)
+# carries NO security keyword by design, so resolve_leaves_with_decompose's veto check
+# (card-build-route.sh --security-signal) is meant to resolve to "no" from the three deterministic
+# regexes ALONE -- but when none of them match, --security-signal unconditionally falls through to
+# route-classify.sh, which is NOT stubbed here and calls the REAL local-llm.sh/ollama model. That is
+# a host-global, physically-shared resource (same class as bd60ea87/0fb941e2's host-global /tmp
+# lock, just a GPU instead of a file): measured directly, 4 concurrent real route-classify.sh calls
+# on this box serialize through the GPU lock at 13.2s/16.8s/20.5s/24.2s instead of running
+# independently, so under a 20x-parallel full-selftest load (each run exercising ~12 such calls:
+# decompCard x4, allFourCard x5, vetoCard x1, the vram-hold/not-installed decompCard calls x2) the
+# queue can exceed card-build-route.sh's own 45s CARD_BUILD_ROUTE_TIMEOUT, killing the call
+# mid-flight and truncating/erroring the surrounding $DISPATCH invocation's JSON output --
+# non-deterministically failing whichever check's python json.load() happened to run against that
+# truncated output (matching the measured "EXCLUDED REASON"/"NO CAP" 4/20 flake, not a fixed pair of
+# checks). Fix: stub CARD_BUILD_ROUTE_CLASSIFY to a deterministic MECHANICAL responder for the whole
+# decompose block (every fixture here wants MECHANICAL, since none of them carry a security word),
+# so no decompose test below ever reaches the real model. The DISCRIMINATING REPRO test further down
+# still sets its own CARD_BUILD_ROUTE_CLASSIFY inline per-call (its whole point is to isolate the
+# classify stage), which overrides this export for that one invocation as normal shell precedence.
+cat > "$TMPDIR/decompose-classify-mechanical.sh" <<'STUBEOF'
+#!/usr/bin/env bash
+echo MECHANICAL
+STUBEOF
+chmod +x "$TMPDIR/decompose-classify-mechanical.sh"
+export CARD_BUILD_ROUTE_CLASSIFY="$TMPDIR/decompose-classify-mechanical.sh"
+
 decompose_ids() { CARD="$1" bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c 'import json,sys; print(",".join(sorted(l["id"] for l in json.load(sys.stdin))))'; }
 decompose_field() { CARD="$1" bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c "import json,sys; print(json.load(sys.stdin)[0].get('$2',''))"; }
 

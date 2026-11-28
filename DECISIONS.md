@@ -35024,3 +35024,53 @@ terheles alatt, de ez a kartya nem erinti azt a kodutat, kulon triage kell).
 backend3 irta.
 **Hivatkozás:** kártya bd60ea87 (elozmeny c16cd98e, 27c54ceb, 81025eb5), store/offload-dispatch.sh,
 store/offload-dispatch.selftest.sh.
+
+## 2026-11-28 -- 531ffca2 -- offload-dispatch.selftest EXCLUDED REASON / NO CAP sections flaked 4/20: unstubbed real local-llm classify call, same host-global-resource class as 0fb941e2
+
+**Kontextus:** backend3 msg 25861 (0fb941e2's 20x parallel-load run) flagged a SEPARATE flake:
+"EXCLUDED REASON (vram-hold/deterministic-multi-decision)" and "NO CAP (4 template types match)"
+failed 4/20, a different section of offload-dispatch.selftest.sh than M1 (c). MikroB hipotezise
+(msg 25864): azonos osztaly, fix/host-global utvonal.
+
+**Gyokerok (LEVEZETES):** minden decompose-fixture ebben a blokkban (decompCard/vetoCard/
+allFourCard/...) SZANDEKOSAN nem tartalmaz biztonsagi kulcsszot, tehat resolve_leaves_with_
+decompose() veto-ellenorzese (card-build-route.sh --security-signal) a harom determinisztikus
+regex ALAPJAN "no"-ra kellene jusson -- de amikor mindharom regex nemet mond, a --security-signal
+FELTETEL NELKUL tovabbesik route-classify.sh-ra, ami a VALODI local-llm.sh/ollama modellt hivja,
+nincs stubbolva. Ez egy host-global, FIZIKAILAG megosztott eroforras -- nem egy /tmp lock fajl,
+mint 0fb941e2-ben, hanem a GPU/ollama szolgaltatas maga, ugyanaz az osztaly. Megmerve: 4 parhuzamos
+VALODI route-classify.sh hivas ezen a gepen a GPU-lock-on sorosodik at, 13.2s/16.8s/20.5s/24.2s
+(nem fuggetlenul futnak) -- 20x parhuzamos teljes-selftest-futasnal (minden futas kb. 12 ilyen
+hivast tesz: decompCard x4, allFourCard x5, vetoCard x1, a vram-hold/not-installed decompCard
+hivasok x2) a sor meghaladhatja a card-build-route.sh sajat 45s CARD_BUILD_ROUTE_TIMEOUT-jat,
+felbeszakitva a hivast es csonkitva/hibasitva a korulotte futo $DISPATCH JSON kimenetet --
+nem-determinisztikusan buktatva BARMELYIK checket, amelyiknek a python json.load()-ja epp eppen
+erre a csonkolt kimenetre futott (ez magyarazza, hogy MikroB mereseben az "EXCLUDED REASON"/"NO
+CAP" nev szerepelt, nem egy fix par check, hanem amelyik eppen pechet).
+
+**Dontes:** CARD_BUILD_ROUTE_CLASSIFY egy determinisztikus MECHANICAL-valaszolo stubra allitva a
+teljes decompose-blokkra (minden fixture itt MECHANICAL-t var, mivel semelyik nem hordoz biztonsagi
+szot), igy semelyik decompose-teszt nem eri el tobbe a valodi modellt. A DISCRIMINATING REPRO teszt
+tovabbra is a SAJAT CARD_BUILD_ROUTE_CLASSIFY-jat allitja be per-hivas (pont ez a celja: a
+classify-lepes elszigetelese), ami felulirja ezt az export-ot arra az egy hivasra, a shell normal
+elsobbsegi szabalya szerint.
+
+**Mutacio-igazolas:** card-build-route.sh --security-signal mutalva (SIG mindig "yes", a regex-ek
+kihagyva): pontosan a harom EXCLUDED REASON check (deterministic-multi-decision, vram-hold,
+not-installed) fordult pirosra, semmi mas -- visszaallitva byte-azonos (diff ures). 20x parhuzamos
+teljes-selftest-futas a javitassal: az "EXCLUDED REASON"/"NO CAP" nevu checkek 0-szor buktak at
+tobb 20-as korben (60 futas összesitve), a korabban mert 4/20-hoz kepest.
+
+**Nyitott, kulon jelzett lelet:** ugyanebben a decompose-blokkban (MIXED/abc-env env-guard checkek)
+alacsony rataju (1-3/20), SZORVANYOS (minden korben mas check) tovabbi flake maradt a javitas
+UTAN is, 20x teljes-fajl parhuzamos futasnal -- izoláltan (ugyanaz a hivas 20x konkurrens, semmi
+mas) NEM reprodukalodott (20/20 zold), es a tunet ("want 2 got 1", "got None" egy tisztán regex-
+alapu MIXED esetnel) nem mutat egy konkret masik megosztott UTVONALRA, inkabb altalanos erőforrás-
+kimerülésre (ez a gep load average 7.69 volt MAR a sajat 20x tesztem elott is, a live flotta
+miatt). Nem ez a kartya hatokore -- kulon triage kell, ugyanugy ahogy bd60ea87/0fb941e2 is
+kulon jelezte a SAJAT, ettol fuggetlen flake-jet.
+
+**Ki döntött:** a hipotezis MikroB-tol jon (msg 25864), a gyokerok-levezetes es a javitas
+backend3-tol.
+**Hivatkozás:** kártya 531ffca2 (elozmeny 0fb941e2, bd60ea87), store/offload-dispatch.selftest.sh,
+store/card-build-route.sh, store/route-classify.sh.
