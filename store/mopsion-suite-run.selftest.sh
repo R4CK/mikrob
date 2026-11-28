@@ -34,11 +34,37 @@ trap cleanup EXIT
 cd "$TMP" || exit 1
 
 # Common env: temp slots, a closed port for the API, no waiting to speak of.
+#
+# Card 18cd7193: MIN_AVAIL_MB is NOT mocked here, and mopsion-suite-run.sh defaults it to 4096 and
+# reads the REAL /proc/meminfo unless both CLEANCORE_SUITE_MEMINFO and CLEANCORE_SUITE_MIN_AVAIL_MB
+# are overridden. 39 of the 45 real-script invocations in this file rely on env_common alone, so
+# every one of them silently depended on this box's ACTUAL free memory staying above 4096MB for the
+# whole run -- despite the file's own header calling itself HERMETIC. Measured: forcing
+# MIN_AVAIL_MB above the real MemAvailable flips ANY of those cases from their expected slot/
+# worktree/card outcome to "not enough memory -- queueing" instead (confirmed live: rc=3, "not
+# enough free memory... 15278MB available, 999999MB needed"). Under a full-suite land (three
+# concurrent fleet-test runs, each a real vitest process) the real MemAvailable can plausibly dip
+# below 4096MB for a moment, which would non-deterministically fail whichever of these 39 cases
+# happened to run during that dip -- exactly the symptom in 2f282a31/18cd7193 (red only under
+# full-suite load, 80/80 green standalone, no single case name reproducible). Disabling the
+# precondition by default makes every ordinary (non-memory) case immune to the real box's memory
+# state; the handful of cases that deliberately test the memory precondition (below) already set
+# their OWN CLEANCORE_SUITE_MIN_AVAIL_MB after this array, which wins (later env assignment).
 env_common=(
   "CLEANCORE_SUITE_LOCK_PREFIX=$PREFIX"
   "CLEANCORE_SUITE_API=http://127.0.0.1:9"      # discard port: always refused, never hangs
   "CLEANCORE_SUITE_POLL_S=1"
+  "CLEANCORE_SUITE_MIN_AVAIL_MB=0"
 )
+
+fake_meminfo() { # $1 = MemAvailable in kB
+  local f="$TMP/meminfo-$1"
+  printf 'MemTotal:       24609416 kB
+MemFree:         1850872 kB
+MemAvailable:   %s kB
+' "$1" > "$f"
+  echo "$f"
+}
 
 hold_slot() { # $1 = slot number -- takes it and sleeps until killed
   ( exec 9>"${PREFIX}-${1}.lock"; flock 9; sleep 300 ) &
@@ -81,6 +107,19 @@ fi
 echo "$out" | grep -q 'queueing' \
   && bad "it announced queueing while a slot was FREE" "$out" \
   || ok "the routine case is silent -- no queueing notice when a slot is free"
+
+# --- 2b. card 18cd7193: an ordinary (non-memory) case is immune to the REAL box's memory state ---
+# Points CLEANCORE_SUITE_MEMINFO at a fixture reporting a critically low MemAvailable -- with NO
+# per-case MIN_AVAIL_MB override, so this exercises exactly what env_common's own default must
+# supply. Before the fix, this box's real memory being ample was the only reason case 2 above
+# passed; this fixture proves the result no longer depends on that at all.
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=5 CLEANCORE_SUITE_MEMINFO="$(fake_meminfo 1)" \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree' && ! echo "$out" | grep -q 'not enough'; then
+  ok "card 18cd7193: a critically-low MemAvailable does not block an ordinary case (env_common disables the precondition by default)"
+else
+  bad "card 18cd7193: an ordinary case is still sensitive to the real/apparent memory level" "rc=$rc out=$out"
+fi
 
 # --- 3. SLOTS is respected: all busy -> queue, then give up with a distinguishable reason -------
 hold_slot 1; hold_slot 2
@@ -420,15 +459,6 @@ fi
 # /proc/meminfo is injected, so these cases assert the DECISION rather than the box's mood -- a test
 # that waits for the real machine to be full would never run, and one that passes because the box
 # happens to be empty proves nothing.
-fake_meminfo() { # $1 = MemAvailable in kB
-  local f="$TMP/meminfo-$1"
-  printf 'MemTotal:       24609416 kB
-MemFree:         1850872 kB
-MemAvailable:   %s kB
-' "$1" > "$f"
-  echo "$f"
-}
-
 # A free slot AND enough memory -> acquired (proved by the no-worktree exit-3 message).
 out="$(env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=5 \
        CLEANCORE_SUITE_MEMINFO="$(fake_meminfo 9000000)" CLEANCORE_SUITE_MIN_AVAIL_MB=4096 \

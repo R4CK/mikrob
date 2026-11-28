@@ -34955,3 +34955,31 @@ teszt-újraírás).
 **Hivatkozás:** kártya 090ab223 (korábban 234306ca, aacb8ceb, 79aeaeb1, 4eb3743e); store/card-build-
 route.sh, store/route-classify.sh, store/local-llm-rag.sh, store/gate-pretriage.sh, store/vram-guard-
 wiring.selftest.sh, store/card-build-route.selftest.sh.
+
+## 2026-11-27 -- mopsion-suite-run.selftest.sh: env_common never mocked the memory precondition
+
+7f3cbe92's first land went red only on `store-selftests-all-run > mopsion-suite-run`
+(1471/1472 green), green 80/80 standalone twice on the same sha; the [FAIL] line was lost
+(card 2f282a31). Root cause, measured directly against `store/mopsion-suite-run.sh` on the
+real box: `env_common` in `mopsion-suite-run.selftest.sh` never overrode
+`CLEANCORE_SUITE_MIN_AVAIL_MB`/`CLEANCORE_SUITE_MEMINFO`, so 39 of 45 real-script
+invocations silently depended on the box's actual `/proc/meminfo` `MemAvailable` staying
+above the script's own 4096MB default floor -- despite the file's own header calling itself
+HERMETIC. Forcing `MIN_AVAIL_MB=999999` flipped the result to rc=3 "not enough free memory"
+on the live box, confirming the mechanism; under full-suite load (concurrent fleet-test runs
+consuming real memory) a genuine dip below 4096MB would non-deterministically fail whichever
+of the 39 cases happened to run during it, matching the symptom exactly.
+
+Fix: `env_common` now sets `CLEANCORE_SUITE_MIN_AVAIL_MB=0`, disabling the precondition by
+default; the cases that deliberately test memory already set their own override after
+`env_common` in the same `env` invocation, which wins per bash's later-assignment-wins
+semantics (confirmed empirically). New guard case ("2b") pins this with a critically-low
+`MEMINFO` fixture and no per-case override; mutation-tested (reverting the fix line turns it
+red, 77/78; restoring brings it back to 78/78 green). Verified 5x under the real shared
+`/home/neon/marveen-test.lock` held for each run's duration, so the selftest's own case 15
+(which shells out to the real `fleet-test.sh` when that lock is free) took its SKIP path
+every time.
+
+Ki döntött: backend2 (investigation, fix, mutation proof); MikroB (verification protocol:
+hold the real lock for the duration, max 5 runs). Hivatkozás: kártya 18cd7193; 7f3cbe92;
+2f282a31; `store/mopsion-suite-run.selftest.sh`.
