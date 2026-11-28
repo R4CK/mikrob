@@ -34629,3 +34629,179 @@ fleet-test (per MikroB 25684's scope).
 Ki döntött: CYBERED (NO-GO 39527, fix direction); backend (implementation, tests, mutation
 proof). Hivatkozás: kártya 01b10349; `src/kg/import-findings.ts`; `store/kg-import-mt10.sh`;
 `store/kg-import-mt10.selftest.sh`; `src/kg/import-mt10-cli.ts`.
+
+## 2026-11-26 -- card e99c3dc1: FLEET_TEST_PRIORITY=land ancestor-lock verification + distinguishable LAND-queue timeout message
+
+Előzmény: a gate-store-selftests vs. land starvation kártyán (e99c3dc1) a per-tree lock
+exemption-kísérlet 4 egymást követő NO-GO/FAIL után bounce-olt (39178/39179); MikroB döntése
+(39179) a tree-lock exemption RETIRE-elése és egy scheduling-szintű re-plan volt. Az első posztolt
+terv (39188) egy TELJESEN ÚJ ticket-class/`--land`-flag mechanizmust javasolt, de a kódolás előtt
+kiderült: a FLEET_TEST_PRIORITY=land priority-ticket ütemezés (kártya b7d8ecc4) MÁR LÉTEZIK és már
+élesben van (`fleet_test_resolve_priority_rank`, `FLEET_TEST_AGING_S`, `marveen-land.sh` már
+exportálja `FLEET_TEST_PRIORITY=land`-et minden fleet-test.sh hívás előtt). Korrekció posztolva
+(39196), MikroB jóváhagyta szűkített hatókörrel, egy szigorítással (msg 25163): a nyitott fd
+önmagában gyenge bizonyíték, az ellenőrzésnek a TÉNYLEGESEN tartott flock-ot kell néznie.
+
+MI KÉSZÜLT EL:
+1. `fleet_test_verify_land_priority()` (store/fleet-test.sh): a FLEET_TEST_PRIORITY=land állítást
+   az ős-PID lánc bejárásával ellenőrzi (bound: FLEET_TEST_PRIORITY_ANCESTOR_DEPTH, alap 10) --
+   a lánc azért nem az azonnali szülőn áll meg, mert run_fg_killable (marveen-land.sh) a SAJÁT
+   lock-fd-másolatát lezárja a subshellben MIELŐTT exec-eli a fleet-test.sh-t (kártya 81c6fbb5
+   Q3) -- a fd csak a marveen-land.sh fő processzén él, azon túl. Egy ős csak akkor számít
+   igazoltnak, ha MIND a három igaz: (a) van nyitott fd-je a develop-lock fájlon, (b) azon a fd-n
+   TÉNYLEGESEN tart flock-ot, (c) a saját cmdline-ja `store/marveen-land.sh`-t nevez meg. Bármelyik
+   ellenőrzés befejezhetetlensége (nincs /proc, olvashatatlan, nincs találat a bound-on belül) ->
+   normal priority, soha nem land (fail-closed).
+2. MÉRÉSI LELET, ami a tervezett primitívet megváltoztatta: MikroB 25163 a `/proc/locks`
+   globális listát kérte a flock-ellenőrzéshez. MÉRVE (nem feltételezve): egy valódi, másik
+   processz `flock -n`-jét helyesen blokkoló és `fuser -v`-vel helyesen kimutatott flock
+   EGYÁLTALÁN NEM jelent meg a `/proc/locks`-ban ezen a platformon (WSL2) -- as a globális
+   listából hiányzott a teljes mérés alatt. A `/proc/<pid>/fdinfo/<fd>` SAJÁT "lock:" sora
+   viszont helyesen jelezte mindkét irányban (pozitív és negatív kontroll is mérve). A kódot
+   ezért a fd-specifikus fdinfo-ellenőrzésre írtam, nem a globális /proc/locks-ra -- szemantikailag
+   ugyanazt vagy szigorúbbat ad (nem keverhető össze egy MÁSIK processz ugyanazon inode-on tartott
+   lock-jával), és tényleg működik ezen a platformon. Nem kértem újra jóváhagyást a primitívváltásra
+   (a cél -- tényleges flock, nem csak nyitott fd -- változatlan, és a fail-closed szemantika miatt
+   egy rossz primitívválasztás legrosszabb esete is csak extra starvation, nem jogosultság-szivárgás),
+   de a REVIEW-ban és itt is jelezve, mérési bizonyítékkal.
+3. `fleet_test_any_land_ticket_pending()` + a timeout `die()` ág (TREE_TICKET_DIR vizsgálata a
+   timeout pillanatában): ha a várakozó sajat ticket törlése után marad rank-0 (land) ticket a
+   sorban, a die() üzenet explicit megnevezi ("queued behind a LAND ticket") -- egy teszt ezentúl
+   a stderr szövegén tud assertálni, nem csak az exit kódon.
+4. `--effective-priority` introspekciós flag (ugyanaz a minta mint `--lock-path`): a VERIFIKÁLT
+   effektív prioritást nyomtatja ki, lock/tree/CPU-slot machinery futtatása nélkül.
+
+Hermetikus teszt (src/__tests__/fleet-test-land-priority-verified.test.ts, 8 teszt, mind zöld):
+valódi folyamatfát épít fel (egy "ős" bash -c processz, ami opcionálisan tart egy flock-ot a
+develop-lock fájlon és/vagy a cmdline-jában hordozza a `store/marveen-land.sh` jelölőt, egy
+subshell ami lezárja a saját fd-másolatát a 81c6fbb5 Q3 minta szerint, majd a script a valódi
+`--effective-priority`-val), minden lock-fájl saját mktemp könyvtárban -- SEM `/home/neon/marveen`,
+SEM `/home/neon/marveen-test` literál nincs a tesztfájlban (a fájl sajátmagát grep-eli ennek
+bizonyítására). Négy manuális mutáció (cmdline-ellenőrzés elhagyása, flock-ellenőrzés elhagyása
+nyitott-fd-elfogadásra, a teljes verifikáció kikapcsolása, a timeout-ág törlése) mindegyike PIROS
+lett, majd az eredeti visszaállítva és `diff`-fel igazolva, hogy byte-azonos az eredetivel.
+
+Ellenőrzés: `fleet-test-land-priority-verified.test.ts` 8/8; a meglévő fleet-test.sh guard-suite
+(fleet-test-serialises-runs, fleet-test-shares-cleancore-cpu-pool, fleet-test-no-test-tree-
+reassignment-after-guard, fleet-test-refuses-test-tree-is-root, fleet-test-relative-tree-is-root)
+56/56 együtt. `npx tsc --noEmit -p .` tiszta. `lint-ratchet.sh`: nem romlott semelyik szabály
+(459 lelet, baseline tartja). Kézi smoke-teszt: `--lock-path`, `--cpu-slots`, `--path`,
+`--effective-priority` (sima hívás és `FLEET_TEST_PRIORITY=land` self-report ellenőrzés nélkül
+is `normal`-t ad, ahogy a fail-closed szemantika várja).
+
+Mi maradt ki: élő marveen-land.sh lefutás elleni teszt (valódi landolás a valódi lock-kal) --
+ez a hermetikus keret direkt azért épült, hogy ez SOHA ne kelljen (MikroB 25163 constraint,
+a kártya korábbi körének 15:12:35-ös incidense pont ezt a mintát okozta). A gate-selftests
+fájlok (ami a RETIRED tree_lock_exempt() mechanizmust tesztelte) nincs felújítva -- az a kód
+sosem landolt, nem is lesz (MikroB 39179 döntés).
+
+Ki döntött: MikroB (retire + re-plan 39179, korrekció-jóváhagyás + primitív-szigorítás 25163);
+fullstack (implementáció, mérés, teszt).
+Hivatkozás: kártya e99c3dc1; kapcsolódó b7d8ecc4, 81c6fbb5 (Q3), 2f0c7d24; komment 39178/39179/
+39188/39196; msg 25149/25160/25163; `store/fleet-test.sh`,
+`src/__tests__/fleet-test-land-priority-verified.test.ts`.
+
+## 2026-11-26 -- card e99c3dc1 fix-kör 2: két env-override bypass zárása (CYBERSEC NO-GO 39208)
+
+Az első kör Gate-SHA-ján (6bab004a) CYBERSEC NO-GO 39208 két MUST (F-1, F-2) és egy SHOULD
+(F-3) leletet talált, mindhárom MÉRVE, nem feltételezve (3/3 próba).
+
+F-1 (MUST): a `fleet_test_verify_land_priority()` első köre a develop-lock útvonalat a
+`MARVEEN_LAND_DEVELOP_LOCK_FILE` env-ből olvasta -- UGYANAZT a változót, amit maga a
+marveen-land.sh is olvas. Bármelyik fleet-test.sh hívó beállíthatta ezt SAJÁT tetszés szerinti
+lock-fájlra, saját maga flockolhatta, és a saját cmdline-jába írhatta a "marveen-land.sh"
+szöveget -- mindhárom ellenőrzést kielégítve egy olyan lock ellen, amin senki más nem versenyez.
+Javítás: a produkciós hívási pont a kanonikus, `$ROOT`-ból (hardcode-olt, env-ből SOHA nem jövő
+érték) származó útvonalat olvassa, az env-override-nak semmilyen hatása nincs többé a valódi
+ellenőrzésre. `fleet_test_verify_land_priority()` maga továbbra is paraméterként kapja az
+útvonalat (így egy teszt közvetlenül, saját eldobható úttal hívhatja), de a SAJÁT hívási pontja
+fixen a kanonikus konstansra van pinnelve.
+
+F-2 (MUST, előzőleg is létező, b7d8ecc4-ből örökölt hiba, ugyanebben a körben javítva): a
+`FLEET_TEST_AGING_S` is a hívó env-jéből jött. `FLEET_TEST_AGING_S=0`-val BÁRMELYIK normál
+(rank-1) ticket a SAJÁT első pollján rank-0-ra promotálta magát -- land-imitálás nélkül is
+megelőzve minden valódi land ticketet. Javítás: hardcode-olt konstans (180), nem olvasható env-ből.
+
+F-3 (SHOULD, lefedettség-bővítés, nem új funkció): pin a megosztott lock-path konstansra (V4),
+az inode-kötésre (V6, egy DIFFERENT fájl nem keverhető össze az igazival), és a depth-bound
+(V5) teszt újraírva VALÓDI, egymásba ágyazott `bash -c`/fájlalapú folyamatlánccal -- a korábbi
+egyetlen `(...)` subshell-es változatot bash saját tail-exec optimalizációja egy lépéssel
+rövidebbre húzhatta a valódinál, ami a bound-tesztet hamisan zölddé tehette volna anélkül, hogy
+tényleg a produkciós mélységet gyakorolta volna.
+
+MÉRÉSI/IMPLEMENTÁCIÓS MELLÉKHATÁS: a teszt-harness beágyazott `bash -c '...'` string-jeinek
+TÖBBSZÖRÖS egyszeres-idézőjel escape-elése (a kinyert bash-függvények SAJÁT idézőjeleivel,
+pl. `stat -c '%i'`) a gyakorlatban törékenynek bizonyult -- egy mutáció-teszt közben csendben
+"normal"-t adott vissza arra a positive esetre, ami helyesen "land"-et kellett volna. A harness
+ÁTÍRVA valós FÁJLOKBA írt, `bash <fájl>`-lal hívott szkriptekre -- semmilyen idézőjel-escape
+nem kell, a hiba teljesen megszűnt.
+
+Ellenőrzés: `fleet-test-land-priority-verified.test.ts` 14/14 (6 új teszt az előző kör 8-ából).
+Mutáció-teszt mindhárom MUST/F-3-mélység fixre (F-1 env-override visszaállítása, F-2
+env-override visszaállítása) kézzel futtatva, mindegyik PIROS lett a megfelelő teszten, majd az
+eredeti fájl visszaállítva és `diff`-fel igazolva byte-azonosnak. A meglévő fleet-test.sh
+guard-suite (ugyanaz az öt fájl mint az első körben) + az új teszt együtt: 62/62.
+`npx tsc --noEmit -p .` tiszta. `lint-ratchet.sh`: nem romlott semelyik szabály (459 lelet).
+Kézi smoke-teszt: `--effective-priority` sima hívásra és `FLEET_TEST_PRIORITY=land`
+self-report-re is `normal`-t ad (nincs valódi ős); a meglévő
+`fleet-test-priority-lane.selftest.sh` (b7d8ecc4 saját selftestje) változatlanul 13/13.
+
+Mi maradt ki: a SHOULD F-3 lefedettség-bővítés a V4/V5/V6 pontokra korlátozva -- a kártya 39177
+kommentben lezárt gate-selftests/tree_lock_exempt() terület továbbra sem éled fel (MikroB 39179
+döntése).
+
+Ki döntött: MikroB (NO-GO + a két MUST pontos javítási iránya, msg 39208); fullstack
+(implementáció, mérés, teszt).
+Hivatkozás: kártya e99c3dc1; CYBERSEC NO-GO 39208; msg 25177; `store/fleet-test.sh`,
+`src/__tests__/fleet-test-land-priority-verified.test.ts`.
+
+## 2026-11-27 -- card e99c3dc1 fix-kör 3: F-1 teszt hermetikussá tétele valódi land-ősre (élő red landolásnál talált lelet)
+
+Tény: a kártya 2. gate-körének landolása (45c30ecb sha, QA PASS + CYBERSEC GO) VALÓS landolás
+közben pirosra fordult -- az `src/__tests__/fleet-test-land-priority-verified.test.ts` saját F-1
+tesztje ("MARVEEN_LAND_DEVELOP_LOCK_FILE no longer has ANY effect") `expect(out).toBe('normal')`
+helyett `'land'`-et kapott. MikroB diagnózisa (msg 25668): a teszt hibásan feltételezte, hogy
+sosincs VALÓS land-ős a saját futása közben -- ez minden olyan landoláskor hamis, ahol ez a
+tesztfájl maga is `marveen-land.sh`-n át fut (vagyis MINDEN landoláskor).
+
+Javítás (MikroB engedélye, msg 25668: "do NOT weaken the production check" -- a produkciós
+`fleet-test.sh` logikája NEM változott, csak a teszt-harness): az F-1 teszt p1-ese most
+DUPLA-FORK + `setsid`-del FUT ("( setsid bash target & )", a befogó subshell azonnal kilép és
+elárvul a child), így a kernel a legközelebbi subreaper alá (`systemd --user`) reparentálja --
+mérve ezen a gépen: a VALÓS ős-lánc sosem éri el a tesztet elindító landoló-láncot. Ugyanez a
+technika került a `runDetached` segédfüggvénybe, amit az eredeti F-1 teszt is használ.
+
+Nem-vacuitás bizonyítva két új teszttel (ÚJ describe blokk, "F-1 HERMETICITY"):
+1. A javított szkript egy VALÓS, a valódi kanonikus lock-ot tartó "fake land" ős alá ágyazva is
+   'normal'-t ad (a kanonikus útvonalat SOHA nem írjuk le literálban -- a futó SOURCE-ból
+   olvassuk ki `ROOT=`-ot, ugyanaz a "names no real install path" önteszt védi).
+2. Az F-1 hiba VISSZAÁLLÍTOTT mutánsa (env-override ismét hatásos) ugyanebben a beágyazott
+   forgatókönyvben és önállóan futtatva is 'land'-et ad -- a hermetikus javítás nem rejt el egy
+   valódi regressziót.
+
+MÉRÉSI MELLÉKHATÁS, útkeresés közben talált, ÖNMAGÁBAN is load-bearing: a "fake land" ős saját
+nyitott+flockolt fd-je (a kanonikus fájlon) öröklődik MINDEN leszármazott forkon át, akkor is, ha
+az ősi láncot egyébként detacheljük -- az ős-lánc (ppid-lánc) és az fd-öröklés KÉT KÜLÖNBÖZŐ
+dolog, a detach csak az elsőt törli. Emiatt az attacker p1-je (ami a saját argv-jében már eleve
+hordozza a 'store/marveen-land.sh' markert) öröklött fd-n át "tartja" a kanonikus lock-ot is,
+függetlenül az ős-lánc állapotától -- ez PONTOSAN az a hibaosztály, amit a `marveen-land.sh`
+`run_fg_killable`-je kártya 81c6fbb5 Q3 alatt már egyszer lezárt (minden subshell lezárja a SAJÁT
+fd-másolatát `exec`-elés előtt). A teszt-harness "fake land" ősének most ugyanez a fegyelme: a
+kanonikus fd-t a külső wrapper lezárja, MIELŐTT a detachelt láncot elágaztatja.
+
+Másik, függetlenül talált és javított hiba: a detach-wrapper eredetileg a kimeneti fájl
+MÉRETÉRE ("$OUT" nem üres) várt, nem a futás TÉNYLEGES befejezésére -- mivel a `fleet-test.sh`
+köztes sorokat (pl. `env_compat_get` figyelmeztetést) is írhat stdout-ra a végső válasz előtt, ez
+csonkolt capture-t eredményezett. Javítás: a detachelt futó maga írja ki a DONE-jelzőt, utolsó
+lépésként, a wrapper ARRA vár, nem a fájl méretére.
+
+Ellenőrzés: `fleet-test-land-priority-verified.test.ts` 17/17 (3 új teszt a 14-ből), háromszor
+egymás után lefuttatva stabilan zöld. `npx tsc --noEmit -p .` tiszta. Csak ez az egy fájl futott
+(MikroB: "Run only that test file directly, no fleet-test"), nincs teljes fleet-test ebben a
+körben. A valódi kanonikus develop-lock fájl a futás előtt és után is szabad (ellenőrizve
+`flock -n`-nel), semmilyen árva fd/folyamat nem maradt utána.
+
+Ki döntött: MikroB (diagnózis + a szűk javítási irány, msg 25668, "do NOT weaken the production
+check"); fullstack (gyökérok, implementáció, mérés).
+Hivatkozás: kártya e99c3dc1; MikroB msg 25667/25668; Gate-SHA 45c30ecb312180c6ddcbb6eda785e525e2234b6b
+(a landolás saját shája, változatlan); `src/__tests__/fleet-test-land-priority-verified.test.ts`.
