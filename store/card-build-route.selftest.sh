@@ -37,10 +37,11 @@ printf '#!/usr/bin/env bash\necho MECHANICAL\n' > "$TMP/classify-mech.sh"
 # ...and the opposite stub, for the fail-safe battery.
 printf '#!/usr/bin/env bash\nexit 6\n' > "$TMP/llm-busy.sh"
 printf '#!/usr/bin/env bash\necho UNKNOWN\n' > "$TMP/classify-unknown.sh"
-# VRAM guard stubs (card f9bad591). The real guard's contract is exit 0 = ADMIT, 1 = HOLD, 2 = usage.
+# VRAM guard ADMIT stub (card f9bad591). CARD_BUILD_ROUTE_VRAM_GUARD itself is no longer read by
+# the router (card 090ab223 removed that direct call in favor of the local-llm.sh choke point --
+# see DECISIONS.md and vram-guard-wiring.selftest.sh), but every call site below still passes this
+# stub path: harmless, since it is ignored, and kept so none of those call sites need touching.
 printf '#!/usr/bin/env bash\necho "ADMIT ok 1024/24576 MiB (4%%)"\nexit 0\n' > "$TMP/vram-admit.sh"
-printf '#!/usr/bin/env bash\necho "HOLD hard 23000/24576 MiB (94%%)"\nexit 1\n' > "$TMP/vram-hold.sh"
-printf '#!/usr/bin/env bash\necho "vram-guard-check.sh: unknown arg" >&2\nexit 2\n' > "$TMP/vram-usage.sh"
 # Installed-gate stubs (card 3906d77b follow-up, Peti Telegram 8928): every case in this file except
 # the dedicated "not installed" one below assumes a local model IS installed, same as before this
 # gate existed -- exported so every `bash "$ROUTER"` call below inherits it without threading a new
@@ -209,81 +210,9 @@ reason_is deterministic-document-assembly "C2 control: readme text is stopped, b
 case_is LOCAL "C3 control: a real helper plus three tests still goes LOCAL" \
   "Write parseDurationMs(raw: string): number and three unit tests for it, including empty and NaN." low
 
-echo
-echo "=== B4b. THE VRAM-HOLD DECISION IS POSTED ON THE CARD ITSELF (card a1c4dc51) ==="
-# BEHAVIOURAL, not a source pin: a fake dashboard captures what the script actually POSTS, the same
-# discipline as fleet-test-shares-cleancore-cpu-pool.test.ts's semaphore-comment cases. Stderr
-# already said WHY a run went online (B4 above); nobody reads that later. The card's own thread is
-# where "why did this not get a local draft" actually gets asked.
-#
-# A tiny python http.server stands in for the dashboard -- no node/vitest dependency needed inside a
-# bash selftest, and the same throwaway-token discipline as the TS harness: never the live token.
-#
-# A REAL card id and the POSITIONAL invocation, not --text: the VRAM check (section 0b) runs BEFORE
-# the card is ever fetched, so on HOLD the router exits before touching CARD_BUILD_ROUTE_API at all.
-# On ADMIT it falls through to a real fetch attempt -- CARD_BUILD_ROUTE_API is pointed at this SAME
-# fake server (never localhost:3420) so that path never reaches the live board either.
-cat > "$TMP/vram-fake-dashboard.py" <<'PYEOF'
-import http.server, sys
-class H(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *a): pass
-    def do_GET(self):
-        self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
-        self.wfile.write(b'[]')
-    def do_POST(self):
-        n = int(self.headers.get('Content-Length') or 0)
-        body = self.rfile.read(n).decode()
-        with open(sys.argv[1], 'a') as f:
-            f.write(body + "\n")
-        self.send_response(200); self.end_headers(); self.wfile.write(b'{}')
-# Card 3629e133 (WhiteHat 14121): a fixed random-range port guess collides under concurrent
-# fleet-test/selftest runs ("Address already in use"). Bind :0 and let the kernel hand out a
-# free port instead -- print it so the shell side can read it back.
-srv = http.server.HTTPServer(('127.0.0.1', 0), H)
-print(srv.server_address[1], flush=True)
-srv.serve_forever()
-PYEOF
-
-vram_fake_dashboard() { # $1 = card id the router is given, $2 = vram stub, $3 = expect-a-post (1/0)
-  local card="$1" vram="$2" want_post="$3"
-  local seen="$TMP/vram-seen-$card.log"; : > "$seen"
-  local portfile="$TMP/vram-port-$card.log"
-  python3 "$TMP/vram-fake-dashboard.py" "$seen" > "$portfile" &
-  local pid=$!
-  local port="" tries=0
-  while [ -z "$port" ] && [ "$tries" -lt 50 ]; do
-    port="$(head -n1 "$portfile" 2>/dev/null)"
-    [ -n "$port" ] || { sleep 0.1; tries=$((tries + 1)); }
-  done
-  printf 'throwaway-not-real\n' > "$TMP/vram-fake-token"
-  CARD_BUILD_ROUTE_LOG=/dev/null \
-  CARD_BUILD_ROUTE_API="http://127.0.0.1:$port" \
-  CARD_BUILD_ROUTE_TOKEN_FILE="$TMP/vram-fake-token" \
-  CARD_BUILD_ROUTE_LLM="$TMP/llm-easy.sh" \
-  CARD_BUILD_ROUTE_CLASSIFY="$TMP/classify-mech.sh" \
-  CARD_BUILD_ROUTE_VRAM_GUARD="$vram" \
-  KANBAN_COMMENT_API="http://127.0.0.1:$port" \
-  KANBAN_COMMENT_TOKEN_FILE="$TMP/vram-fake-token" \
-    bash "$ROUTER" "$card" >/dev/null 2>&1
-  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-  local body; body="$(cat "$seen" 2>/dev/null)"
-  if [ "$want_post" -eq 1 ]; then
-    if printf '%s' "$body" | grep -q "PAUSED-VRAM" && printf '%s' "$body" | grep -q "\"card_id\": \"$card\""; then
-      PASS=$((PASS+1)); echo "OK   posted PAUSED-VRAM on card $card"
-    else
-      FAIL=$((FAIL+1)); FAILED+=("vram comment expected on $card, got: ${body:-<nothing>}")
-      echo "FAIL expected a PAUSED-VRAM comment on $card, got: ${body:-<nothing>}"
-    fi
-  else
-    if [ -z "$body" ]; then PASS=$((PASS+1)); echo "OK   no comment posted (ADMIT case)"
-    else FAIL=$((FAIL+1)); FAILED+=("unexpected comment on $card"); echo "FAIL unexpected comment: $body"; fi
-  fi
-}
-
-vram_fake_dashboard abc1230000000000000000000000000000000f "$TMP/vram-hold.sh" 1
-# CONTROL: with ADMIT, nothing is posted -- a script that always comments would pass the case above
-# by being noisy, not by being correct.
-vram_fake_dashboard abc4560000000000000000000000000000000f "$TMP/vram-admit.sh" 0
+# B4b (VRAM-HOLD comment posted on the card, card a1c4dc51) removed, card 090ab223: section 0b
+# (the dispatcher's own direct VRAM pre-check, and the PAUSED-VRAM comment it posted) no longer
+# exists in card-build-route.sh. See DECISIONS.md.
 
 echo
 echo "=== B5. A DECLARED [SEC] LABEL IS READ ON THE UNTRIMMED TEXT (card 28295e97, decision 25075) ==="
@@ -354,20 +283,10 @@ LONG_PAD="$(python3 -c "print('Ez csak semleges toltelek mondat a kartya elejen,
 reason_is deterministic-auth-tenant-scope "positional: the same risky sentence after ~1600 chars of filler still gates" \
   "${LONG_PAD}Fix the authentication bypass in the superadmin login flow." normal
 
-echo
-echo "=== B4. VRAM PRESSURE CLOSES THE LOCAL PATH, AND ONLY THAT (card f9bad591) ==="
-# The guard answers a CAPACITY question, so it must close the local path without ever holding up the
-# card. ONLINE is exactly that: the online agent builds it, which is today's behaviour anyway.
-reason_is vram-hold "the guard says HOLD -> ONLINE" \
-  "Write parseDurationMs(raw: string): number and three unit tests for it." low "$TMP/vram-hold.sh"
-reason_is vram-hold "a guard USAGE error (exit 2) is doubt, and doubt is ONLINE" \
-  "Write parseDurationMs(raw: string): number and three unit tests for it." low "$TMP/vram-usage.sh"
-# The two negatives. Without them "always ONLINE" would pass the case above.
-case_is LOCAL "the guard says ADMIT -> the verdict is unchanged" \
-  "Write parseDurationMs(raw: string): number and three unit tests for it." low
-got="$(run "Write parseDurationMs(raw: string): number and three unit tests for it." low "" "" "$TMP/definitely-no-guard.sh")"
-if [ "$got" = LOCAL ]; then PASS=$((PASS+1)); echo "OK   LOCAL  <- LOCAL   a MISSING guard is skipped, not read as HOLD"
-else FAIL=$((FAIL+1)); FAILED+=("missing vram guard"); echo "FAIL LOCAL  <- $got   a missing guard was treated as HOLD"; fi
+# B4 (VRAM pressure closing the local path at section 0b, card f9bad591) removed, card 090ab223:
+# the choke point inside local-llm.sh (card 234306ca) is now the only VRAM gate on this path --
+# vram-guard-wiring.selftest.sh covers it end to end (the dispatcher still ends up ONLINE/UNKNOWN
+# under a forced choke-point HOLD). See DECISIONS.md.
 
 echo
 echo "=== C. FAIL-SAFE: every doubt resolves to ONLINE ==="
