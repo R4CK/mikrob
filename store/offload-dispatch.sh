@@ -1425,11 +1425,24 @@ freellm_fallback_capacity_hold_site() {
 # file on stdin) -- a test can never drift from what actually runs (mirrors offload-batch-run.sh's
 # --test-select pattern). ---------------------------------------------------------------------------
 resolve_leaves() {
-  CARD="$CARD" STALE_SECONDS="$OFFLOAD_STALE_IN_PROGRESS_SECONDS" python3 -c '
+  CARD="$CARD" STALE_SECONDS="$OFFLOAD_STALE_IN_PROGRESS_SECONDS" OFFLOAD_DISPATCH_NOW="${OFFLOAD_DISPATCH_NOW:-}" python3 -c '
 import json, os, re, sys, time
 
 CARD = os.environ["CARD"]
 STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "600"))
+
+# card bd60ea87: a frozen-clock seam for tests. Real callers never set OFFLOAD_DISPATCH_NOW,
+# so this is a no-op outside tests -- the selftest pins the 599/600/601 boundary by freezing
+# this to match the fixture dispatched_at, instead of racing the gap between fixture-write time
+# and this read against the real wall clock under fleet-test load.
+def _now():
+    override = os.environ.get("OFFLOAD_DISPATCH_NOW")
+    if override:
+        try:
+            return float(override)
+        except ValueError:
+            pass
+    return time.time()
 try:
     data = json.load(sys.stdin)
 except Exception:
@@ -1457,7 +1470,7 @@ def is_stale_in_progress(c):
     if not dispatched_at:
         return False
     try:
-        return (time.time() - float(dispatched_at)) >= STALE_SECONDS
+        return (_now() - float(dispatched_at)) >= STALE_SECONDS
     except (TypeError, ValueError):
         return False
 
