@@ -34955,3 +34955,34 @@ teszt-újraírás).
 **Hivatkozás:** kártya 090ab223 (korábban 234306ca, aacb8ceb, 79aeaeb1, 4eb3743e); store/card-build-
 route.sh, store/route-classify.sh, store/local-llm-rag.sh, store/gate-pretriage.sh, store/vram-guard-
 wiring.selftest.sh, store/card-build-route.selftest.sh.
+
+----
+Erintett fajl(ok): store/fleet-test.sh, store/fleet-test-notify-injection.selftest.sh
+## 2026-11-28 -- 08de93d5 -- fleet-test log-prune: F-7 near-miss anchors, F-8 retention validation, F-3 secret redaction
+
+**Kontextus:** CYBERSEC follow-up leletek a 2f282a31 fleet-test log-persistence kartyarol (komment
+39544, delta 39552). F-7: a FLEET_TEST_OWN_LOG_RE idegen-fajl-pin (Case 10) csak a .*-re-szelesitett
+mutanst (D2) fogta meg -- egy .json near-miss barmilyen anchor/shape/szamjegy-mutanst is kiker
+teti, igy D3 (vegso anchor), D4 (kezdo anchor), D6 (notify-shape kotelezove tetele), D7 (pid
+szelesites), D9 (datum-lazitas) es D10 (rm -f -> rm -rf) tulelte a regi selftestet. F-8:
+FLEET_TEST_LOG_RETENTION validalatlanul ment a prune aritmetikaba. F-3: sem a persist, sem a
+notify utvonal nem redaktalt semmit -- CYBERSEC sajat plantalt GitHub-token-alaku proba
+valtozatlanul landolt a persistalt fajlban.
+
+**Dontes:** Case 10-be near-miss idegen nevek (rossz anchor, nem-szamjegy pid, rovid datum/ido),
+egy sajat-alaku NEVU, de VALOJABAN KONYVTAR artefakt (D10 pin: rm -f nem tudja torolni egy
+konyvtart, rm -rf torolne), es egy sima notify-alaku fajl, aminek PRUNELODNIE kell (D6, forditott
+polaritas -- itt a sajat fajlnak NEM kell tulelnie). FLEET_TEST_LOG_RETENTION-re ugyanaz a
+pozitiv-korlatozott-egesz validacio, mint az offload-dispatch.sh OFFLOAD_* valtoziban: nem-egesz,
+0, negativ, tul-nagy -> visszaesik 200-ra, vilagos uzenettel. `fleet_test_redact_log()` uj
+fuggveny, ugyanaz a regex-keszlet mint az offload-dispatch.sh freellm err_redacted-je (Bearer,
+URL-userinfo, kulcs=ertek, JWT-szeru pontozott alakok, AWS/Slack prefixumok, 32+ karakteres opak
+futasok), mindket persist-utvonalon (failure + notify) a nyers cp helyett. Minden uj eset
+mutacio-igazolva (a megfelelo mutans pontosan arra az esetre pirosit at, nem masra); a F-3
+tesztek szandekosan ROVID (<32 karakteres) plantalt ertekeket hasznalnak, hogy a specifikus
+Bearer/kulcs=ertek mintak levedettsege ne a 32+ catch-all-ba rejtozzon.
+
+**Ki döntött:** a leletek CYBERSEC-tol jonnek (komment 39544/39552, F-3/F-7/F-8), a javitast
+backend3 irta.
+**Hivatkozás:** kártya 08de93d5 (elozmeny 2f282a31, komment 39544/39552), store/fleet-test.sh,
+store/fleet-test-notify-injection.selftest.sh.
