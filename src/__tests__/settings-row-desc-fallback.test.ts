@@ -15,11 +15,15 @@ import { readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getSettingDefinition, SETTINGS_REGISTRY } from '../config-registry.js'
+import { langSource } from './helpers/lang-overlay-key.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SRC = readFileSync(join(ROOT, 'web', 'app-device-keys.js'), 'utf8')
-const HU = readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf8')
-const EN = readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf8')
+// Fork-overlay pilot item 2 (card ee132dfc) can move a key's settings.desc entry out of
+// hu.js/en.js into fork-hu.js/fork-en.js -- langSource() checks base+overlay merged, same
+// resolution rule the runtime uses (web/index.html).
+const HU = langSource('hu')
+const EN = langSource('en')
 
 function extract(name: string): string {
   const start = SRC.indexOf(`function ${name}(`)

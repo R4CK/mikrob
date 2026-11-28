@@ -161,7 +161,11 @@ describe('relation layer: string contract (HTML / CSS / i18n)', () => {
     ;(globalThis as unknown as { window: Record<string, unknown> }).window ||= {}
     await import(/* @vite-ignore */ '../../web/lang/hu.js' as string)
     await import(/* @vite-ignore */ '../../web/lang/en.js' as string)
-    const i18n = (globalThis as unknown as { window: { _i18n: Record<string, Record<string, string>> } }).window._i18n
+    // Fork-overlay pilot (card ee132dfc): also load the fork-only/fork-overridden overlay, or
+    // this only checks the base-file subset of the real runtime dictionary.
+    await import(/* @vite-ignore */ '../../web/lang/fork-hu.js' as string)
+    await import(/* @vite-ignore */ '../../web/lang/fork-en.js' as string)
+    const i18n =(globalThis as unknown as { window: { _i18n: Record<string, Record<string, string>> } }).window._i18n
     const literal = [...MODULE.matchAll(/t\('(memories\.graph\.rel\.[a-z_]+)'/g)].map((m) => m[1])
     const dynamicStates = ['loading', 'empty', 'error', 'offline'].map((s) => `memories.graph.rel.${s}`)
     const dynamicKinds = ['card', 'file', 'decision'].map((k) => `memories.graph.rel.${k}`)

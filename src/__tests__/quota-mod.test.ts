@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { chooseQuotaSnapshot, readModQuotaSnapshot, type QuotaSnapshot } from '../web/quota.js'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 // QUOTAMOD1005: the overview quota strip reads the agent-state-observer mod's
 // rate-limit readings when the statusLine block never arrives (setup token).
@@ -196,11 +197,10 @@ describe('the wiring', () => {
   })
 
   it('every new strip message exists in both languages', () => {
-    for (const lang of ['hu', 'en']) {
-      const L = readFileSync(join(__dirname, `../../web/lang/${lang}.js`), 'utf-8')
+    for (const lang of ['hu', 'en'] as const) {
       for (const key of ['overview.quota.none.no_source', 'overview.quota.source_mod', 'overview.quota.source_statusline',
         'overview.quota.source_mod_many', 'overview.quota.measured_now', 'overview.quota.stale_mod', 'overview.quota.stale_mod_unknown']) {
-        expect(L, `${lang}: ${key}`).toContain(`'${key}'`)
+        expect(langHasKey(lang, key), `${lang}: ${key}`).toBe(true)
       }
     }
   })

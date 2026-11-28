@@ -17,6 +17,12 @@ beforeAll(async () => {
   ;(globalThis as unknown as { window: Record<string, unknown> }).window ||= {} as Record<string, unknown>
   await import(/* @vite-ignore */ '../../web/lang/hu.js' as string)
   await import(/* @vite-ignore */ '../../web/lang/en.js' as string)
+  // Fork-overlay pilot (card ee132dfc, item 2): fork-only/fork-overridden keys live in
+  // fork-hu.js/fork-en.js, loaded right after the base files in web/index.html. Import them too,
+  // or this guard only checks the base-file SUBSET and goes blind to a parity bug introduced
+  // purely in the overlay (the real runtime contract merges both).
+  await import(/* @vite-ignore */ '../../web/lang/fork-hu.js' as string)
+  await import(/* @vite-ignore */ '../../web/lang/fork-en.js' as string)
   const i18n = (globalThis as unknown as { window: { _i18n: Record<string, Record<string, string>> } }).window._i18n
   hu = i18n.hu
   en = i18n.en

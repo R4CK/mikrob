@@ -92,7 +92,7 @@ vi.mock('node:fs', async (importOriginal) => {
 })
 
 // The target's channel token, by provider (FLEETIMPORTFOLLOW1021): none unless a test sets one.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- signature must match readChannelToken(provider, envPath) for mock-call-arg assertions below
+// signature must match readChannelToken(provider, envPath) for mock-call-arg assertions below
 const channelTokenMock = vi.hoisted(() => vi.fn((_provider: string, _envPath: string): string | null => null))
 vi.mock('../channel-provider.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../channel-provider.js')>()),

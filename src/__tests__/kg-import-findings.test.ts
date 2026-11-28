@@ -249,6 +249,72 @@ describe('importFindings (MT-10a, card 63206155)', () => {
     expect(report.findingsUpserted).toBe(2)
   })
 
+  it('F-2 (CYBERED NO-GO 39527): a secret-shaped CARD TITLE is skipped+counted, not a run-abort', () => {
+    // The real live trigger (card b0396aa1) has a #token= fragment in its TITLE, not its
+    // findings_ref -- the F5 pre-screen above only looks at findings_ref, so a secret-shaped
+    // title reaches upsertNode uncaught unless this card node's own write is wrapped too.
+    const mainDb = makeMainDbFixture()
+    mainDb.prepare(`UPDATE kanban_cards SET title = 'card with token=aaaaaaaaaaaa' WHERE id = 'card1'`).run()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+
+    let report!: ReturnType<typeof importFindings>
+    expect(() => { report = importFindings(mainDb, kgDb) }).not.toThrow()
+    // Both card1 rows (env-allowlist + the null-findings_ref FAIL) are skipped: card1's title
+    // throws on the FIRST row that needs its card node, and cardNodesWritten is never marked
+    // (so the second card1 row retries and is skipped again too).
+    expect(report.cardTitleSkippedSecret).toBe(2)
+    expect(report.findingsUpserted).toBe(1) // only card2's env-allowlist row
+    expect(kgDb.prepare(`SELECT 1 FROM kg_nodes WHERE id = 'card:card1'`).get()).toBeUndefined()
+  })
+
+  it('F-2: a KG-LOCAL-only secret in findings_ref (passes the shared pre-screen) skips the finding node, not the run', () => {
+    // DB_PASSWORD=... is not in the SHARED SECRET_PATTERNS list (findSecretShape), so the F5
+    // pre-screen lets it through -- it only trips upsertNode's KG-LOCAL guard
+    // (assertNoKgLocalSecretShape) once the finding node is written.
+    const mainDb = makeMainDbFixture()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+    mainDb
+      .prepare(`UPDATE kanban_verdicts SET findings_ref = 'DB_PASSWORD=supersecretvalue' WHERE card_id = 'card1' AND gate = 'CYBERSEC'`)
+      .run()
+
+    let report!: ReturnType<typeof importFindings>
+    expect(() => { report = importFindings(mainDb, kgDb) }).not.toThrow()
+    expect(report.verdictsSkippedSecret).toBe(0) // the shared pre-screen did NOT catch it
+    expect(report.findingSkippedSecret).toBe(1)
+    // card1's card node IS still written (it happens before the finding node); the finding itself
+    // and its edges are not.
+    expect(kgDb.prepare(`SELECT 1 FROM kg_nodes WHERE id = 'card:card1'`).get()).toBeTruthy()
+    expect(report.findingsUpserted).toBe(2) // card2/env-allowlist + card1/QA FAIL (null ref)
+  })
+
+  it('F-2: the card-node catch does not swallow a non-secret error (mutant: swallow-all)', () => {
+    // Proves instanceof KgSecretError is the actual gate at the card-node site, not a bare
+    // catch-everything. A card id with an unsafe character fails assertValidIdentifiers'
+    // SAFE_ID_PATTERN check (throws KgValidationError) BEFORE the secret-shape checks even run --
+    // a non-secret error that must propagate, not be counted as cardTitleSkippedSecret.
+    const mainDb = makeMainDbFixture()
+    mainDb.exec(`UPDATE kanban_verdicts SET card_id = 'card one' WHERE card_id = 'card1'`)
+    mainDb.exec(`UPDATE kanban_cards SET id = 'card one' WHERE id = 'card1'`)
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+
+    expect(() => importFindings(mainDb, kgDb)).toThrow(/must be 1-\d+ chars/)
+  })
+
+  it('F-2: the finding-node catch does not swallow a non-secret error (mutant: swallow-all)', () => {
+    // An invalid gate_sha shape fails assertValidIdentifiers' GATE_SHA_PATTERN check (throws
+    // KgValidationError) before the secret-shape checks run -- a non-secret error that must
+    // propagate, not be counted as findingSkippedSecret. Only the finding node passes gate_sha.
+    const mainDb = makeMainDbFixture()
+    mainDb.prepare(`UPDATE kanban_verdicts SET sha = 'not-a-valid-sha!!' WHERE card_id = 'card1' AND gate = 'CYBERSEC'`).run()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+
+    expect(() => importFindings(mainDb, kgDb)).toThrow(/must be one or more comma-separated/)
+  })
+
   it('F5: a secret-shaped findings_ref is skipped and counted; the rest of the run continues', () => {
     // Previously: upsertNode's assertNoSecretShape threw KgSecretError and aborted the whole run.
     // Now: the row is pre-screened, skipped with verdictsSkippedSecret++, and the remaining rows

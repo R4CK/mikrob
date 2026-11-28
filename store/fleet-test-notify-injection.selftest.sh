@@ -16,9 +16,22 @@ TMP="$(mktemp -d)"
 trap 'kill "${stub_pid:-}" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 FUNCS="$TMP/funcs.sh"
-sed -n '/^fleet_test_safe_summary() {/,/^}/p' "$SRC" > "$FUNCS"
+# Card 2f282a31: the retention default is a top-level assignment (sed's function-block pattern
+# below does not match it), extracted the same way the TERM/INT/HUP trap lines further down are --
+# a literal grep for the real line, so a mutant that changes the default is still caught.
+grep -m1 '^FLEET_TEST_LOG_RETENTION=' "$SRC" > "$FUNCS"
+grep -q '^FLEET_TEST_LOG_RETENTION=' "$FUNCS" || { echo "FAIL: could not extract the real FLEET_TEST_LOG_RETENTION default from $SRC -- source and selftest have drifted"; exit 1; }
+# Card 2f282a31 CYBERSEC F-1 delta: fleet_test_prune_log_dir now filters by this pattern before it
+# ever prunes anything -- extracted the same way, so a mutant widening/dropping the pattern is caught.
+grep -m1 "^FLEET_TEST_OWN_LOG_RE='" "$SRC" >> "$FUNCS"
+grep -q "^FLEET_TEST_OWN_LOG_RE='" "$FUNCS" || { echo "FAIL: could not extract the real FLEET_TEST_OWN_LOG_RE pattern from $SRC -- source and selftest have drifted"; exit 1; }
+sed -n '/^fleet_test_prune_log_dir() {/,/^}/p' "$SRC" >> "$FUNCS"
+sed -n '/^fleet_test_persist_failure_log() {/,/^}/p' "$SRC" >> "$FUNCS"
+sed -n '/^fleet_test_safe_summary() {/,/^}/p' "$SRC" >> "$FUNCS"
 sed -n '/^fleet_test_notify_finish() {/,/^}/p' "$SRC" >> "$FUNCS"
 sed -n '/^fleet_test_on_exit() {/,/^}/p' "$SRC" >> "$FUNCS"
+grep -q '^fleet_test_prune_log_dir() {' "$FUNCS" || { echo "FAIL: could not extract fleet_test_prune_log_dir from $SRC -- source and selftest have drifted"; exit 1; }
+grep -q '^fleet_test_persist_failure_log() {' "$FUNCS" || { echo "FAIL: could not extract fleet_test_persist_failure_log from $SRC -- source and selftest have drifted"; exit 1; }
 grep -q '^fleet_test_safe_summary() {' "$FUNCS" || { echo "FAIL: could not extract fleet_test_safe_summary from $SRC -- source and selftest have drifted"; exit 1; }
 grep -q '^fleet_test_notify_finish() {' "$FUNCS" || { echo "FAIL: could not extract fleet_test_notify_finish from $SRC -- source and selftest have drifted"; exit 1; }
 grep -q '^fleet_test_on_exit() {' "$FUNCS" || { echo "FAIL: could not extract fleet_test_on_exit from $SRC -- source and selftest have drifted"; exit 1; }
@@ -261,6 +274,83 @@ else
 fi
 [ -d "$TERM_TMPDIR" ] && rm -rf "$TERM_TMPDIR" 2>/dev/null
 
+# --- Case 7 (card 2f282a31): NO FLEET_TEST_CALLER_AGENT at all -- the land-run shape, which never
+# opts into notify -- but the run FAILS (rc=1). The failure's log must still land in
+# FLEET_TEST_LOG_DIR, through fleet_test_on_exit's own trap, with none of the notify/HTTP
+# machinery involved (no token file needed at all here).
+n=$((n+1))
+LOGDIR7="$TMP/logs-noagent"
+NOAGENT_TMPDIR="$(mktemp -d)"
+bash -c '
+  . "$1"
+  export TMPDIR="$2"
+  export FLEET_TEST_LOG_DIR="$3"
+  unset FLEET_TEST_CALLER_AGENT
+  run_log="$TMPDIR/run.log"
+  printf " Test Files  1 failed | 1 passed (2)\n      Tests  1 failed | 1 passed (2)\nDISTINCTIVE-CASE7-MARKER\n" > "$run_log"
+  exit 1
+' _ "$FUNCS_WITH_TRAP" "$NOAGENT_TMPDIR" "$LOGDIR7"
+persisted="$(grep -rl 'DISTINCTIVE-CASE7-MARKER' "$LOGDIR7" 2>/dev/null | head -1)"
+if [ -n "$persisted" ]; then
+  echo "  ok   no CALLER_AGENT + failing run -> log persisted to FLEET_TEST_LOG_DIR anyway (card 2f282a31)"
+else
+  echo "  FAIL no CALLER_AGENT + failing run -> nothing persisted in $LOGDIR7 (land runs would stay unrecoverable)"; fail=1
+fi
+[ -d "$NOAGENT_TMPDIR" ] && rm -rf "$NOAGENT_TMPDIR" 2>/dev/null
+
+# --- Case 8 (card 2f282a31, control for Case 7): same shape, but the run PASSES (rc=0). Must
+# persist NOTHING -- the floor this card asked for is failures, and writing a file for every
+# green, non-opted-in run would grow the directory without limit during a long quiet period.
+n=$((n+1))
+LOGDIR8="$TMP/logs-noagent-pass"
+PASSNOAGENT_TMPDIR="$(mktemp -d)"
+bash -c '
+  . "$1"
+  export TMPDIR="$2"
+  export FLEET_TEST_LOG_DIR="$3"
+  unset FLEET_TEST_CALLER_AGENT
+  run_log="$TMPDIR/run.log"
+  printf " Test Files  1 passed (1)\n      Tests  1 passed (1)\n" > "$run_log"
+  exit 0
+' _ "$FUNCS_WITH_TRAP" "$PASSNOAGENT_TMPDIR" "$LOGDIR8"
+if [ ! -d "$LOGDIR8" ] || [ -z "$(ls -A "$LOGDIR8" 2>/dev/null)" ]; then
+  echo "  ok   no CALLER_AGENT + passing run -> nothing persisted (floor is failures, not every run)"
+else
+  echo "  FAIL no CALLER_AGENT + passing run persisted a file anyway: $(ls -A "$LOGDIR8" 2>/dev/null)"; fail=1
+fi
+[ -d "$PASSNOAGENT_TMPDIR" ] && rm -rf "$PASSNOAGENT_TMPDIR" 2>/dev/null
+
+# --- Case 9 (card 2f282a31): bounded retention. With FLEET_TEST_LOG_RETENTION=2, a 3rd failing
+# run must prune the OLDEST persisted failure log, never grow past 2 -- an unattended land-only
+# period (every other agent held off, exactly what triggered this card) must not fill the disk.
+n=$((n+1))
+LOGDIR9="$TMP/logs-retention"
+mkdir -p "$LOGDIR9"
+r=1
+while [ "$r" -le 3 ]; do
+  RET_TMPDIR="$(mktemp -d)"
+  bash -c '
+    . "$1"
+    export TMPDIR="$2"
+    export FLEET_TEST_LOG_DIR="$3"
+    export FLEET_TEST_LOG_RETENTION="$4"
+    unset FLEET_TEST_CALLER_AGENT
+    run_log="$TMPDIR/run.log"
+    printf "run-%s failed\n" "$5" > "$run_log"
+    exit 1
+  ' _ "$FUNCS_WITH_TRAP" "$RET_TMPDIR" "$LOGDIR9" "2" "$r"
+  [ -d "$RET_TMPDIR" ] && rm -rf "$RET_TMPDIR" 2>/dev/null
+  sleep 1.1 # mtime resolution: each run's dest_log filename AND mtime must sort strictly after the previous
+  r=$((r+1))
+done
+remaining="$(ls -1 "$LOGDIR9" 2>/dev/null | wc -l)"
+if [ "$remaining" -eq 2 ] && ! grep -rq 'run-1 failed' "$LOGDIR9" 2>/dev/null \
+  && grep -rq 'run-2 failed' "$LOGDIR9" 2>/dev/null && grep -rq 'run-3 failed' "$LOGDIR9" 2>/dev/null; then
+  echo "  ok   retention bounded to 2: oldest (run-1) pruned, run-2 and run-3 survive"
+else
+  echo "  FAIL retention not bounded correctly: $remaining file(s) remain, contents: $(grep -rH '' "$LOGDIR9" 2>/dev/null)"; fail=1
+fi
+
 # --- Negative control (guards-that-pin-behaviour): no readable token file -> no POST sent.
 n=$((n+1))
 rm -f "$FLEET_TEST_NOTIFY_TOKEN_FILE"
@@ -270,6 +360,50 @@ if [ ! -s "$STUB_POST_LOG" ]; then
   echo "  ok   no token file -> no POST sent (fail-silent, never blocks the run)"
 else
   echo "  FAIL a POST was sent anyway with no token file: $(cat "$STUB_POST_LOG")"; fail=1
+fi
+
+# --- Case 10 (card 2f282a31, CYBERSEC F-1): a FOREIGN file already in FLEET_TEST_LOG_DIR (same
+# shape as card a5c827ca's channel-poller-reap-failure-...-pane-parent-not-stopped.json evidence)
+# must SURVIVE repeated pruning. Before the fix, fleet_test_prune_log_dir counted over the whole
+# directory, so a flood of our own failure logs past the retention cap deleted it right along
+# with our own oldest logs.
+n=$((n+1))
+LOGDIR10="$TMP/logs-foreign"
+mkdir -p "$LOGDIR10"
+FOREIGN_FILE="$LOGDIR10/channel-poller-reap-failure-2026-11-25T08-18-15-842Z-pane-parent-not-stopped.json"
+echo '{"evidence":"card a5c827ca"}' > "$FOREIGN_FILE"
+r=1
+while [ "$r" -le 3 ]; do
+  RET10_TMPDIR="$(mktemp -d)"
+  bash -c '
+    . "$1"
+    export TMPDIR="$2"
+    export FLEET_TEST_LOG_DIR="$3"
+    export FLEET_TEST_LOG_RETENTION="$4"
+    unset FLEET_TEST_CALLER_AGENT
+    run_log="$TMPDIR/run.log"
+    printf "run-%s failed\n" "$5" > "$run_log"
+    exit 1
+  ' _ "$FUNCS_WITH_TRAP" "$RET10_TMPDIR" "$LOGDIR10" "1" "$r"
+  [ -d "$RET10_TMPDIR" ] && rm -rf "$RET10_TMPDIR" 2>/dev/null
+  sleep 1.1
+  r=$((r+1))
+done
+if [ -f "$FOREIGN_FILE" ] && grep -q 'a5c827ca' "$FOREIGN_FILE" 2>/dev/null; then
+  echo "  ok   foreign non-log evidence file survives pruning, even past our own retention cap"
+else
+  echo "  FAIL foreign evidence file was deleted by our own prune (CYBERSEC F-1 regression): $(ls -A "$LOGDIR10" 2>/dev/null)"; fail=1
+fi
+
+# --- Case 11 (card 2f282a31, CYBERSEC F-2): pin the retention DEFAULT value, not just that the
+# assignment line exists -- a mutant changing 200 to e.g. 2 or removing the default entirely
+# (falling through to an empty/unset value) must turn this red.
+n=$((n+1))
+default_val="$(bash -c '. "$1"; echo "$FLEET_TEST_LOG_RETENTION"' _ "$FUNCS")"
+if [ "$default_val" = "200" ]; then
+  echo "  ok   FLEET_TEST_LOG_RETENTION defaults to 200 when unset"
+else
+  echo "  FAIL FLEET_TEST_LOG_RETENTION default is '$default_val', expected 200"; fail=1
 fi
 
 echo

@@ -9,11 +9,10 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langSource } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const MODULE = readFileSync(join(__dirname, '../../web/app-kanban.js'), 'utf-8')
-const EN     = readFileSync(join(__dirname, '../../web/lang/en.js'),    'utf-8')
-const HU     = readFileSync(join(__dirname, '../../web/lang/hu.js'),    'utf-8')
 
 // Strip //-comments before matching, so a needle can only be satisfied by real code, not a comment
 // that merely describes the shape (Cybersec, card a14812e8 / e5b7ff19 pattern).
@@ -49,13 +48,13 @@ describe('postKanbanMove retries a bulk-refused move with a reason (card 1ef7bd9
 
 describe('the prompt string exists in both locales, non-empty (lang-parity covers key presence)', () => {
   it('en.js has a real sentence, not a placeholder', () => {
-    const m = EN.match(/'kanban\.toast\.bulk_attribution_reason_prompt':\s*'([^']+)'/)
+    const m = langSource('en').match(/'kanban\.toast\.bulk_attribution_reason_prompt':\s*'([^']+)'/)
     expect(m).not.toBeNull()
     expect(m![1].length).toBeGreaterThan(10)
   })
 
   it('hu.js has a real sentence, not a placeholder', () => {
-    const m = HU.match(/'kanban\.toast\.bulk_attribution_reason_prompt':\s*'([^']+)'/)
+    const m = langSource('hu').match(/'kanban\.toast\.bulk_attribution_reason_prompt':\s*'([^']+)'/)
     expect(m).not.toBeNull()
     expect(m![1].length).toBeGreaterThan(10)
   })

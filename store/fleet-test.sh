@@ -161,6 +161,52 @@ print(summary if summary and len(summary) <= CAP else FALLBACK)
 ' "$log" "$SUMMARY_CHAR_CAP"
 }
 
+# Card 2f282a31: persistence to FLEET_TEST_LOG_DIR has ALWAYS been a side effect of
+# fleet_test_notify_finish below, which only runs when FLEET_TEST_CALLER_AGENT is set -- an
+# explicit, agent-initiated self-check opt-in (see its own call site in fleet_test_on_exit).
+# marveen-land.sh's land calls NEVER set that var, so a land run's own FAILURE was never durably
+# recoverable: measured live, the newest file in $FLEET_TEST_LOG_DIR was from 07:07 this morning,
+# and three subsequent land runs (one red, on mopsion-suite-run.selftest.sh) left nothing behind,
+# because land was the ONLY caller running fleet-test.sh in that window (every other agent was
+# told to hold off, land-queue priority) and land never opts into the notify path. This closes
+# that gap WITHOUT touching the notify/messaging mechanism at all (no HTTP call, no dashboard
+# token needed, so it cannot be affected by a missing/unreadable token either): any FAILING run
+# persists its log here regardless of FLEET_TEST_CALLER_AGENT, with bounded retention (oldest
+# pruned beyond FLEET_TEST_LOG_RETENTION) so an unattended land-only period cannot grow this
+# directory without limit. A PASSING, non-opted-in run still persists nothing -- the floor the
+# card asked for is failures, and the common case (most land runs are green) should not start
+# writing a file nobody asked for on every single one.
+FLEET_TEST_LOG_RETENTION="${FLEET_TEST_LOG_RETENTION:-200}"
+# Matches ONLY the filenames this script itself writes into FLEET_TEST_LOG_DIR -- the
+# fleet_test_persist_failure_log "<ts>-<pid>-failure.log" shape and the fleet_test_notify_finish
+# "<ts>-<pid>.log" shape. CYBERSEC F-1 (card 2f282a31, QA PASS 39543 + CYBERSEC GO 39544 delta):
+# the pruning used to count over the WHOLE shared directory, so the first red land after this
+# card could delete unrelated evidence another test deliberately persisted there (measured:
+# channel-poller-reap-failure-...-pane-parent-not-stopped.json, card a5c827ca). Pruning must only
+# ever touch files matching this pattern, never anything else a sibling test wrote into the same
+# shared directory.
+FLEET_TEST_OWN_LOG_RE='^[0-9]{8}T[0-9]{6}Z-[0-9]+(-failure)?\.log$'
+fleet_test_prune_log_dir() { # $1=dir $2=keep (newest N of OUR OWN logs survive, by mtime)
+  local dir="$1" keep="$2" f
+  [ -d "$dir" ] || return 0
+  local -a own old
+  mapfile -t own < <(ls -1t "$dir" 2>/dev/null | grep -E "$FLEET_TEST_OWN_LOG_RE")
+  mapfile -t old < <(printf '%s\n' "${own[@]:-}" | tail -n "+$((keep + 1))")
+  for f in "${old[@]:-}"; do
+    [ -n "$f" ] && rm -f "${dir:?}/$f" 2>/dev/null
+  done
+}
+
+fleet_test_persist_failure_log() { # $1=status $2=run_log_path
+  local st="$1" src_log="$2"
+  [ "$st" -ne 0 ] || return 0
+  [ -n "$src_log" ] && [ -r "$src_log" ] || return 0
+  mkdir -p "$FLEET_TEST_LOG_DIR" 2>/dev/null || return 0
+  local dest_log="$FLEET_TEST_LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$$-failure.log"
+  cp "$src_log" "$dest_log" 2>/dev/null || return 0
+  fleet_test_prune_log_dir "$FLEET_TEST_LOG_DIR" "$FLEET_TEST_LOG_RETENTION"
+}
+
 fleet_test_notify_finish() { # $1=caller_agent $2=status $3=run_log_path
   local caller="$1" st="$2" src_log="$3" tok="${FLEET_TEST_NOTIFY_TOKEN_FILE:-$ROOT/store/.dashboard-token}"
   [ -r "$tok" ] || return 0
@@ -216,7 +262,13 @@ print(json.dumps({"from": sys.argv[1], "to": sys.argv[1], "content": content}))
 # waiter's next poll. N4 fix: FLEET_TEST_AGING_S bounds how long a normal run can be starved by a
 # continuous stream of land arrivals (see fleet_test_is_head).
 TREE_TICKET_DIR="${LOCK_FILE}.tickets"
-FLEET_TEST_AGING_S="${FLEET_TEST_AGING_S:-180}"
+# NOT overridable by the caller's env (CYBERSEC NO-GO 39208, F-2): a bare env knob here would let
+# any waiter set FLEET_TEST_AGING_S=0 and have its OWN rank-1 ticket promoted to rank 0 on its
+# very first poll, jumping the queue ahead of every genuine land ticket without ever having to
+# impersonate marveen-land.sh at all. A constant, like LOCK_WAIT_SECONDS is NOT (that one bounds
+# how long *this run itself* waits, which is safe to let a caller shorten -- this one decides
+# ordering relative to OTHER waiters, which is not).
+FLEET_TEST_AGING_S=180
 # A function, not an inline case, so the selftest can extract and exercise the REAL mapping
 # instead of hand-setting PRIORITY_RANK and skipping it.
 fleet_test_resolve_priority_rank() {
@@ -227,6 +279,101 @@ fleet_test_resolve_priority_rank() {
 }
 FLEET_TEST_PRIORITY="${FLEET_TEST_PRIORITY:-normal}"
 [ "$FLEET_TEST_PRIORITY" = land ] || FLEET_TEST_PRIORITY=normal
+
+# HARDENING (card e99c3dc1, MikroB msg 25163): FLEET_TEST_PRIORITY=land above is SELF-REPORTED --
+# a bare env var any caller can export to jump the land lane. Before honouring a land claim,
+# verify it against the actual holder of marveen-land.sh's own develop-push lock. The fd lives on
+# marveen-land.sh's own long-lived process, never on fleet-test.sh's immediate parent: that
+# parent is run_fg_killable's subshell, which deliberately closes ITS copy of the fd before
+# exec'ing this script (card 81c6fbb5 Q3) -- so the walk below has to go past the first ancestor.
+# Fails CLOSED on any incomplete check (missing /proc, unreadable file, no match within the
+# bounded depth): falls back to normal priority, never land.
+#
+# NOT overridable by the caller's env (CYBERSEC NO-GO 39208, F-1, 3/3 probes): the first version
+# of this line read MARVEEN_LAND_DEVELOP_LOCK_FILE, the SAME env var marveen-land.sh itself reads
+# for where IT locks -- but any fleet-test.sh caller can set that var too, point it at a lock file
+# of their own choosing, flock it themselves, and put "marveen-land.sh" in their own argv (`exec
+# -a`, `bash -c ... "$0"`, or just naming it in a later arg) to satisfy every check below against
+# a lock nobody else ever contends on. The canonical path is the ONE thing a caller cannot choose:
+# it is always this script's own $ROOT, which is hardcoded above, never derived from the
+# environment. fleet_test_verify_land_priority still takes the lock file as a plain argument, so
+# a test can call it directly with its own throwaway path -- only THIS call site, the one real
+# runs actually go through, is pinned to the canonical constant.
+FLEET_TEST_LAND_LOCK_FILE="${ROOT}/store/.marveen-land-develop.lock"
+FLEET_TEST_PRIORITY_ANCESTOR_DEPTH="${FLEET_TEST_PRIORITY_ANCESTOR_DEPTH:-10}"
+
+fleet_test_ppid() { # $1 = pid; echoes PPID or returns 1
+  local pid="$1" stat_line rest
+  stat_line="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 1
+  [ -n "$stat_line" ] || return 1
+  rest="${stat_line##*) }"
+  set -- $rest
+  [ "$#" -ge 2 ] || return 1
+  echo "$2"
+}
+
+fleet_test_pid_cmdline_is_marveen_land() { # $1 = pid
+  local pid="$1" cmdline
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  cmdline="$(tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null)" || return 1
+  printf '%s\n' "$cmdline" | grep -qF 'marveen-land.sh'
+}
+
+# (a) an open fd on the lock file's inode AND (b) an ACTUAL flock held on THAT fd -- an open fd
+# alone proves nothing, since any process can open a world-readable file (MikroB msg 25163's
+# tightening over the original plan). Checked via /proc/<pid>/fdinfo/<fd>'s own "lock:" line, NOT
+# the machine-wide /proc/locks listing: measured directly (card e99c3dc1) that /proc/locks does
+# not reliably list a live flock() hold on this platform -- a bash `exec {fd}>>f; flock "$fd"`
+# that a second process's `flock -n` correctly blocked on, and `fuser -v` correctly reported, was
+# simply ABSENT from /proc/locks the whole time. /proc/<pid>/fdinfo/<fd>, which reports the exact
+# fd's own lock state straight from the kernel, showed it correctly in the same measurement, with
+# no "lock:" line at all when the fd was merely open and unlocked (negative control, also
+# measured). Per-fd is also structurally tighter than the global listing would have been: it
+# cannot be confused by some OTHER process's unrelated lock on the same inode.
+fleet_test_pid_holds_lock_inode() { # $1 = pid, $2 = target inode
+  local pid="$1" inode="$2" fd fd_inode fd_num fdinfo lock_line
+  [ -d "/proc/$pid/fd" ] || return 1
+  for fd in "/proc/$pid/fd"/*; do
+    [ -e "$fd" ] || continue
+    fd_inode="$(stat -L -c '%i' "$fd" 2>/dev/null)" || continue
+    [ "$fd_inode" = "$inode" ] || continue
+    fd_num="$(basename "$fd")"
+    fdinfo="/proc/$pid/fdinfo/$fd_num"
+    [ -r "$fdinfo" ] || continue
+    lock_line="$(grep '^lock:' "$fdinfo" 2>/dev/null)" || continue
+    case "$lock_line" in
+      *FLOCK*WRITE*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Walks the ancestor PID chain (bounded) looking for the one that actually holds the develop
+# lock AND is marveen-land.sh itself (not merely something that happens to have the file open).
+fleet_test_verify_land_priority() { # $1 = lock file path
+  local lock_file="$1" inode pid ppid depth=0
+  [ -e "$lock_file" ] || return 1
+  inode="$(stat -c '%i' "$lock_file" 2>/dev/null)" || return 1
+  [ -n "$inode" ] || return 1
+  pid=$$
+  while [ "$depth" -lt "$FLEET_TEST_PRIORITY_ANCESTOR_DEPTH" ]; do
+    ppid="$(fleet_test_ppid "$pid")" || return 1
+    case "$ppid" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$ppid" -gt 1 ] || return 1
+    pid="$ppid"
+    depth=$((depth + 1))
+    if fleet_test_pid_holds_lock_inode "$pid" "$inode" && fleet_test_pid_cmdline_is_marveen_land "$pid"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [ "$FLEET_TEST_PRIORITY" = land ] && ! fleet_test_verify_land_priority "$FLEET_TEST_LAND_LOCK_FILE"; then
+  FLEET_TEST_PRIORITY=normal
+fi
 PRIORITY_RANK="$(fleet_test_resolve_priority_rank "$FLEET_TEST_PRIORITY")"
 
 # RUN-SCOPED TMPDIR ON THE MAIN DISK, NOT THE SHARED /tmp TMPFS (card a4a6a5e5). Node's
@@ -258,7 +405,11 @@ fleet_test_on_exit() {
   # the rm -rf first meant mktemp for the placeholder failed silently (no dir to create the file
   # in) and a real run_log was deleted before fleet_test_notify_finish ever read it, so NOTHING
   # was ever posted, on every exit path, pass or die().
-  if [ -n "${FLEET_TEST_CALLER_AGENT:-}" ]; then
+  # Card 2f282a31: the placeholder-building logic below used to run ONLY inside the
+  # FLEET_TEST_CALLER_AGENT branch, so a caller that never opts into notify (every land) could
+  # never reach fleet_test_persist_failure_log either -- widened to "notify OR a failing exit",
+  # so a land's own die()-before-run_log-existed case still gets a (placeholder) log persisted.
+  if [ -n "${FLEET_TEST_CALLER_AGENT:-}" ] || [ "$st" -ne 0 ]; then
     local notify_log="${run_log:-}" made_placeholder=0
     if [ -z "$notify_log" ] || [ ! -r "$notify_log" ]; then
       notify_log="$(mktemp 2>/dev/null)" || notify_log=""
@@ -267,7 +418,11 @@ fleet_test_on_exit() {
         printf '(no test run output -- exited before vitest started or printed anything)\n' > "$notify_log"
       fi
     fi
-    [ -n "$notify_log" ] && fleet_test_notify_finish "$FLEET_TEST_CALLER_AGENT" "$st" "$notify_log"
+    if [ -n "${FLEET_TEST_CALLER_AGENT:-}" ]; then
+      [ -n "$notify_log" ] && fleet_test_notify_finish "$FLEET_TEST_CALLER_AGENT" "$st" "$notify_log"
+    else
+      [ -n "$notify_log" ] && fleet_test_persist_failure_log "$st" "$notify_log"
+    fi
     [ "$made_placeholder" -eq 1 ] && rm -f "$notify_log" 2>/dev/null
   fi
   rm -f "${run_log:-}" 2>/dev/null
@@ -358,6 +513,20 @@ fleet_test_take_ticket() { # $1 = ticket_dir
 # the original crash case), OR the pid IS alive but its recorded start time no longer matches the
 # live process's current start time -- the pid was recycled by an unrelated later process and the
 # ticket's original owner is long gone (N2 fix; same check marveen-land.sh's own reaper uses).
+# True if ANY ticket currently in ticket_dir is rank 0 (land) -- used only to word a timeout
+# message (card e99c3dc1, point 2), never to change ordering (fleet_test_is_head owns that).
+fleet_test_any_land_ticket_pending() { # $1 = ticket_dir
+  local ticket_dir="$1" f base
+  for f in "$ticket_dir"/*; do
+    [ -e "$f" ] || continue
+    base="$(basename "$f")"
+    case "$base" in
+      0-*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 fleet_test_reap_stale_tickets() { # $1 = ticket_dir
   local ticket_dir="$1" f base pid recorded_start live_start
   for f in "$ticket_dir"/*; do
@@ -484,6 +653,10 @@ while [ $# -gt 0 ]; do
     # --cpu-slot-path above -- a guard test can assert the actual env_compat_get result instead of
     # pattern-matching source text, and exits before any lock is taken.
     --cpu-slots) echo "$CPU_SLOTS"; exit 0 ;;
+    # Prints the EFFECTIVE priority (after ancestor-lock verification, card e99c3dc1) -- "land" or
+    # "normal" -- so a test can assert the verified outcome instead of the self-reported claim.
+    # Exits before any lock is taken, same reasoning as --lock-path above.
+    --effective-priority) echo "$FLEET_TEST_PRIORITY"; exit 0 ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) ARGS+=("$1"); shift ;;
   esac
@@ -617,6 +790,13 @@ while ! { fleet_test_is_head "$TREE_TICKET_DIR" "$TREE_TICKET" && flock -n 9; };
   if [ "$TREE_TICKET_WAITED" -ge "$LOCK_WAIT_SECONDS" ]; then
     rm -f "$TREE_TICKET" 2>/dev/null
     fleet_test_log_lock_event timeout "$TREE_TICKET_WAITED" - 3
+    # DISTINGUISHABLE SIGNAL (card e99c3dc1, point 2): a gate's own store-selftests run (which
+    # spawns child fleet-test.sh calls to test this script) needs to tell "queued behind a land"
+    # apart from "a run is actually stuck" on stderr text alone, not just the exit code. Checked
+    # AFTER removing my own ticket, so this never names itself.
+    if fleet_test_any_land_ticket_pending "$TREE_TICKET_DIR"; then
+      die 3 "timed out after ${LOCK_WAIT_SECONDS}s waiting for the fleet suite lock ($LOCK_FILE), queued behind a LAND ticket. Another run is stuck: find it with 'fuser -v $LOCK_FILE' and deal with THAT run. A private FLEET_TEST_TREE is no longer a way around the queue (card 2f0c7d24)."
+    fi
     die 3 "timed out after ${LOCK_WAIT_SECONDS}s waiting for the fleet suite lock ($LOCK_FILE). Another run is stuck: find it with 'fuser -v $LOCK_FILE' and deal with THAT run. A private FLEET_TEST_TREE is no longer a way around the queue (card 2f0c7d24)."
   fi
   sleep 1

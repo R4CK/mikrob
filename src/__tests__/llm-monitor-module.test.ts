@@ -62,6 +62,11 @@ beforeAll(async () => {
   await import(/* @vite-ignore */ join(WEB, 'app-llm-monitor.js') as string)
   await import(/* @vite-ignore */ join(WEB, 'lang/hu.js') as string)
   await import(/* @vite-ignore */ join(WEB, 'lang/en.js') as string)
+  // Fork-overlay pilot (card ee132dfc): fork-only/fork-overridden keys live in fork-hu.js/
+  // fork-en.js, loaded right after the base files in web/index.html -- import them too, or this
+  // t() sees only the base-file SUBSET of the real runtime dictionary.
+  await import(/* @vite-ignore */ join(WEB, 'lang/fork-hu.js') as string)
+  await import(/* @vite-ignore */ join(WEB, 'lang/fork-en.js') as string)
   win = g.window as unknown as Win
 })
 

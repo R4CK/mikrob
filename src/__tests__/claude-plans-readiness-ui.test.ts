@@ -18,6 +18,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
@@ -67,17 +68,14 @@ describe.skip('claudePlansReadinessLines', () => {
 
 describe.skip('readiness i18n coverage', () => {
   const codes = [...SERVER.matchAll(/code: '([a-z_]+)'/g)].map((m) => m[1]).filter((c) => c !== 'rotation_disabled')
-  const en = readFileSync(join(__dirname, '../../web/lang/en.js'), 'utf-8')
-  const hu = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
-
   it('finds the server codes', () => {
     expect(codes.length).toBeGreaterThanOrEqual(4)
   })
 
-  it.each(['en', 'hu'])('every banner code has text in %s', (lang) => {
-    const src = lang === 'en' ? en : hu
-    for (const code of codes) expect(src).toContain(`'settings.claude_plans.readiness.${code}':`)
-    expect(src).toContain(`'settings.claude_plans.readiness.title':`)
+  it.each(['en', 'hu'] as const)('every banner code has text in %s', (lang) => {
+    for (const code of codes)
+      expect(langHasKey(lang, `settings.claude_plans.readiness.${code}`)).toBe(true)
+    expect(langHasKey(lang, 'settings.claude_plans.readiness.title')).toBe(true)
   })
 })
 

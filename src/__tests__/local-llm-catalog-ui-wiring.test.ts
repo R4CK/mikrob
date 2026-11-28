@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_CORE = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
@@ -14,8 +15,6 @@ const LLM_MODULE = readFileSync(join(__dirname, '../../web/app-local-llm.js'), '
 const APP = APP_CORE + '\n' + LLM_MODULE
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
-const HU = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
-const EN = readFileSync(join(__dirname, '../../web/lang/en.js'), 'utf-8')
 
 function fnBody(source: string, startMarker: string): string {
   const start = source.indexOf(startMarker)
@@ -202,10 +201,10 @@ describe('model catalogue i18n (HU+EN parity, rule 12)', () => {
     'localLlm.rec.tps_tip', 'localLlm.rec.tps_unmeasured', 'localLlm.rec.tps_unmeasured_tip',
   ]
   it.each(KEYS)('%s exists in hu.js', (key) => {
-    expect(HU).toContain(`'${key}':`)
+    expect(langHasKey('hu', key)).toBe(true)
   })
   it.each(KEYS)('%s exists in en.js', (key) => {
-    expect(EN).toContain(`'${key}':`)
+    expect(langHasKey('en', key)).toBe(true)
   })
 })
 

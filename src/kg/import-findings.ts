@@ -29,7 +29,7 @@
 // of_class edges are delete-then-insert per run so reclassification removes stale edges -- F4).
 
 import type Database from 'better-sqlite3'
-import { upsertNode, upsertEdge, sanitizeKgText, findSecretShape } from './store.js'
+import { upsertNode, upsertEdge, sanitizeKgText, findSecretShape, KgSecretError } from './store.js'
 import { mapProjectToPartition, GLOBAL_PARTITION } from './project-map.js'
 
 export interface FindingsImportReport {
@@ -41,6 +41,24 @@ export interface FindingsImportReport {
   classEdges: number
   classifiedCount: number
   unclassifiedCount: number
+  /** F-2 (CYBERED NO-GO 39527, same class as card 01b10349's F4): the referenced card's TITLE can
+   *  trip the KG-LOCAL secret-shape guard (assertNoKgLocalSecretShape inside upsertNode) even
+   *  though the row's findings_ref already passed the SHARED-pattern pre-screen above -- the two
+   *  screens cover different shapes. Skipped and counted instead of aborting the whole run: no
+   *  card node, no finding, no found_on edge for that one verdict. */
+  cardTitleSkippedSecret: number
+  /** Same class, the finding node's own body (the sanitized findings_ref): the SHARED pre-screen
+   *  misses KG-local-only shapes (e.g. "DB_PASSWORD=..." with no shared-pattern match), which only
+   *  throw once they reach upsertNode's KG-local guard. Skipped and counted; no finding node, no
+   *  found_on edge, no classification for that one verdict -- the card node (if already written)
+   *  and the rest of the run are unaffected. */
+  findingSkippedSecret: number
+  /** Same class, the error_class node's title. In practice this title comes from the fixed
+   *  ERROR_CLASS_RULES/UNCLASSIFIED_CLASS_TITLE list and can never carry a secret shape -- this
+   *  catch exists for defense-in-depth parity with the other two sites (CYBERED's explicit "all
+   *  3" ask), not because a real trigger is known. If it ever fires: no of_class edge for that
+   *  one finding, the finding node itself and the rest of the run are unaffected. */
+  errorClassSkippedSecret: number
 }
 
 interface VerdictRow {
@@ -179,6 +197,9 @@ export function importFindings(mainDb: Database.Database, kgDb: Database.Databas
     classEdges: 0,
     classifiedCount: 0,
     unclassifiedCount: 0,
+    cardTitleSkippedSecret: 0,
+    findingSkippedSecret: 0,
+    errorClassSkippedSecret: 0,
   }
   const lookup = makeCardLookup(mainDb)
   const classNodesWritten = new Set<string>()
@@ -220,27 +241,43 @@ export function importFindings(mainDb: Database.Database, kgDb: Database.Databas
       const project = mapProjectToPartition(card.project)
       const cardId = cardNodeId(v.card_id)
       if (!cardNodesWritten.has(cardId)) {
+        try {
+          upsertNode(kgDb, {
+            id: cardId,
+            type: 'card',
+            project,
+            title: card.title,
+            source_ref: `kanban_cards:${card.id}`,
+            extractor: 'import:kanban_verdicts_findings',
+          })
+        } catch (err) {
+          if (err instanceof KgSecretError) {
+            report.cardTitleSkippedSecret += 1
+            continue
+          }
+          throw err
+        }
         cardNodesWritten.add(cardId)
-        upsertNode(kgDb, {
-          id: cardId,
-          type: 'card',
-          project,
-          title: card.title,
-          source_ref: `kanban_cards:${card.id}`,
-          extractor: 'import:kanban_verdicts_findings',
-        })
       }
       const findingId = findingNodeId(v.id)
-      upsertNode(kgDb, {
-        id: findingId,
-        type: 'finding',
-        project,
-        title: `${v.gate} ${v.verdict}`,
-        body: safeRef,
-        source_ref: `kanban_verdicts:${v.id}`,
-        gate_sha: v.sha ?? null,
-        extractor: 'import:kanban_verdicts_findings',
-      })
+      try {
+        upsertNode(kgDb, {
+          id: findingId,
+          type: 'finding',
+          project,
+          title: `${v.gate} ${v.verdict}`,
+          body: safeRef,
+          source_ref: `kanban_verdicts:${v.id}`,
+          gate_sha: v.sha ?? null,
+          extractor: 'import:kanban_verdicts_findings',
+        })
+      } catch (err) {
+        if (err instanceof KgSecretError) {
+          report.findingSkippedSecret += 1
+          continue
+        }
+        throw err
+      }
       report.findingsUpserted += 1
 
       if (
@@ -260,15 +297,23 @@ export function importFindings(mainDb: Database.Database, kgDb: Database.Databas
 
       const classNodeId = errorClassNodeId(classId)
       if (!classNodesWritten.has(classNodeId)) {
+        try {
+          upsertNode(kgDb, {
+            id: classNodeId,
+            type: 'error_class',
+            project: GLOBAL_PARTITION,
+            title: errorClassTitle(classId),
+            source_ref: classNodeId,
+            extractor: 'import:kanban_verdicts_findings',
+          })
+        } catch (err) {
+          if (err instanceof KgSecretError) {
+            report.errorClassSkippedSecret += 1
+            continue
+          }
+          throw err
+        }
         classNodesWritten.add(classNodeId)
-        upsertNode(kgDb, {
-          id: classNodeId,
-          type: 'error_class',
-          project: GLOBAL_PARTITION,
-          title: errorClassTitle(classId),
-          source_ref: classNodeId,
-          extractor: 'import:kanban_verdicts_findings',
-        })
       }
       // F4 (card 61348647): delete stale of_class edges for this finding before inserting
       // the new one. upsertEdge uses INSERT OR IGNORE, so without this DELETE a reclassified

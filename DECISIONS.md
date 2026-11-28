@@ -33913,6 +33913,979 @@ Hivatkozás: kártya d97659cb; QA PASS 39117, CYBERED GO 39119, CYBERSEC GO 3912
 F-1/F-2/L-2..L-5 leletek); `scripts/wsl-watchdog-holder-ensure.sh`, `scripts/install-wsl-watchdog.sh`,
 `scripts/install-wsl-watchdog.selftest.sh`.
 
+## 2026-11-26 -- Kártya a1c38d36: wsl-cleanup.selftest.sh ne a valódi /tmp-ot (4726 bejegyzés) sweepelje -- false red minden land fleet-test-ben
+
+Kontextus: CYBERED GO 39219 (1535f7f9) és CYBERSEC (msg 25202) mérése: `store/wsl-cleanup.selftest.sh`
+~10 teljes-script (`bash wsl-cleanup.sh --dry-run`) hívást futtat a szekció-1 (eldobható
+land/test worktree) logika tesztelésére, és ezek közül 7 (öt azonos alakú, egy a `run_c1_case`
+függvényen belül 3x hívva, egy a `MINAGE_KNOB` eseten) NEM állítja be a `WSL_CLEANUP_TMP_DIR`
+env-et, így a szkript saját alapértelmezése (`WSL_CLEANUP_TMP_DIR="${WSL_CLEANUP_TMP_DIR:-/tmp}"`)
+miatt mindegyik a VALÓS /tmp-ot sweepeli (dry-run, csak olvasás -- `find`/`stat`, biztonsági
+kockázat nincs, csak SEBESSÉG). Mérve: 4726 valós /tmp bejegyzés, ~27.7s/dry-run, önállóan
+283.6s PASS 47/47 load 4-6 mellett, a `src/__tests__/store-selftests-all-run.test.ts` 180s
+subprocess-cap (`execFileSync(..., {timeout: 180_000})`) felett -- minden land fleet-test-ben
+false red, nem csak az érintett kártyákon.
+
+Döntés: a 7 szekció-1 hívás mindegyike egy üres, eldobható sandbox könyvtárat kap
+(`WT_TMP_SANDBOX="$TMP/wt-tests-tmp-sandbox"`, a selftest saját `$TMP`-jén belül, a trap-ban már
+törölve) a `WSL_CLEANUP_TMP_DIR` env-en át, ÚGY hogy a sweep_tmp() kódágat (szekció 3) továbbra is
+lefuttatja a worktree-sweep tesztek alatt is -- csak egy üres könyvtáron, nem a 4726 bejegyzésű
+valós /tmp-on. `store/wsl-cleanup.sh` PRODUKCIÓS kódja NEM módosult (a `WSL_CLEANUP_TMP_DIR`
+override már létezett, csak a selftest nem használta mind a 7 hívásnál); élő viselkedés
+változatlan.
+
+Új pin (SANDBOX-LEAK guard): az első szekció-1 hívást (`OUT=...`) egy `find`-shim veszi körül,
+ami naplózza a keresési gyökér első argumentumát, majd asszertálja, hogy a '/tmp' literál SOHA
+nem jelenik meg a naplóban (a valós /tmp-ot sosem kéri find-tól), ÉS hogy a shim tényleg kapott
+legalább egy hívást (nem-vákuum kontroll -- egy sosem futó find mellett is zölden passzolna).
+
+MEGFIGYELÉS: a fix ELŐTT kézzel reprodukálva (ugyanaz a hívás, `WSL_CLEANUP_TMP_DIR` nélkül,
+`find`-shim-mel): a naplózott gyökér pontosan `/tmp`, a SANDBOX-LEAK guard RED. A fix UTÁN a teljes
+selftest 49/49 PASS (47 eredeti + 2 új SANDBOX-LEAK assertion), mért futásidő 30.58s és 30.95s
+két egymást követő futásnál, load average 5.18/5.98/5.21 mellett -- a 60s elfogadási küszöb alatt,
+és messze a 180s vitest-cap alatt. Mutáció-teszt: a `WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX"`
+override visszavonása az egyik (shim-mel körülvett) hívásnál a SANDBOX-LEAK guardot RED-re
+fordítja, és a teljes futás 60s felett timeoutol (reprodukálja az eredeti hibát) -- a fix
+load-bearing, nem kozmetikus. A mutáns és az eredeti fájl `sha256sum`-mal ellenőrizve
+byte-azonosan visszaállítva (d132270dddb98568ff706ce480866020f2ee4aea9717fb38404956669acf8528).
+
+Mi maradt ki: a `store/wsl-cleanup.sh` produkciós kódja és viselkedése NEM változott -- a kártya
+explicit kérte ezt. A `WSL_CLEANUP_TMP_DIR` mechanizmus maga (a sanity-guard, traverzál-escape
+védelem, stb.) a c9c1f159/657f12a3/e2425f05 kártyákon már lefedett, ezen a körön nem érintve.
+
+Ki döntött: MikroB (dispatch, msg 25203, a CYBERED 39219 / CYBERSEC msg 25202 mérése alapján
+HIGH-ra emelve); backend3 (implementáció, teszt).
+Hivatkozás: kártya a1c38d36; CYBERED GO 39219 (card 1535f7f9); `store/wsl-cleanup.selftest.sh`,
+`store/wsl-cleanup.sh` (csak olvasva, nem módosítva), `src/__tests__/store-selftests-all-run.test.ts`.
+
+## 2026-11-26 18:00 -- Kártya a1c38d36 kiegészítés: a sandbox-könyvtárat a VALÓS /tmp alá kellett tenni, nem a $TMP alá
+
+Az előző (ugyanaznapi) a1c38d36 bejegyzés fix-e a `fleet-test.sh` szemafor alatt, a VALÓDI
+megosztott fán futva, konzisztensen (2/2) ugyanazzal a tünettel bukott: `wsl-cleanup passes`
+piros, `SANDBOX-LEAK guard: find shim captured nothing -- the guard is vacuous`. A gyökér-ok NEM
+a `fleet-test.sh` megosztott fáján lévő egyidejű terhelés volt (ez a korábban feltételezett,
+hibás hipotézis) -- izolált worktree-ben, `TMPDIR`-t egy VALÓDI /tmp-en kívüli útvonalra állítva
+(pl. `/home/neon/marveen-tmp/...`, pontosan ahogy a `fleet-test.sh` harness is teszi), a hiba
+determinisztikusan reprodukálódott standalone módban is.
+
+KÖVETKEZTETÉS: a `WT_TMP_SANDBOX="$TMP/wt-tests-tmp-sandbox"` (a selftest saját `$TMP`-jén,
+`mktemp -d`-n belül) nem garantálja, hogy a sandbox a VALÓS `/tmp` alatt legyen -- a `mktemp -d`
+a `$TMPDIR` env-et követi, és a `fleet-test.sh` harness ezt egy /tmp-en kívüli, futásonkénti
+könyvtárra állítja. `store/wsl-cleanup.sh` saját `sweep_tmp()` fail-closed SANITY guardja (kártya
+c9c1f159) pontosan ezt hivatott megállítani: csak olyan `WSL_CLEANUP_TMP_DIR`-t fogad el, ami
+`realpath`-dal `/tmp` vagy `/tmp/*`-ra oldódik fel -- minden mást "REFUSING /tmp sweep"-pel
+visszadob, `find`-ot soha nem hívja meg. A SANDBOX-LEAK guard pontosan ezt a helyzetet kapta el
+helyesen vákuumosnak (a guard maga NEM hibás -- a sandbox útja volt).
+
+Javítás: `WT_TMP_SANDBOX="$(mktemp -d /tmp/wt-cleanup-sandbox.XXXXXX)"` -- a sandbox mostantól
+EXPLICIT a valós `/tmp` alatt jön létre, `$TMPDIR`-től függetlenül. A cleanup trap kapott egy
+explicit `rm -rf "$WT_TMP_SANDBOX"`-ot is (már nem a `$TMP` alatt él, a korábbi "a meglévő trap
+már törli" indoklás emiatt nem áll többé -- ez csak ezen az új bejegyzésen változik, az előző
+bejegyzés szövegét nem módosítom, append-only).
+
+Mérve: a javított selftest 49/49 PASS egy szimulált, valódi /tmp-en kívüli `$TMPDIR` alatt is
+(`/home/neon/marveen-tmp/debug-sim`), 0 maradék sandbox-könyvtár két egymást követő futás után.
+Mutáció-teszt (visszaállítva, sha256 ellenőrizve): a `$TMP` alá nesztelt régi forma ugyanezen
+`$TMPDIR` alatt visszahozza a pontos tünetet (48/49, SANDBOX-LEAK guard vákuum) -- a javítás
+load-bearing. Harmadik `fleet-test.sh --ref 95aa6cf58` futás a VALÓDI megosztott fán: 178/178
+PASS (Test Files 1 passed).
+
+A gyökér-ok megtalálásához egy IDEIGLENES debug-commit (141b42b04, `store-selftests-all-run.test.ts`
+catch ágába `console.error(err.stdout/err.stderr)` téve) futott egy önálló `fleet-test.sh --ref`
+körön, majd egy következő commitban visszavonva -- a végső ág ezt a debug-kódot nem tartalmazza.
+
+Ki döntött: backend3 (gyökér-ok vizsgálat, javítás, mérés).
+Hivatkozás: kártya a1c38d36; commit 0abb49693 (eredeti fix), 141b42b04 (ideiglenes debug, visszavonva),
+95aa6cf58 (valódi gyökér-ok fix); `store/wsl-cleanup.selftest.sh`, `store/wsl-cleanup.sh:216-244`
+(sweep_tmp SANITY guard, csak olvasva).
+
+## 2026-11-26 19:15 -- Kártya a1c38d36, CYBERSEC NO-GO 39270 (68fe4d9c): a bare-/tmp pin-case tényleg sweep_tmp()-et futtatta a valós /tmp-en
+
+KONTEXTUS: CYBERSEC delta-gate 39270 a 68fe4d9c-s sha-n NO-GO-t adott. F-1 (MEDIUM, nem regresszió):
+a "SANITY guard pin, bare /tmp" eset (card e2425f05 öröksége) `source "$RUN"`-nal betölti
+`wsl-cleanup.sh`-t, majd DIREKT hívja `sweep_tmp()`-et -- ez megkerüli a `bash "$RUN" --dry-run`
+útvonalat, tehát a script saját `DRY_RUN=0` alapértéke volt érvényben: minden selftest/fleet-test
+futás a VALÓS /tmp aged bejegyzéseit törölte, Peti jóváhagyása nélkül (22. szabály). F-2 (LOW): a
+SANDBOX-LEAK guard (a1c38d36 saját korábbi köre) csak az ELSŐ (7 közül) WT_TMP_SANDBOX-invokációt
+fedte -- mutáció (M2: AGE-guard sor, M3: min-age-knob sor) a 6 másikon unpinned maradt, csendben
++30s-ot adott hozzá. F-3 (LOW): semmi nem pinnelte, hogy a cleanup trap TÉNYLEG törli-e
+WT_TMP_SANDBOX-ot (mutáció M4: `rm -rf "$TMP"` only túlélte, 49/0, egy sandbox-dir szivárgott).
+
+JAVÍTÁS:
+- F-1: a bare-/tmp esetben `DRY_RUN=1` a `source "$RUN"` UTÁN (a script maga felülírja 0-ra a
+  tetején, source előtti beállítás hatástalan lenne), PLUSZ egy `find() { :; }` shim, hogy a valós
+  /tmp bejárása (CYBERED F-3 hazárd, dry-runtól függetlenül) se történjen meg.
+- F-2: a 6 hiányzó invokáció (AGE guard, NAME-PATTERN guard, STAT-fallback guard, counter-split,
+  run_c1_case -- 3x hívva --, min-age-knob) mindegyike kapott egy `find` leak-shimet; a duplikált
+  assert-pár egy közös `assert_sandbox_leak_guard()` függvénybe lett kiemelve (az ELSŐ, már meglévő
+  helyszín is ezt hívja most, kód-azonosság, nem csak minta-másolás).
+- F-3: új "SANDBOX-RM guard" a fájl végén: a `cleanup` függvényt direktben meghívja (ugyanazt, amit
+  az EXIT trap is meghívna), és ellenőrzi, hogy WT_TMP_SANDBOX utána tényleg eltűnt.
+
+MÉRVE: standalone 67/67 PASS, ~1.7-1.9s. Mutáció-teszt (python3+hashlib sha256 ellenőrzött
+visszaállítás, SOHA `git checkout --` -- lásd lejjebb a buktatót): M2 (AGE-guard override törölve)
+66/1 FAIL, a SANDBOX-LEAK guard kapta el (talált '/tmp' search root). M4 (trap csak `$TMP`-t törli)
+66/1 FAIL, a SANDBOX-RM guard kapta el. Mindkét javítás load-bearing.
+
+BUKTATÓ (saját hiba ebben a körben, azonnal helyreállítva): az első M2-mutáció visszaállításakor
+`git checkout -- store/wsl-cleanup.selftest.sh`-t futtattam, ami NEM csak a mutánst, hanem a TELJES
+uncommitolt fix-munkát visszaállította a HEAD-re (68fe4d9c9) -- mivel a mutáns a saját, még nem
+commitolt javításom TETEJÉN élt, nem egy tiszta fán. Minden javítást (F-1/F-2/F-3) újra el kellett
+végezni. Ezután a mutáció-teszt visszaállítása kizárólag `cp` + sha256-ellenőrzés útján történt, a
+munkakönyvtáron KÍVÜLI biztonsági másolatból, nem git-művelettel.
+
+Ki döntött: backend3 (gyökér-ok vizsgálat, javítás, mérés, önjavítás a checkout-hibából).
+Hivatkozás: kártya a1c38d36; CYBERSEC NO-GO 39270 + QA PASS 39267 (sha 68fe4d9c); a javítás commitja
+ezen bejegyzés után következik; `store/wsl-cleanup.selftest.sh`; `store/wsl-cleanup.sh` (csak
+olvasva, nem módosult).
+
+## 2026-11-26 -- lint-ratchet no-unused-vars baseline visszahúzva argsIgnorePattern-rel (kártya e94fea8e, RedHat N1, f3dd0c65 delta-gate)
+
+A commit `7b4e903ec` (Köteg 16 után) a `@typescript-eslint/no-unused-vars` lint-ratchet plafonját
+185-ről 197-re emelte, kizárólag a `(..._a: unknown[]) => ...` alakú vitest-mock argumentumok
+miatt -- ez egy ratchet-lazítás egy nem-valódi regresszióra, nem valódi hibafelhalmozódás: a
+kódbázis saját, már bevett konvenciója az aláhúzás-prefixszel jelölt "szándékosan nem használt"
+paraméter.
+
+Javítás `eslint.config.mjs`-ben: `argsIgnorePattern: '^_'` a szabályon. A MÉRT hatás jóval nagyobb,
+mint a kártya becsült ~185-ös célszáma: a valós szám 267-ről 84-re esett (a konvenció 16+ upstream
+köteg munkáján keresztül halmozódott fel, nem csak az egy regresszión). A baseline 84-re állítva
+(`store/lint-ratchet.sh --update`, SCOPED: a diffben csak ez az egy kulcs mozdult).
+
+Mellékhatás, amit NEM nyeltem le egy vak `--update`-del: az opció hozzáadása 10 korábbi,
+`@typescript-eslint/no-unused-vars`-ra szóló `eslint-disable-next-line` kommentet feleslegessé
+tett (a szabály már nem jelzi, amit azok elnémítottak), amit az ESLint saját
+"unused-disable-directive" ellenőrzése 0 -> 10-re ugrásként jelzett -- első pillantásra egy
+független, új regressziónak nézett ki, valójában ennek a fixnek a közvetlen, hatókörön belüli
+következménye. Mind a 10-et eltávolítottam, nem egy új baseline-kulcsként rögzítettem; a
+`(unused-disable-directive)` 0-ra való visszaállását a baseline-update ELŐTT ellenőriztem.
+
+A kártya saját mutáció-elfogadási kritériuma (egy új, nem-aláhúzásos unused változó pirosra
+fordítja a ratchet-et): kézzel igazolva (egy valódi ilyen változót hozzáadva majd eltávolítva, a
+ratchet 84->85-re ment és REFUSED-ot adott), majd tartósan rögzítve egy új tesztben
+(`src/__tests__/lint-ratchet-no-unused-vars-args-ignore.test.ts`) -- config-szöveg pin PLUSZ
+viselkedési teszt valódi ESLint-tel scratch-fixture-ökön. Mindkét ellenőrzést mutációval
+igazoltam (a valódi fix visszavonásával mindkettő pirosra ment).
+
+Mérve: `store/lint-ratchet.sh` tiszta (semelyik szabály nem romlott). `npx tsc --noEmit -p .`
+tiszta. Az új teszt-fájl 3/3 zöld. A 4 érintett teszt-fájl (124 teszt) és a 3 érintett modul
+saját teszt-fájlja (db/session-control/skill-quarantine, 93 teszt) mind zöld.
+
+Ki döntött: cybered/RedHat (N1 lelet, f3dd0c65 delta-gate); fullstack (implementáció).
+Végrehajtó: fullstack.
+Hivatkozás: kártya e94fea8e; forrás f3dd0c65 delta-gate komment 20564; `eslint.config.mjs`,
+`store/lint-baseline.json`.
+
+## 2026-11-26 -- Kártya cd872e72: classify_task_state() absent-<Enabled>=enabled + heredoc backtick fix (d97659cb live install blokkolója)
+
+**Kontextus:** d97659cb élő telepítése (14:53, backend3 üzenet 25088) az installer saját
+`classify_task_state()`-je miatt akadt el: a live `MikroB-WSL-Watchdog` feladat XML-je nem
+tartalmaz `<Enabled>` taget egyáltalán (a Task Scheduler séma-alapértéke true, és Windows
+kihagyja az elemet, ha sosem lett átváltva), a klasszifikátor pedig ezt "unknown"-ként
+olvasta és fail-closed módon kihagyta a `/Create`-et -- így az 1 perces tick sosem jutott el
+az élő feladatra. Ugyanez a leolvasás történt 3f6bb903-nál is (11:28).
+
+**Döntés 1 (classify_task_state):** hiányzó `<Enabled>` + egyébként jólformázott XML (van
+lezárt `<Settings>` blokk egy lezárt gyökér `<Task>` elemben) = "ready". `<Enabled>false</Enabled>`
+továbbra is "disabled" (58badae1 H1 változatlan: sosem re-enable). Csonkolt/hiányos XML
+(Settings vagy Task nincs lezárva) marad "unknown" -- ez a különbség a "a tag sosem lett
+kiírva" és a "a lekérdezés félbeszakadt" között. `<Enabled>` taggel, de nem true/false
+értékkel (pl. `maybe`) is "unknown" marad, sosem defaultol ready-re. Nincs manuális bypass
+flag (MikroB döntés, msg 25089, option 2 elutasítva).
+
+**Döntés 2 (heredoc backtick):** `install-wsl-watchdog.sh` ~289/299/306 sorában a PS1EOF
+heredoc (idézetlen delimiter, tehát bash backtick/`$()` helyettesítést végez a teste
+felett) három, backtick-kel idézett doksi-töredéket tartalmazott a wsl-watchdog-holder-ensure.sh
+fejkommentjéből átvett szöveg maradványaként (`` `need=<n>` ``, `` `-match` ``) -- ezek
+parancs-helyettesítésként futottak le render közben, sikertelenül, és a generált PS1
+kommentsorából szótlanul kiesett a szöveg (hibaüzenet stderr-re, de a `/Create`-et nem
+állította meg). Fix: a három backtick escapelve (`\``), ugyanúgy ahogy a heredoc már minden
+`$` jelet escapel a literál PS1-kimenethez.
+
+**MELLÉKLELET (teszt-hiba, nem production-kód):** a `install-wsl-watchdog.selftest.sh`-ban már
+létező "heredoc-safety: zero stderr" őr VAKON ZÖLDET adott erre a pontos hibára -- a
+`run_isolated()` segédfüggvény saját `2>&1`-je már a FÜGGVÉNYEN belül összeolvasztotta a
+telepítő valódi stderr-jét a stdout-jába, mielőtt a hívó oldali `2>"$DRYRUN_STDERR"` bármit
+látott volna; a hívó csak `run_isolated` saját (mindig üres) stderr-jét kapta. Mérve: a
+hibás kóddal 686 bájt valódi stderr keletkezett, a teszt mégis "ok"-ot írt. Új,
+`run_isolated_stderr_only()` függvény (nem olvasztja össze a két streamet) + három
+`check_line` pin a pontos kommentsorokra (érték-alapú ellenőrzés, nem csak a "nincs
+stderr" proxy) zárja ezt.
+
+**Ellenőrzés (fa/sha: card/cd872e72 worktree, új sha lentebb a kommiton):**
+`scripts/install-wsl-watchdog.selftest.sh` -- PASS, 132 ok, 0 FAIL (8 új eset: 3 comment-line
+pin + 4 classify_task_state eset + a most már valódi heredoc-safety stderr check). TDD:
+mind az 5 FAIL-t megnéztem (RED) a fix előtt. Mutáció-teszt (kézzel, `sha256sum`-mal
+visszaellenőrzött visszaállítás minden kör után): (1) a well-formedness-ellenőrzés
+elhagyása (bármilyen hiányzó-Enabled -> ready, jólformázottság nélkül) 5 tesztet buktat
+RED-re, köztük 3 MEGLÉVŐ H1'-classify esetet is; (2) a teljes új ready-ág eltávolítása
+pontosan 1 tesztet buktat (a saját új tesztemet, nem vakon zöld); (3) egy backtick
+escape-jének visszavonása buktatja a heredoc-safety stderr check-et ÉS a hozzá tartozó
+exact-line pint. `npx tsc --noEmit` nem releváns (tisztán bash-fájlok, nincs .ts
+változás). Scoped vitest a szemafor-szkripten át
+(`src/__tests__/wsl-watchdog-disable-flag-early-exit.test.ts`, ez a selftestet futtatja
+CI-ben) -- lásd a REVIEW-ban a friss eredményt.
+
+**Mi maradt ki:** d97659cb élő telepítés/kill-teszt továbbra is várja MikroB külön go-ját
+(msg 25089: "after cd872e72 lands I give a separate go to repeat the live step from the
+start").
+
+Ki döntött: MikroB (kártyanyitás + a megoldás iránya, üzenet 25089, option 1). backend3
+(implementáció, teszt, a vakon-zöld teszt-hiba felfedezése és javítása).
+Hivatkozás: kártya cd872e72 (szülő b736f51a); d97659cb (blokkolt kártya, üzenet 25088);
+3f6bb903 (korábbi, ugyanilyen leolvasás, 11:28); `scripts/install-wsl-watchdog.sh`,
+`scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 -- Kártya cd872e72 2. kör: classify_task_state() szóhatár-rés (L-1), négy szerkezeti feltétel egyenkénti pin-je (L-3), run_isolated_stderr_only() kontroll-pin (L-4) (CYBERSEC GO 39190, MikroB üzenet 25151)
+
+Az első kör ("absent" = a `<Enabled>` literál szubsztring hiánya) szűk volt: egy eltérő
+írásmódú Enabled-tag (szóköz a záró `>` előtt, önmagát-záró `<Enabled/>`, névtér-előtagolt,
+attribútumot hordozó) NEM tartalmazza a `<Enabled>` literál szubsztringet, tehát átcsúszott
+volna a "ready" ágra -- pontosan az az irány, amit az 58badae1 H1 tilt (egy letiltott task
+újra-engedélyezése). CYBERSEC (GO 39190, L-1 lelet) és MikroB (üzenet 25151, MUST-FIX)
+mérte/döntötte.
+
+**Döntés 1 (L-1 javítás):** az "absent" teszt mostantól a sima "Enabled" szó (kis-nagybetű
+független, szögletes zárójel NÉLKÜL) teljes hiányát nézi a kimenetben, nem a `<Enabled>`
+literált. KÖVETKEZTETÉS: ez a leggyengébb lehetséges feltétel, ami minden eddig ismert
+írásmódot elkap (szóközös, önmagát-záró, névtér-előtagolt, attribútumos), anélkül hogy
+felsorolná őket (guards-that-pin-behaviour 4. pont: inverzió, ne enumeráció).
+
+**Döntés 2 (L-3 pin-gap zárás):** 4 új fixture, mindegyik PONTOSAN egy darabot hagy ki a
+4-tagú ÉS-láncból (`<Settings>`, `</Settings>`, `<Task`, `</Task>`), a másik hármat
+érvényesen tartva -- az 1. köri csonkolt fixture-ök MINDKÉT zárót egyszerre hagyták ki, így
+egy láncszem kivétele a másik maszkolása miatt észrevétlen maradt (CYBERSEC mutáció K4-K7
+mind túlélte). Egy 5. fixture az `<Enabled>true</Enabled>` ág rc-kapuját pinneli
+(rc!=0 + true szöveg -> unknown, K11).
+
+**Döntés 3 (L-4 kontroll-pin):** a selftest-fájl `run_isolated_stderr_only()` segédje maga
+sosem volt tesztelve arra, hogy TÉNYLEG továbbadja a valós stderr-t -- csak arra, hogy egy
+tiszta render esetén 0 bájtot ad. Egy regresszió (visszaállás a vakon-zöld `2>&1`-es
+`run_isolated()` alakra) a nulla-stderr check-et is simán zöldre vinné, mert MINDKÉT fél
+(BIN és a saját stdout) nullára olvasna. Új kontroll: egy stub BIN, ami garantáltan ír
+stderr-re, és a teszt elvárja, hogy a capture NEM üres.
+
+MEGFIGYELÉS (TDD, mind a 3 döntésre): a 4 új L-1 fixture a javítás ELŐTT pirosra futott
+(a régi `<Enabled>` literál teszt nem fogta meg őket), az L-3/L-4 fixture-ök már a javítás
+előtt is zöldek voltak (meglévő kódot pinnelnek, nem új ágat). Javítás után mind a 142 teszt
+zöld (0 FAIL). Mutáció: az egyetlen megváltozott sor (`'Enabled'` vissza `'<Enabled>'`-re)
+pontosan a 4 új L-1 esetet buktatja, semmi mást -- nem kaszkád, a javítás terhelő és
+nem-vákuum. A mutált fájl és az eredeti sha256 ellenőrzéssel visszaállítva byte-azonosra.
+
+**Mi maradt ki:** CYBERSEC L-2 (a "jól formázott" teszt négy független substring-grep,
+nem valódi struktúra-elemzés) SZÁNDÉKOSAN nyitva -- MikroB üzenete ezt OPCIONÁLISNAK
+jelölte ("csak ha kicsi marad"), és egy valódi XML-parse-ra váltás ehhez a bash-only
+scripthez aránytalan komplexitást adna egy LOW kockázatú résért (a schtasks valós kimenete
+nem produkál ilyen torz szöveget). d97659cb élő telepítés/kill-teszt továbbra is várja
+MikroB külön go-ját.
+
+Ki döntött: MikroB (F-1/F-3/L-4 MUST-FIX kijelölése, üzenet 25151; L-2 opcionálisként
+hagyása). CYBERSEC (39190, a 4 lelet forrása). backend3 (implementáció, teszt).
+Hivatkozás: kártya cd872e72; CYBERSEC GO 39190; CYBERED GO 39176 (F-1/F-3 eredeti
+felvetője); QA PASS 39182; `scripts/install-wsl-watchdog.sh`,
+`scripts/install-wsl-watchdog.selftest.sh`.
+
+## 2026-11-26 20:15 -- Kártya 36a5e39e: a telepítősablonokból kikerülnek a régi sablonszakaszok, a backend3 ellentmondása megszűnik, három szerep skilljei bekerülnek a skill-térképbe
+
+MIT: (1) A `seed-fleet-agents/{backend3,cybered,qa2,fron-teddy,teszter,videooo}/CLAUDE.md` fájlokból
+kikerült ugyanaz a 12 régi sablonszakasz és a "Flotta-szabályok" 3., 5., 6. pontja, amit a b89b859b
+kártya a telepített promptokból már törölt (QA PASS 39284); a helyükre kétsoros "Ütemezés" megjegyzés
+került. A jogasz sablonból a "Mérnöki alap (dev szerepeknél)" szakasz ment ki. (2) A backend3
+sablonból kikerült a "Nem fejlesztesz a mikrob kódjába" sor, a 4. flotta-szabály új szövege: a
+marveen repót csak saját worktree-ben szerkeszti és `marveen-land.sh`-val landol, az élő klónba nem
+ír. (3) A `store/skill-role-map.json` jogasz, marketing és teszter szerepe megkapta azt a 19 skillt,
+amelyet a promptjuk megnevez, de a térkép nem adott oda (2 + 12 + 5).
+
+MIÉRT: (1) Friss telepítésnél a sablon visszahozta volna a törölt szakaszokat (kb. 6 000 karakter
+ügynökönként); ezek a gyökér CLAUDE.md-t ismétlik, az ütemezés-recept pedig olyat tanít, amit a
+self-pace kapu blokkol. (2) MikroB döntése a kártyán: a worktree-fegyelem (Peti 2026-08-17, kártya
+dc185b52) szerint a backend3 marveen-landolásai a szándékolt munkamenet (30 nap alatt 56 landolás),
+a tiltó sor ennek mondott ellent. (3) A megnevezett, de nem hívható skill "Unknown skill" hibát ad;
+mind a 19 megvan a globális skill-mappában, csak a térképből hiányzott.
+
+MI MARADT: a korlátozó flotta-szabályok (1., 2., 4., 7.) eredeti számmal a helyükön vannak. Az
+`agent-scaffold.ts` `generateClaudeMd()` függvénye új ügynöknél továbbra is legenerálja ugyanezeket
+a szakaszokat: az alkalmazáskód, külön jelzés ment róla MikroB-nak.
+
+Ki döntött: MikroB (kártya 36a5e39e szövege), végrehajtotta Prompty.
+Hivatkozás: kártya 36a5e39e; előzmény b89b859b (QA PASS 39284), 3e59d70e.
+
+## 2026-11-27 16:53 -- Kártya de0bd561: claude-md-split-reachability selftest 80s -> 18.6s, egy rögzített küszöbbel
+
+MIT: a `scripts/claude-md-split-reachability-check.py` `classify_missing_line` függvénye a
+`difflib.SequenceMatcher.ratio()` drága, teljes O(n*m) hívását futtatta MINDEN jelölt sorra a TELJES
+korpusz minden sora ellen, úgy, hogy a kizárási küszöb 0.0-ról indult és csak egy valódi találat után
+emelkedett. A javítás a küszöböt `REWORD_SIMILARITY_THRESHOLD`-nál (0.6) indítja -- ugyanaz a
+technika, amit a `difflib.get_close_matches` is használ belül --, így a legtöbb egymáshoz
+nem hasonló sorpárt a gyors `quick_ratio()`/`real_quick_ratio()` felső becslés zárja ki, mielőtt a
+drága összehasonlítás elindulna. A selftest (`claude-md-split-reachability-check.selftest.py`) kapott
+egy új equivalencia-tesztet, ami az optimalizált és a naiv brute-force eredményt hasonlítja össze egy
+olyan korpuszon, ahol a valódi legjobb találat egy alacsonyabb hasonlóságú "majdnem-találat" UTÁN áll
+-- egy hibás korai megállás itt elbukna.
+
+MIÉRT: a 7f3cbe92 landolás 3x pirosra futott ezen a selftesten (90s vitest timeout), a 3. alkalommal
+EGYMAGÁBAN futva. MikroB mérése (origin/develop 143c005ea, load avg ~1): 80s, a teszt saját
+megjegyzése szerint ~6s-nak kellene lennie csendes gépen -- a korpusz (CLAUDE.md + docs/rules)
+növekedésével a hívásszám és a korpuszméret is nőtt, négyzetesen dráguló futásidőt adva.
+
+MI MARADT: a 30 eredeti eset (RedHat 10 mutánsa A1-A10, a kontroll, QA1, duplikált fejléc, pinnelt
+19/8a, hiányzó baseline, a 3 reword/removal/pin-change blokk) mind megmaradt és zöld; a javítás nem
+vágott ki esetet és nem gyengített assertion-t.
+
+Ki döntött: MikroB (dispatch, üzenet 25559/25564), backend (root-cause + javítás).
+Hivatkozás: kártya de0bd561; Gate-SHA 92c5d495a6148b51ec77270865b6dd51bc8305c7;
+`scripts/claude-md-split-reachability-check.py`, `scripts/claude-md-split-reachability-check.selftest.py`.
+
+## 2026-11-27 17:35 -- Kártya de0bd561: QA FAIL 39447 javítva, két hiba a `classify_missing_line` pruningban
+
+MIT: a QA (39447) talált egy határeset-hibát az előző bejegyzésben leírt pruningban: a
+küszöb-összehasonlítás `<=` volt, de a `quick_ratio()`/`real_quick_ratio()` felső becslés
+EGYENLŐ is lehet a valódi aránnyal, nem csak felülről korlátozza -- egy pontosan a
+`REWORD_SIMILARITY_THRESHOLD`-on álló jelölt sort így "removed"-ként osztályozta a kód
+"reword" helyett. Javítás: szigorú `<`.
+
+A javítás ellenőrzése közben (fuzz-teszt) egy MÁSODIK, mélyebb hiba is kiderült: a korábbi
+verzió egyetlen `SequenceMatcher` objektumot használt újra a teljes korpusz-cikluson
+(`set_seq2(line)` egyszer, `set_seq1(candidate)` minden jelöltre, hogy ne kelljen az
+autojunk-indexet újraépíteni) -- ez `a=candidate, b=line` sorrendet ad, az ELLENTÉTES
+operandus-sorrendet a brute-force referencia `SequenceMatcher(None, line, candidate)`
+hívásához (`a=line, b=candidate`) képest. A `difflib.ratio()` NEM garantáltan szimmetrikus
+operandus-cserénél ismétlődő/ambiguus részstringű szövegeknél (a `find_longest_match`
+döntetlen-feloldása függ attól, melyik operandus `a` és melyik `b`). Valós szövegen ez ritka
+(becsülve 1-2%), egy ismétlődő-ABC fuzz-on viszont sokkal gyakoribb -- EZ magyarázza a QA
+saját 20 000-es fuzzjának ~13%-os eltérési arányát is, nem csak a `<=`/`<` határeset.
+Javítás: minden ciklusban új `SequenceMatcher`-t építünk a referenciával PONTOSAN egyező
+operandus-sorrenddel (`a=line, b=candidate`), és a `quick_ratio()`/`real_quick_ratio()`-t
+csak szűrőként használjuk a drága `ratio()` hívás előtt -- sosem egy újrafelhasznált
+matcher-objektumon át, változó operandus-pozícióval.
+
+A selftest kapott: QA két konkrét reprodukcióját (`ababa`/`ababab` határeset), plusz egy
+3000-elemű, fix seedű (20261127), ismétlődő ABC-ábécés fuzz-tesztet a naiv brute-force
+referenciával szemben. A `<=` mutáns mindkét új tesztet pirosra futtatja (ellenőrizve,
+visszaállítva), 34/34 zöld a javítással.
+
+MI MARADT: mind a 30 eredeti + 1 korábbi equivalencia + 3 új eset (2 határeset + 1 fuzz) zöld;
+semmilyen esetet nem vágtunk ki.
+
+Futásidő: 28,6s (az előző, hibás gyors-út 18,6s-áról nőtt, mert a `SequenceMatcher`
+újrafelhasználása -- ami éppen a hibát okozta -- megszűnt), a 90s vitest-keret alatt,
+~3,15x margóval.
+
+Ki döntött: QA (lelet 39447), backend (javítás + a második hiba felderítése).
+Hivatkozás: kártya de0bd561; Gate-SHA (a következő commit, lásd REVIEW);
+`scripts/claude-md-split-reachability-check.py`, `scripts/claude-md-split-reachability-check.selftest.py`.
+
+## 2026-11-26 -- KG embeddings: silent drops on bulk import + stale vectors on failed re-embed (kártya 7f3cbe92, follow-up of 6d542dc9)
+
+Correction to the entry above: "the row stays NULL for `backfillKgNodeEmbeddings` to pick up
+later" was true only for a brand-new node. For an EXISTING node whose text changed, F-1a's
+`COALESCE(excluded.embedding, embedding)` kept the OLD, now-stale vector in place whenever the
+recompute failed or was dropped -- never NULL, so `backfillKgNodeEmbeddings` (which only selects
+`WHERE embedding IS NULL`) never saw it, and search silently kept scoring the node against text it
+no longer has. CYBERSEC's N-3 hard condition on 6d542dc9's GO: 900 new nodes in one tick ->
+`EMBED_CONCURRENCY_LIMIT`(4) + `EMBED_QUEUE_BOUND`(50) = 54 embedded, 846 dropped completely
+silently (no log, no counter), and `backfillKgNodeEmbeddings` had no caller at all, so none of the
+846 was ever repaired.
+
+Fixed in `src/kg/store.ts`:
+- N-1: a changed-text write now clears `embedding`/`embed_model` to NULL SYNCHRONOUSLY (a 3-way
+  SQL CASE: caller-provided value wins, else text-changed clears to NULL, else keep the old
+  value) -- a failed/dropped recompute now correctly leaves the backfill-visible NULL the original
+  comment claimed, instead of a wrong-but-present vector.
+- N-4 (info, same GO): `input.embedding === undefined` (caller didn't touch it) and an explicit
+  `embedding: null` (caller wants it cleared) used to bind to the same SQL parameter and so become
+  indistinguishable; distinguished via an `embeddingProvided` flag so an explicit clear request
+  clears again.
+- N-2: an unchanged re-import over a node whose embedding is STILL NULL (an earlier attempt was
+  dropped/failed and nothing since repaired it) now gets another embed attempt, not just a
+  text-changed one.
+- N-3: every drop and every in-flight embed failure is now counted (`getEmbedDropCount`/
+  `getEmbedFailedCount`) and a drop is logged; either one schedules a debounced (2s) call to
+  `backfillKgNodeEmbeddings` -- giving it a caller that lives in the one shared write path
+  (`upsertNode`) every importer and future node type (including 01b10349's finding/decision
+  ingestion, not yet built) already goes through, with no change needed to any importer.
+
+Measured: 6 new tests in `kg-embed-backfill.test.ts` (N-1 NULL-not-stale, N-4 explicit clear, N-2
+heal-on-touch, N-3 drop count+log, N-3 failure count, and the 900-node acceptance case) plus 1
+existing test rewritten (it had pinned the N-1 bug by asserting the stale vector was "kept, not
+nulled, during the gap" -- that assertion is the regression itself). 900 simulated new nodes in one
+tick: 846 dropped (counted exactly), debounced sweep heals coverage to >=95% (fake-timer driven,
+no real wall-clock cost). Full kg suite 28 files/423 tests green, `npx tsc --noEmit -p .` clean.
+
+Ki döntött: cybersec (hard condition N-3, info N-4, regression N-1/N-2 found on 6d542dc9's delta
+gate); fullstack (applied the fix).
+Végrehajtó: fullstack.
+Hivatkozás: kártya 7f3cbe92 (child of 5ecf6133), 6d542dc9 (the fix this corrects/extends),
+01b10349 (the upcoming bulk ingestion this must land before).
+
+## 2026-11-26 -- KG embeddings fix round: floating promise, slot-release pin, sweep re-arm, single-flight, stale-write guard (kártya 7f3cbe92, CYBERSEC NO-GO + QA FAIL 39145)
+
+CYBERSEC NO-GO + QA FAIL 39145 on the entry above's Gate-SHA (dfd54b2496a3c0e9d37f50623026bd0e0d388976)
+found five problems, addressed in `src/kg/store.ts` as described below. Correction (CYBERSEC
+NO-GO 39187, the next gate round on this fix): F-2 was closed only for the measured 2500-row
+case, not for a streamed import landing while a sweep is already running (N-A, this round's own
+regression); F-4 was closed only for the backfill sweep's own UPDATE, not for
+`scheduleKgNodeEmbedding`'s (N-B, the other half of the same race, inherited from 6d542dc9 and
+not a regression). See the entry below this one for both.
+
+- F-1: `runEmbedSlot`'s `run().then().finally()` chain lost its `void` marker in this card's own
+  conflict resolution against 6d542dc9's landing (`no-floating-promises` had regressed 0 -> 1).
+  Restored; `lint-ratchet.sh` confirms 0 again.
+- F-5: `resetEmbedCountersForTest()` (this card's own addition) wipes `embedActive` back to 0
+  after every test -- which, before this fix, erased the ONLY thing that used to catch a deleted
+  `embedActive--` in `runEmbedSlot`'s `finally()`: the leaked, permanently-elevated counter used
+  to starve and fail the NEXT test (an accidental, implicit pin). Added `getEmbedActiveForTest()`
+  and an explicit, direct assertion in the existing F-1b concurrency test instead of depending on
+  cross-test leakage.
+- F-2: `scheduleBackfillSweep()` only ever ran one pass at `BACKFILL_SWEEP_LIMIT` (2000) and
+  nothing re-armed another -- CYBERSEC measured a 2500-row backlog leaving 446 rows still NULL
+  even after +1h of real time. Now re-arms whenever a pass's `attempted` count hits the limit,
+  until a pass returns under it.
+- F-3: the sweep had no "currently running" flag, only a pending-timer check cleared to null the
+  moment the timer fires -- before the long `backfillKgNodeEmbeddings` call it guards even starts.
+  A failure arriving mid-flight saw no pending timer and armed a FULLY CONCURRENT second sweep
+  over the same backlog -- CYBERSEC measured backend-down + a write every 3s producing 10,761
+  embed calls in 120s. Added a `backfillSweepRunning` single-flight flag, cleared before any F-2
+  re-arm call so the re-arm is never self-blocked.
+- F-4: `backfillKgNodeEmbeddings` read a row's text, awaited `generateEmbedding` (can be slow),
+  then wrote the result back unconditionally. If the text changed, or a fresher embedding already
+  landed, while that call was in flight, the stale write would overwrite it -- and since the
+  column stops being NULL, this sweep's own `WHERE embedding IS NULL` filter would never see the
+  row again to repair it. The `UPDATE` is now guarded on `embedding IS NULL` AND every field the
+  embedded text was built from still matching what was read; a mismatch makes it a no-op and the
+  still-NULL row is caught by the next sweep instead.
+
+All four non-trivial fixes (F-2/F-3/F-4/F-5) were verified by mutation, not just by a green
+suite: reverting each guard in turn (and running the relevant new test) reproduced exactly the
+behaviour CYBERSEC measured -- 41 overlapping sweeps hitting the same stuck row (F-3), the stale
+[1,2,3] vector landing over the fresh text (F-4), and the mutant test itself failing the moment
+`embedActive--` is deleted (F-5).
+
+Measured: `kg-embed-backfill.test.ts` 19/19 green (4 new cases: F-2's 2500-row backlog, F-3's
+single-flight storm, F-4's stale-write guard, plus F-5's explicit pin on the existing F-1b test).
+Full `src/__tests__` kg-filtered run: 697/697 green. `npx tsc --noEmit -p .` clean.
+`store/lint-ratchet.sh`: no rule got worse (459 findings, baseline holds).
+
+Ki döntött: cybersec (NO-GO 39145) + qa (FAIL 39145), both on this card's delta gate; fullstack
+(applied the fix). MikroB msg 25084 ordered the fix round.
+Végrehajtó: fullstack.
+Hivatkozás: kártya 7f3cbe92, gate comments/verdict 39145, MikroB inter-agent msg 25084, previous
+entry above (the round this corrects).
+
+## 2026-11-26 -- KG embeddings fix round 3: streamed-import regression, scheduleKgNodeEmbedding stale-write guard, down-backend backoff (kártya 7f3cbe92, QA PASS 39181 + CYBERSEC NO-GO 39187)
+
+QA PASS 39181 confirmed F-1/F-3/F-2(measured case)/F-4(backfill half)/F-5 from the prior round, by
+independent mutation testing. CYBERSEC NO-GO 39187 on the SAME sha (632167657c63ece8a072d978488f6cbdeee91835)
+found two blocking items and fixed two non-blocking ones from its own L-list:
+
+- N-A (REGRESSION, introduced by the F-3 single-flight guard): `scheduleBackfillSweep()` silently
+  DISCARDED every trigger that arrived while a sweep was already running, with nothing recording
+  "run again". Measured by CYBERSEC: a healthy backend, 300 new nodes then another 300 five
+  seconds later (while the first sweep is still draining) -- 246 of 600 rows stayed NULL
+  PERMANENTLY, because the running sweep's SELECT snapshot predates the second batch and the
+  normal re-arm (`attempted >= limit`) never fires for a backlog that fit under the cap. This is
+  exactly the streamed-import shape 01b10349 will use. Fixed: a `sweepRerunRequested` flag, set
+  when `scheduleBackfillSweep()` is called while `backfillSweepRunning` is true; read (and
+  cleared) INSIDE the sweep's own `.then()`, not captured at the sweep's START (the first attempt
+  at this fix captured it too early and read the pre-sweep, always-`false` value -- caught by the
+  test itself, not by review). Re-arm condition widened per MikroB's 25146: rerun requested, OR
+  `attempted >= limit`, OR the pass left failures behind (`embedded < attempted`, backend's own
+  39167 suggestion) -- the last one closes L-3 from 39187 too (a partially-failing pass used to
+  wait for an unrelated future write to retry it).
+- N-B (not a regression, the other half of the prior round's F-4; inherited from 6d542dc9):
+  `scheduleKgNodeEmbedding`'s own `UPDATE` (the ordinary fire-and-forget auto-embed every write
+  goes through) was still unconditional -- only the backfill sweep's `UPDATE` got F-4's guard.
+  Measured by CYBERSEC: two writes to one node with completion order reversed -- the OLDER text's
+  vector landed AFTER the newer one, permanently. Fixed with the same guard, expressed at the JS
+  level this time (re-read the row's current fields, recompute `kgEmbedText`, compare to the text
+  that was embedded, apply only if it still matches AND `embedding IS NULL`) rather than
+  duplicating F-4's column-by-column SQL `WHERE` -- `scheduleKgNodeEmbedding` only had the combined
+  text to begin with, not the individual fields.
+- L-2 (non-blocking, fixed anyway, cheap): a permanently-down backend re-armed the sweep forever
+  at the base 2s cadence regardless of whether a pass embedded anything (measured: ~6k calls/10min,
+  zero effect). Bounded exponential backoff (2s doubling to a 60s cap, reset the moment any pass
+  embeds something again) instead of a fixed cadence.
+- M6 (non-blocking, fixed anyway, one test): the only failure-counting test exercised the THROW
+  path; the real backend-down shape is `generateEmbedding` resolving to `null` WITHOUT throwing
+  (`src/db.ts`'s own catch returns `null`). A mutant counting that as success survived every
+  existing test. Added the missing case; no code change was needed (the existing `if (emb)`
+  branch was already correct, only its test coverage was not).
+
+Not touched this round (CYBERSEC's own L-1/L-4/L-5 from 39187, explicitly non-blocking,
+info/cosmetic): M9 (`embed_model` not cleared on a text change, pre-existing), M15 (concurrency
+constant import shape, pre-existing), `embedded++` over-counting when a guarded UPDATE is a no-op
+(L-4, info-only, nothing reads it for control flow), and the three remaining column-guard pins
+(G3/G4/G5 for body/snippet/keywords individually) CYBERSEC's own probe found still unpinned on the
+backfill UPDATE -- left for a future round if they prove load-bearing; the F-4 guard they test is
+still correct, only under-pinned.
+
+Every non-trivial fix verified by mutation (ran the mutant, not just reasoned about it): N-A's
+own first implementation attempt (capturing the rerun flag too early) was caught this way before
+it ever reached a gate. L-2's mutant (remove the backoff) produced 285 calls in 10 simulated
+minutes against a 50-call bound; N-B's mutant (revert to the unconditional UPDATE) reproduced the
+exact stale-vector landing CYBERSEC measured; M6's mutant (treat falsy as success) was caught by
+the one new test added for it.
+
+Measured: `kg-embed-backfill.test.ts` 23/23 green (4 new cases: N-A's streamed-second-batch
+healing, L-2's backoff bound, N-B's reversed-completion-order guard, M6's null-not-thrown
+failure count). Full `src/__tests__/kg-*.test.ts` (30 files): 459/459 green. `npx tsc --noEmit -p .`
+clean. `store/lint-ratchet.sh`: no rule got worse (459 findings, baseline holds, unrelated to the
+kg rule count above).
+
+Ki döntött: qa (PASS 39181, independent mutation confirmation) + cybersec (NO-GO 39187, N-A/N-B
+blocking, L-2/M6 non-blocking); fullstack (applied the fix). MikroB msg 25146 ordered this round,
+prioritized ahead of e94fea8e and the e99c3dc1 re-plan.
+Végrehajtó: fullstack.
+Hivatkozás: kártya 7f3cbe92, gate comments/verdict 39181/39187, backend's comment 39167 (the
+`embedded < attempted` re-arm trigger), MikroB inter-agent msg 25146, previous two entries above.
+
+## 2026-11-26 -- CYBERED NO-GO 39256 closed: dangling/ancestor-loop symlinks + 3 escape routes (card af3cd669)
+
+CYBERED NO-GO 39256 (sha c524a9190996970727e29e3a766a60e4d815f84b) found the `vendor-skill.sh`
+symlink guard (SYMLINKVALIDATE924) incomplete in two ways: F-1a, plain `realpath` without `-e`
+only requires leading path components to exist, so a symlink whose final target component is
+missing still "resolves" -- destructive steps ran, `.git` could survive in dest, byte-for-byte
+like unfixed develop. F-1b, a directory symlink pointing at its own ancestor resolves to a real,
+existing, in-tree path, passing both the existence check and the old containment case (which
+explicitly allowed equality to `$src` itself); `cp -RL` recursed without bound. F-2, the
+validation loop only walked symlinks `find` reported strictly inside `$src`, never validating
+`$src` itself or `LICENSE_FILE` -- three escape routes: --subdir itself is a symlink out of the
+clone, a middle component of --subdir is a symlink out of the clone, LICENSE_FILE is a symlink
+to a local file. F-3 (LOW), two mutation-pin gaps: a sibling-prefix control and the self-link
+case (same clause as F-1b).
+
+Fix: existence check (`[[ -e "$resolved" ]]`) merged into the realpath-resolution branch;
+ancestor-loop guard rejecting any symlink whose own directory sits at-or-under its resolved
+target (closes F-1b and the F-3 self-link pin together); `clone_real` computed and `$src_real`
+required to resolve inside it (closes the subdir-itself and middle-component escapes); LICENSE_FILE
+resolved + existence + clone-containment checked after being found by name (closes the LICENSE
+escape). F-4 (in-clone upward links above --subdir) left as-is per CYBERED's own text: a policy
+call for MikroB, not a defect, and the current (intentional-tightening) behavior is accepted.
+
+8 new fixtures added to `src/__tests__/vendor-skill-symlink-safety.test.ts`, confirmed RED against
+unfixed develop, GREEN after the fix (15/15, no regression). Each of the 4 new guard mechanisms
+individually mutation-tested (disable -> commit -> fleet-test confirms the exact expected fixture(s)
+RED -> revert): clone/src containment, existence check, ancestor-loop guard, LICENSE_FILE
+validation -- all four confirmed load-bearing.
+
+Ki döntött: CYBERED (NO-GO 39256, the fix direction); backend (implementation, tests, mutation
+proof). Hivatkozás: kártya af3cd669; CYBERED NO-GO 39256; `store/vendor-skill.sh`;
+`src/__tests__/vendor-skill-symlink-safety.test.ts`; Gate-SHA fa8f30fbea450b12462e64ec9eeaae1cf9826fe4.
+
+## 2026-11-26 -- CYBERED NO-GO 39294 closed: find -H + find -L replace the per-case symlink/loop walk (card af3cd669)
+
+CYBERED NO-GO 39294 (sha 6b40a0e0a15b7dcfae6a9d9aab44a80f4bcd5e7c) found two shapes still open
+in `vendor-skill.sh`'s symlink guard after the prior round (CYBERED NO-GO 39256 close): F-1,
+`--subdir`'s last component being itself a symlink to a directory INSIDE the clone, whose target
+holds an escaping inner link -- `find "$src" -type l` without `-H` does not follow a symlinked
+START point during traversal, so it lists `$src` itself as type `l` and never descends into it,
+leaving the nested escaping link unvalidated. F-2, a mutual cycle between two sibling directories
+(`a/x -> ../b`, `b/y -> ../a`) resolves each link to a real, existing, non-ancestor path, passing
+both the hand-rolled ancestor-loop guard and the existence check; only `cp -RL`'s own traversal
+failure caught it, AFTER the destructive payload wipe.
+
+Per MikroB's re-plan (39295): the hand-rolled per-case ancestor-loop guard was REPLACED (not
+extended) with CYBERED's validated two-step design, both run before `$dest` is touched: (1)
+`find -L "$src"` as an upfront loop detector -- GNU find reports a non-zero exit on any
+filesystem loop (self, ancestor, or multi-node cycle) while dereferencing every symlink during
+traversal, subsuming the old ancestor-only check and additionally catching the mutual-cycle
+shape; (2) `find -H "$src" -type l` for the per-symlink existence/containment walk -- `-H`
+follows a symlink given as the START point only, so a symlinked `--subdir` is itself dereferenced
+for listing purposes and its contents get walked too, closing F-1.
+
+Both mechanisms verified empirically (ancestor-loop, self-link, mutual-cycle, and symlinked-start
+inner-link cases all reproduced with plain `find`/GNU find before writing fixtures). Three new
+fixtures added to `src/__tests__/vendor-skill-symlink-safety.test.ts`: the symlinked-subdir
+inner-link escape (F-1), the mutual sibling cycle with a dest-only marker proving the wipe never
+ran (F-2), and a clean root-vendor SUCCESS fixture pinning the clone-equality alternative in the
+containment check (CYBERED's M7 mutation-pin gap). Confirmed RED against the pre-fix script
+(2 failed as expected, root-vendor control already green), GREEN after the fix (18/18, no
+regression). Both new guard mechanisms (`find -L` precheck, `find -H` walk) individually
+mutation-tested (disable -> commit -> fleet-test confirms the exact expected fixtures RED ->
+revert): disabling `find -L` turned the ancestor-loop, self-link, AND mutual-cycle fixtures red
+together (3 failed); reverting `-H` to plain `find` turned only the symlinked-subdir fixture red
+(1 failed). Both confirmed load-bearing; final diff against the fix commit is clean (net-zero).
+
+Ki döntött: CYBERED (NO-GO 39294, the validated fix direction); MikroB (39295, re-plan: replace
+the per-case design rather than patch another case); backend (implementation, tests, mutation
+proof). Hivatkozás: kártya af3cd669; CYBERED NO-GO 39294; MikroB re-plan 39295;
+`store/vendor-skill.sh`; `src/__tests__/vendor-skill-symlink-safety.test.ts`.
+
+## 2026-11-26 -- fork-overlay pilot: web/lang/{hu,en}.js kulcsai kiszervezve (kártya ee132dfc)
+
+Peti jóváhagyása (Telegram 14539/14542, 2026-11-23) egy pilotra: a fork-tulajdonú tartalom
+kiszervezése az upstream-tulajdonú fájlokból, hogy csökkenjen az upstream-merge ütközési
+felület. Item 2 (teljes körű kulcs-szétválasztás) a jelen döntés tárgya; item 1 (`style.css`)
+külön kártyára került, item 3 (a 22+ widget-teszt kulcs-jelenlét-ellenőrzésének függetlenítése
+a fájltól) ugyanebben a menetben, korábban landolt.
+
+MikroB döntése a 38479 blokkoló kérdésre (option c, komment 39254): item 3 előbb, aztán item 2
+teljes körűen, egy menetben, hogy a widget-teszt-suite sose menjen pirosra a kulcsok
+mozgatásakor. Ez EGYÚTTAL FELÜLÍRJA a README "Upstream-owned vs fork-owned fájlok" szekciójának
+2026-09-04-es (kártya 368b77f7) döntését, ami akkor PONT EZT az overlay-szétválasztást vetette
+el -- a feltétel, amit az a döntés maga adott meg az újragondolásra ("ha az ütközések száma
+valaha nem nulla"), most bekövetkezett (24,5%-ról 33%-ra nőtt a fork-tulajdonú kulcsok aránya),
+és a tooling-ellenérv (rossz fájlba író kulcs-beszúró szkript kockázata) megszűnt: a
+`langHasKey`/`langSource` helper + a zero-drift pin strukturálisan kezeli a kulcs-elhelyezést,
+nem kézi szkript.
+
+Mérve (fa: `6b4573434761c4a7fad32348e9e0c06dc49a562a` merge-base, vm-exekvált valódi szótárak,
+nem sor-szintű diff): 2023 bázis-kulcs/nyelv; 945 új, 33 felülírt, 48 törölt kulcs/nyelv a
+jelenlegi fork-on. A 978 új+felülírt kulcs/nyelv átkerült `web/lang/fork-hu.js` / `fork-en.js`-be
+(`Object.assign` a bázis fölött, `web/index.html`-ben a bázis UTÁN betöltve); a bázis-fájlok
+visszaálltak a merge-base szövegére, mínusz a 48 törölt kulcs sora/nyelv.
+
+**Kivétel, 9 kulcs/nyelv (8 `activity.*` beszúrás + `activity.tooltip.mode` felülírás):** a
+bázisban maradt, nem az overlay-ben, mert `ACKNOWLEDGED_FORK_ANCHORS['web/lang/hu.js']`
+(`src/fork-upstream/acknowledged-conflicts.ts`) az `activity.page_title` FIZIKAI jelenlétét
+figyeli `hu.js`-ben (MikroB 2026-09-04-es döntése, a fork Activity-oldalának megtartásáról) --
+ezt mérte be a `fork-upstream-conflict-guard.test.ts` ÉLŐ futása (nem feltételezve, hanem
+tényleg vörösre váltva), mielőtt a kivétel bekerült volna.
+
+**Zéró-drift bizonyíték:** a split előtti pillanatban vett valós `window._i18n` szótár-fixture
+(`src/__tests__/fixtures/lang-overlay-pilot-snapshot-{hu,en}.json`, 2920 kulcs/nyelv) +
+`src/__tests__/lang-overlay-pilot-zero-drift.test.ts` -- a bázis+overlay vm-mergelt eredménye
+kulcsra és értékre pontosan egyezik a fixture-rel, mutáció-tesztelve (egy törölt overlay-sor
+pirosra vált).
+
+**Mért hatás (upstream-merge-ütközés, nem csak fájl-darabszám):** `hu.js`/`en.js` sor-szintű
+diffje a merge-base-hez képest **1015 beszúrás / 91 törlésről 15 beszúrás / 49 törlésre**
+csökkent (mindkét nyelven, azonos arány) -- ez a tényleges merge-ütközési felület, nem a
+"melyik fájlt érintette mindkét oldal" fájl-szintű számláló, ami a split után is 413 marad
+(hu.js/en.js attól még "mindkét oldal írta" fájl, csak a tartalmi átfedés tört le a kis
+kivétel-halmazra).
+
+**Fallout a teljes suite futtatásakor** (a kártya eredeti, 2026-10-29-es mérése -- 231 teszt,
+22 fájl -- elavult volt, a merge-base azóta tovább mozdult): a kulcs-jelenlét-ellenőrzésen
+(item 3) felül ~18 további teszt-fájl olvasta a `hu.js`/`en.js` SZÖVEGÉT közvetlenül (élő
+`t()`-harness `new Function`-nel, dinamikus `import()` egy saját `window._i18n`-hez, vagy egy
+konkrét kulcs ÉRTÉKÉT regex/indexOf-fal) -- mindegyik a `langSource()`/`langHasKey()` helperre
+állt át, vagy a hiányzó `fork-{hu,en}.js` importot kapta meg.
+
+Ki döntött: Peti (eredeti jóváhagyás, Telegram 14539/14542); MikroB (sorrend-döntés, komment
+39254); fullstack (implementáció, mérés, teszt).
+Hivatkozás: kártya ee132dfc; korábbi döntés kártya 368b77f7 (felülírva); anchor-forrás
+`src/fork-upstream/acknowledged-conflicts.ts` (`ACKNOWLEDGED_FORK_ANCHORS`); `web/lang/hu.js`,
+`web/lang/en.js`, `web/lang/fork-hu.js`, `web/lang/fork-en.js`, `web/index.html`,
+`src/web/routes/static.ts`, `src/__tests__/helpers/lang-overlay-key.ts`,
+`src/__tests__/lang-overlay-pilot-zero-drift.test.ts`.
+## 2026-11-27 19:36 -- 01b10349 -- F4: catch KgSecretError on referenced-card upsert in importDecisionsLog
+
+OBSERVATION: import-decisions-log.ts's referenced-card upsertNode call had no try/catch for
+KgSecretError, unlike the sibling decision-node upsert (earlier F3 fix). Real live trigger: card
+b0396aa1's title contains a #token= fragment (10 chars, clears the 8-char secret-shape floor) --
+the live MT-10 import would crash on it.
+
+FIX: ceb8e3308 (test-first, red test 11a0de013) adds the missing try/catch around the
+referenced-card upsertNode call, mirroring the existing F3 pattern. Mutation-tested: removing the
+try/catch reproduces the live crash verbatim and turns exactly the new F4 test red.
+
+Measured live (after landing, before cron install): dated backup
+store/kg-backups/knowledge-graph-20261127-200554.db; import run with this fix in place
+secretSkipped=11 decisions (incl. b0396aa1's referenced-card node) instead of crashing; chunked
+embedding backfill 2918/2918 embedded, 0 failed; Kesz-ha #3 on live 7/12 (58%), clearing the
+>=50% bar (card 01b10349 comment 39519/39520).
+
+Ki döntött: backend (F4 root-cause, fix, test, mutation proof, live measurement); MikroB (39435
+precondition sequencing: wait for 7f3cbe92 to land first). Hivatkozás: kártya 01b10349; commits
+11a0de013, ceb8e3308; `src/kg/import-decisions-log.ts`.
+
+## 2026-11-27 20:58 -- 01b10349 -- CYBERED NO-GO 39527 fix: wrapper tsx pin (F-1) + import-findings secret-shape catches (F-2/F-3)
+
+Delta on top of the F4 fix (ceb8e3308), per CYBERED NO-GO 39527 on Gate-SHA 30885e33.
+
+F-1: store/kg-import-mt10.sh ended with `exec npx tsx scripts/kg-import-mt10.ts`. CYBERED showed
+npx with no TTY (the cron's actual environment) silently fetches an uncached tsx from the npm
+registry and runs it, with real exposure during update.sh's npm ci window (half-installed
+node_modules). Fixed: the wrapper now resolves $MARVEEN_MAIN/node_modules/.bin/tsx by explicit
+path and exits 1 with a clear message if it is missing, never falling back to npx. New selftest
+cases (kg-import-mt10.selftest.sh) pin both directions: missing local tsx -> non-zero exit,
+never touches npx; local tsx present -> runs it directly. Mutation-confirmed: reverting to the
+npx line turns exactly these new cases red (4/13), restored clean (13/13).
+
+F-2: src/kg/import-findings.ts had 3 upsertNode call sites (card node, finding node, error_class
+node) with no KgSecretError catch -- same bug class as the F4 fix, just a fifth site. Real
+triggers: a referenced card's TITLE (same shape as b0396aa1) throws on the card-node write; a
+findings_ref that passes the SHARED secret-pattern pre-screen (F5) but matches a KG-LOCAL-only
+shape (e.g. "DB_PASSWORD=...") throws on the finding-node write. Both aborted the whole run
+before decisions/coldMemories could import (findings runs first in runImportMt10). Fixed: the
+same try/catch + skip-and-count pattern as F4, test-first (both new tests reproduce the real
+crash verbatim against the unfixed code), mutation-tested in both directions (removing the
+try/catch -> red; widening the catch to swallow-all, verified via a non-secret KgValidationError
+trigger at each site -> red). The error_class-node site got the same catch for defense-in-depth
+parity (CYBERED's explicit ask), though no realistic trigger exists today (its title is always
+one of a small fixed taxonomy string).
+
+F-3: the decisions importer's F4 skip counter (cardRefsSkippedSecret) existed but was never
+printed in the CLI run summary -- only entriesRejectedSecret was, so an operator reading the
+cron log could not see a referenced-card secret-skip at all. Now printed alongside it. The three
+new findings counters (cardTitleSkippedSecret, findingSkippedSecret, errorClassSkippedSecret)
+are printed the same way from the start.
+
+Verified: targeted vitest across the touched + sibling importer/CLI/wrapper test files, 111/111
+plus wrapper selftest 13/13 (up from 7/7); tsc --noEmit clean. No live run, no cron, no
+fleet-test (per MikroB 25684's scope).
+
+Ki döntött: CYBERED (NO-GO 39527, fix direction); backend (implementation, tests, mutation
+proof). Hivatkozás: kártya 01b10349; `src/kg/import-findings.ts`; `store/kg-import-mt10.sh`;
+`store/kg-import-mt10.selftest.sh`; `src/kg/import-mt10-cli.ts`.
+
+## 2026-11-26 -- card e99c3dc1: FLEET_TEST_PRIORITY=land ancestor-lock verification + distinguishable LAND-queue timeout message
+
+Előzmény: a gate-store-selftests vs. land starvation kártyán (e99c3dc1) a per-tree lock
+exemption-kísérlet 4 egymást követő NO-GO/FAIL után bounce-olt (39178/39179); MikroB döntése
+(39179) a tree-lock exemption RETIRE-elése és egy scheduling-szintű re-plan volt. Az első posztolt
+terv (39188) egy TELJESEN ÚJ ticket-class/`--land`-flag mechanizmust javasolt, de a kódolás előtt
+kiderült: a FLEET_TEST_PRIORITY=land priority-ticket ütemezés (kártya b7d8ecc4) MÁR LÉTEZIK és már
+élesben van (`fleet_test_resolve_priority_rank`, `FLEET_TEST_AGING_S`, `marveen-land.sh` már
+exportálja `FLEET_TEST_PRIORITY=land`-et minden fleet-test.sh hívás előtt). Korrekció posztolva
+(39196), MikroB jóváhagyta szűkített hatókörrel, egy szigorítással (msg 25163): a nyitott fd
+önmagában gyenge bizonyíték, az ellenőrzésnek a TÉNYLEGESEN tartott flock-ot kell néznie.
+
+MI KÉSZÜLT EL:
+1. `fleet_test_verify_land_priority()` (store/fleet-test.sh): a FLEET_TEST_PRIORITY=land állítást
+   az ős-PID lánc bejárásával ellenőrzi (bound: FLEET_TEST_PRIORITY_ANCESTOR_DEPTH, alap 10) --
+   a lánc azért nem az azonnali szülőn áll meg, mert run_fg_killable (marveen-land.sh) a SAJÁT
+   lock-fd-másolatát lezárja a subshellben MIELŐTT exec-eli a fleet-test.sh-t (kártya 81c6fbb5
+   Q3) -- a fd csak a marveen-land.sh fő processzén él, azon túl. Egy ős csak akkor számít
+   igazoltnak, ha MIND a három igaz: (a) van nyitott fd-je a develop-lock fájlon, (b) azon a fd-n
+   TÉNYLEGESEN tart flock-ot, (c) a saját cmdline-ja `store/marveen-land.sh`-t nevez meg. Bármelyik
+   ellenőrzés befejezhetetlensége (nincs /proc, olvashatatlan, nincs találat a bound-on belül) ->
+   normal priority, soha nem land (fail-closed).
+2. MÉRÉSI LELET, ami a tervezett primitívet megváltoztatta: MikroB 25163 a `/proc/locks`
+   globális listát kérte a flock-ellenőrzéshez. MÉRVE (nem feltételezve): egy valódi, másik
+   processz `flock -n`-jét helyesen blokkoló és `fuser -v`-vel helyesen kimutatott flock
+   EGYÁLTALÁN NEM jelent meg a `/proc/locks`-ban ezen a platformon (WSL2) -- as a globális
+   listából hiányzott a teljes mérés alatt. A `/proc/<pid>/fdinfo/<fd>` SAJÁT "lock:" sora
+   viszont helyesen jelezte mindkét irányban (pozitív és negatív kontroll is mérve). A kódot
+   ezért a fd-specifikus fdinfo-ellenőrzésre írtam, nem a globális /proc/locks-ra -- szemantikailag
+   ugyanazt vagy szigorúbbat ad (nem keverhető össze egy MÁSIK processz ugyanazon inode-on tartott
+   lock-jával), és tényleg működik ezen a platformon. Nem kértem újra jóváhagyást a primitívváltásra
+   (a cél -- tényleges flock, nem csak nyitott fd -- változatlan, és a fail-closed szemantika miatt
+   egy rossz primitívválasztás legrosszabb esete is csak extra starvation, nem jogosultság-szivárgás),
+   de a REVIEW-ban és itt is jelezve, mérési bizonyítékkal.
+3. `fleet_test_any_land_ticket_pending()` + a timeout `die()` ág (TREE_TICKET_DIR vizsgálata a
+   timeout pillanatában): ha a várakozó sajat ticket törlése után marad rank-0 (land) ticket a
+   sorban, a die() üzenet explicit megnevezi ("queued behind a LAND ticket") -- egy teszt ezentúl
+   a stderr szövegén tud assertálni, nem csak az exit kódon.
+4. `--effective-priority` introspekciós flag (ugyanaz a minta mint `--lock-path`): a VERIFIKÁLT
+   effektív prioritást nyomtatja ki, lock/tree/CPU-slot machinery futtatása nélkül.
+
+Hermetikus teszt (src/__tests__/fleet-test-land-priority-verified.test.ts, 8 teszt, mind zöld):
+valódi folyamatfát épít fel (egy "ős" bash -c processz, ami opcionálisan tart egy flock-ot a
+develop-lock fájlon és/vagy a cmdline-jában hordozza a `store/marveen-land.sh` jelölőt, egy
+subshell ami lezárja a saját fd-másolatát a 81c6fbb5 Q3 minta szerint, majd a script a valódi
+`--effective-priority`-val), minden lock-fájl saját mktemp könyvtárban -- SEM `/home/neon/marveen`,
+SEM `/home/neon/marveen-test` literál nincs a tesztfájlban (a fájl sajátmagát grep-eli ennek
+bizonyítására). Négy manuális mutáció (cmdline-ellenőrzés elhagyása, flock-ellenőrzés elhagyása
+nyitott-fd-elfogadásra, a teljes verifikáció kikapcsolása, a timeout-ág törlése) mindegyike PIROS
+lett, majd az eredeti visszaállítva és `diff`-fel igazolva, hogy byte-azonos az eredetivel.
+
+Ellenőrzés: `fleet-test-land-priority-verified.test.ts` 8/8; a meglévő fleet-test.sh guard-suite
+(fleet-test-serialises-runs, fleet-test-shares-cleancore-cpu-pool, fleet-test-no-test-tree-
+reassignment-after-guard, fleet-test-refuses-test-tree-is-root, fleet-test-relative-tree-is-root)
+56/56 együtt. `npx tsc --noEmit -p .` tiszta. `lint-ratchet.sh`: nem romlott semelyik szabály
+(459 lelet, baseline tartja). Kézi smoke-teszt: `--lock-path`, `--cpu-slots`, `--path`,
+`--effective-priority` (sima hívás és `FLEET_TEST_PRIORITY=land` self-report ellenőrzés nélkül
+is `normal`-t ad, ahogy a fail-closed szemantika várja).
+
+Mi maradt ki: élő marveen-land.sh lefutás elleni teszt (valódi landolás a valódi lock-kal) --
+ez a hermetikus keret direkt azért épült, hogy ez SOHA ne kelljen (MikroB 25163 constraint,
+a kártya korábbi körének 15:12:35-ös incidense pont ezt a mintát okozta). A gate-selftests
+fájlok (ami a RETIRED tree_lock_exempt() mechanizmust tesztelte) nincs felújítva -- az a kód
+sosem landolt, nem is lesz (MikroB 39179 döntés).
+
+Ki döntött: MikroB (retire + re-plan 39179, korrekció-jóváhagyás + primitív-szigorítás 25163);
+fullstack (implementáció, mérés, teszt).
+Hivatkozás: kártya e99c3dc1; kapcsolódó b7d8ecc4, 81c6fbb5 (Q3), 2f0c7d24; komment 39178/39179/
+39188/39196; msg 25149/25160/25163; `store/fleet-test.sh`,
+`src/__tests__/fleet-test-land-priority-verified.test.ts`.
+
+## 2026-11-26 -- card e99c3dc1 fix-kör 2: két env-override bypass zárása (CYBERSEC NO-GO 39208)
+
+Az első kör Gate-SHA-ján (6bab004a) CYBERSEC NO-GO 39208 két MUST (F-1, F-2) és egy SHOULD
+(F-3) leletet talált, mindhárom MÉRVE, nem feltételezve (3/3 próba).
+
+F-1 (MUST): a `fleet_test_verify_land_priority()` első köre a develop-lock útvonalat a
+`MARVEEN_LAND_DEVELOP_LOCK_FILE` env-ből olvasta -- UGYANAZT a változót, amit maga a
+marveen-land.sh is olvas. Bármelyik fleet-test.sh hívó beállíthatta ezt SAJÁT tetszés szerinti
+lock-fájlra, saját maga flockolhatta, és a saját cmdline-jába írhatta a "marveen-land.sh"
+szöveget -- mindhárom ellenőrzést kielégítve egy olyan lock ellen, amin senki más nem versenyez.
+Javítás: a produkciós hívási pont a kanonikus, `$ROOT`-ból (hardcode-olt, env-ből SOHA nem jövő
+érték) származó útvonalat olvassa, az env-override-nak semmilyen hatása nincs többé a valódi
+ellenőrzésre. `fleet_test_verify_land_priority()` maga továbbra is paraméterként kapja az
+útvonalat (így egy teszt közvetlenül, saját eldobható úttal hívhatja), de a SAJÁT hívási pontja
+fixen a kanonikus konstansra van pinnelve.
+
+F-2 (MUST, előzőleg is létező, b7d8ecc4-ből örökölt hiba, ugyanebben a körben javítva): a
+`FLEET_TEST_AGING_S` is a hívó env-jéből jött. `FLEET_TEST_AGING_S=0`-val BÁRMELYIK normál
+(rank-1) ticket a SAJÁT első pollján rank-0-ra promotálta magát -- land-imitálás nélkül is
+megelőzve minden valódi land ticketet. Javítás: hardcode-olt konstans (180), nem olvasható env-ből.
+
+F-3 (SHOULD, lefedettség-bővítés, nem új funkció): pin a megosztott lock-path konstansra (V4),
+az inode-kötésre (V6, egy DIFFERENT fájl nem keverhető össze az igazival), és a depth-bound
+(V5) teszt újraírva VALÓDI, egymásba ágyazott `bash -c`/fájlalapú folyamatlánccal -- a korábbi
+egyetlen `(...)` subshell-es változatot bash saját tail-exec optimalizációja egy lépéssel
+rövidebbre húzhatta a valódinál, ami a bound-tesztet hamisan zölddé tehette volna anélkül, hogy
+tényleg a produkciós mélységet gyakorolta volna.
+
+MÉRÉSI/IMPLEMENTÁCIÓS MELLÉKHATÁS: a teszt-harness beágyazott `bash -c '...'` string-jeinek
+TÖBBSZÖRÖS egyszeres-idézőjel escape-elése (a kinyert bash-függvények SAJÁT idézőjeleivel,
+pl. `stat -c '%i'`) a gyakorlatban törékenynek bizonyult -- egy mutáció-teszt közben csendben
+"normal"-t adott vissza arra a positive esetre, ami helyesen "land"-et kellett volna. A harness
+ÁTÍRVA valós FÁJLOKBA írt, `bash <fájl>`-lal hívott szkriptekre -- semmilyen idézőjel-escape
+nem kell, a hiba teljesen megszűnt.
+
+Ellenőrzés: `fleet-test-land-priority-verified.test.ts` 14/14 (6 új teszt az előző kör 8-ából).
+Mutáció-teszt mindhárom MUST/F-3-mélység fixre (F-1 env-override visszaállítása, F-2
+env-override visszaállítása) kézzel futtatva, mindegyik PIROS lett a megfelelő teszten, majd az
+eredeti fájl visszaállítva és `diff`-fel igazolva byte-azonosnak. A meglévő fleet-test.sh
+guard-suite (ugyanaz az öt fájl mint az első körben) + az új teszt együtt: 62/62.
+`npx tsc --noEmit -p .` tiszta. `lint-ratchet.sh`: nem romlott semelyik szabály (459 lelet).
+Kézi smoke-teszt: `--effective-priority` sima hívásra és `FLEET_TEST_PRIORITY=land`
+self-report-re is `normal`-t ad (nincs valódi ős); a meglévő
+`fleet-test-priority-lane.selftest.sh` (b7d8ecc4 saját selftestje) változatlanul 13/13.
+
+Mi maradt ki: a SHOULD F-3 lefedettség-bővítés a V4/V5/V6 pontokra korlátozva -- a kártya 39177
+kommentben lezárt gate-selftests/tree_lock_exempt() terület továbbra sem éled fel (MikroB 39179
+döntése).
+
+Ki döntött: MikroB (NO-GO + a két MUST pontos javítási iránya, msg 39208); fullstack
+(implementáció, mérés, teszt).
+Hivatkozás: kártya e99c3dc1; CYBERSEC NO-GO 39208; msg 25177; `store/fleet-test.sh`,
+`src/__tests__/fleet-test-land-priority-verified.test.ts`.
+
+## 2026-11-27 -- card e99c3dc1 fix-kör 3: F-1 teszt hermetikussá tétele valódi land-ősre (élő red landolásnál talált lelet)
+
+Tény: a kártya 2. gate-körének landolása (45c30ecb sha, QA PASS + CYBERSEC GO) VALÓS landolás
+közben pirosra fordult -- az `src/__tests__/fleet-test-land-priority-verified.test.ts` saját F-1
+tesztje ("MARVEEN_LAND_DEVELOP_LOCK_FILE no longer has ANY effect") `expect(out).toBe('normal')`
+helyett `'land'`-et kapott. MikroB diagnózisa (msg 25668): a teszt hibásan feltételezte, hogy
+sosincs VALÓS land-ős a saját futása közben -- ez minden olyan landoláskor hamis, ahol ez a
+tesztfájl maga is `marveen-land.sh`-n át fut (vagyis MINDEN landoláskor).
+
+Javítás (MikroB engedélye, msg 25668: "do NOT weaken the production check" -- a produkciós
+`fleet-test.sh` logikája NEM változott, csak a teszt-harness): az F-1 teszt p1-ese most
+DUPLA-FORK + `setsid`-del FUT ("( setsid bash target & )", a befogó subshell azonnal kilép és
+elárvul a child), így a kernel a legközelebbi subreaper alá (`systemd --user`) reparentálja --
+mérve ezen a gépen: a VALÓS ős-lánc sosem éri el a tesztet elindító landoló-láncot. Ugyanez a
+technika került a `runDetached` segédfüggvénybe, amit az eredeti F-1 teszt is használ.
+
+Nem-vacuitás bizonyítva két új teszttel (ÚJ describe blokk, "F-1 HERMETICITY"):
+1. A javított szkript egy VALÓS, a valódi kanonikus lock-ot tartó "fake land" ős alá ágyazva is
+   'normal'-t ad (a kanonikus útvonalat SOHA nem írjuk le literálban -- a futó SOURCE-ból
+   olvassuk ki `ROOT=`-ot, ugyanaz a "names no real install path" önteszt védi).
+2. Az F-1 hiba VISSZAÁLLÍTOTT mutánsa (env-override ismét hatásos) ugyanebben a beágyazott
+   forgatókönyvben és önállóan futtatva is 'land'-et ad -- a hermetikus javítás nem rejt el egy
+   valódi regressziót.
+
+MÉRÉSI MELLÉKHATÁS, útkeresés közben talált, ÖNMAGÁBAN is load-bearing: a "fake land" ős saját
+nyitott+flockolt fd-je (a kanonikus fájlon) öröklődik MINDEN leszármazott forkon át, akkor is, ha
+az ősi láncot egyébként detacheljük -- az ős-lánc (ppid-lánc) és az fd-öröklés KÉT KÜLÖNBÖZŐ
+dolog, a detach csak az elsőt törli. Emiatt az attacker p1-je (ami a saját argv-jében már eleve
+hordozza a 'store/marveen-land.sh' markert) öröklött fd-n át "tartja" a kanonikus lock-ot is,
+függetlenül az ős-lánc állapotától -- ez PONTOSAN az a hibaosztály, amit a `marveen-land.sh`
+`run_fg_killable`-je kártya 81c6fbb5 Q3 alatt már egyszer lezárt (minden subshell lezárja a SAJÁT
+fd-másolatát `exec`-elés előtt). A teszt-harness "fake land" ősének most ugyanez a fegyelme: a
+kanonikus fd-t a külső wrapper lezárja, MIELŐTT a detachelt láncot elágaztatja.
+
+Másik, függetlenül talált és javított hiba: a detach-wrapper eredetileg a kimeneti fájl
+MÉRETÉRE ("$OUT" nem üres) várt, nem a futás TÉNYLEGES befejezésére -- mivel a `fleet-test.sh`
+köztes sorokat (pl. `env_compat_get` figyelmeztetést) is írhat stdout-ra a végső válasz előtt, ez
+csonkolt capture-t eredményezett. Javítás: a detachelt futó maga írja ki a DONE-jelzőt, utolsó
+lépésként, a wrapper ARRA vár, nem a fájl méretére.
+
+Ellenőrzés: `fleet-test-land-priority-verified.test.ts` 17/17 (3 új teszt a 14-ből), háromszor
+egymás után lefuttatva stabilan zöld. `npx tsc --noEmit -p .` tiszta. Csak ez az egy fájl futott
+(MikroB: "Run only that test file directly, no fleet-test"), nincs teljes fleet-test ebben a
+körben. A valódi kanonikus develop-lock fájl a futás előtt és után is szabad (ellenőrizve
+`flock -n`-nel), semmilyen árva fd/folyamat nem maradt utána.
+
+Ki döntött: MikroB (diagnózis + a szűk javítási irány, msg 25668, "do NOT weaken the production
+check"); fullstack (gyökérok, implementáció, mérés).
+Hivatkozás: kártya e99c3dc1; MikroB msg 25667/25668; Gate-SHA 45c30ecb312180c6ddcbb6eda785e525e2234b6b
+(a landolás saját shája, változatlan); `src/__tests__/fleet-test-land-priority-verified.test.ts`.
+
+## 2026-11-27 -- fleet-test log persistence closed the gap land runs never opted into (card 2f282a31)
+
+OBSERVATION (MikroB + fullstack 25641): the newest file in /home/neon/marveen-fleet-test-logs was
+from 07:07 CET; three subsequent marveen-land.sh runs (one red, on mopsion-suite-run) wrote
+nothing there, and fleet-test.sh's mktemp run_log is rm -f'd on every exit path.
+
+ROOT CAUSE (grepped, not guessed): log persistence has ALWAYS been a side effect of
+fleet_test_notify_finish(), which only runs when FLEET_TEST_CALLER_AGENT is set -- an explicit,
+agent-initiated self-test opt-in. marveen-land.sh sets a differently-named FLEET_TEST_AGENT (used
+only for an unrelated PAUSED/RESUMED-semaphore kanban-posting mechanism) and never sets
+FLEET_TEST_CALLER_AGENT -- confirmed via grep, zero matches. So a land run's own failure was never
+durably recoverable, on any date. git log confirms zero commits touched fleet-test.sh in the
+2026-11-26 18:00 -- 2026-11-27 08:00 window, ruling out a regression. The apparent "stopped at
+07:07" cutoff coincides with MikroB's own land-queue-priority hold (msgs 25506/25530), which told
+every OTHER agent to stop running fleet-test.sh manually around that time -- making land (which
+never opts in) the sole remaining caller, which is what made a pre-existing gap look like a new
+regression with a precise timestamp.
+
+SECOND DEFECT (criterion 3, found independently): Node's execFileSync throws an error whose
+.message folds in only stderr ("Command failed: <cmd>\n<stderr>"), never stdout. Every OK_SHAPES
+selftest prints its own [ok]/[FAIL] trace to stdout, so that trace was silently absent from the
+thrown error, and therefore from vitest's failure report and from fleet-test.sh's own `tee`'d log
+-- exactly the "selftest's own [FAIL] lines are lost" symptom in the card.
+
+FIX 1 (store/fleet-test.sh): added fleet_test_persist_failure_log()/fleet_test_prune_log_dir(),
+called from fleet_test_on_exit() whenever the run FAILED, regardless of FLEET_TEST_CALLER_AGENT --
+independent of the notify/HTTP path entirely, so it cannot be affected by a missing/unreadable
+dashboard token either. Bounded retention via FLEET_TEST_LOG_RETENTION (default 200, newest N kept
+by mtime). A passing, non-opted-in run still persists nothing, by design: the floor the card asked
+for is failures, and writing a file on every green land run was never requested.
+
+FIX 2 (src/__tests__/store-selftests-all-run.test.ts): execWithKillRetry's catch path now wraps
+the thrown error via withCapturedOutput(), which folds err.stdout (already present as a property,
+just never read) into the new error's .message, tail-bounded to 4000 chars each for stdout/stderr.
+
+TESTS: store/fleet-test-notify-injection.selftest.sh extended with 3 new cases (7: no CALLER_AGENT
++ failing run persists; 8: passing run persists nothing, control; 9: retention bound prunes to N).
+Verified standalone (bash, not via fleet-test.sh): 12/12 green. store-selftests-all-run.test.ts
+gained a positive case (probe script's own stdout trace survives into the thrown error) and a
+mutation-pin control (the same probe run through raw execFileSync, proving the pre-fix message
+would NOT have contained the trace -- guards-that-pin-behaviour point 7). Both verified via scoped
+`vitest run ... -t "[Ss][Tt][Dd][Oo][Uu][Tt] trace"` (2 passed, 178 skipped) while fullstack's
+ee132dfc land held the shared /home/neon/marveen-test.lock -- the full file was deliberately NOT
+rerun during the land (MikroB 25693: mopsion-suite-run in that file reaches the real fleet-test.sh
+and the shared lock). No full fleet-test.sh run was used anywhere for this card, per the standing
+land-queue hold (msgs 25506/25530).
+
+Ki döntött: MikroB (card 2f282a31, dispatch 25663); backend3 (root cause, both fixes, tests).
+Hivatkozás: kártya 2f282a31; store/fleet-test.sh; store/fleet-test-notify-injection.selftest.sh;
+src/__tests__/store-selftests-all-run.test.ts.
+
+## 2026-11-27 -- fleet-test log persistence: prune only our own logs, not the whole shared dir (card 2f282a31 delta)
+
+CYBERSEC GO 39544 on bb08d333 carried F-1 (LOW, evidence-destroying): fleet_test_prune_log_dir
+counted retention over the WHOLE shared FLEET_TEST_LOG_DIR, so the first red land after the
+2f282a31 fix would delete non-log evidence another test deliberately left there (measured live:
+channel-poller-reap-failure-2026-11-25T08-18-15-842Z-pane-parent-not-stopped.json, card a5c827ca
+-- MikroB backed it up to /home/neon/marveen-backups/fleet-test-logs-evidence/ before reporting).
+
+FIX: added FLEET_TEST_OWN_LOG_RE, matching only the two filename shapes this script itself
+writes (fleet_test_persist_failure_log's "<ts>-<pid>-failure.log", fleet_test_notify_finish's
+"<ts>-<pid>.log"). fleet_test_prune_log_dir now filters by this pattern BEFORE ranking by mtime,
+so anything else in the directory is never counted and never touched, no matter how many of our
+own failure logs accumulate.
+
+Also closed F-2 (LOW, previously unpinned): the selftest only asserted the
+FLEET_TEST_LOG_RETENTION=200 assignment line EXISTED, never that its value was actually 200 --
+added an explicit case asserting the sourced default.
+
+TESTS: fleet-test-notify-injection.selftest.sh gained Case 10 (a foreign file matching the real
+a5c827ca evidence shape survives 3 cycles of our own retention-capped pruning) and Case 11 (pins
+the 200 default). Mutation-verified: reverting fleet_test_prune_log_dir to the pre-fix
+whole-directory version turns Case 10 red (confirmed foreign file deleted) while every other case
+stays green -- the fix is load-bearing. Standalone run (bash, not via fleet-test.sh, per the
+standing no-fleet-test.sh-during-land rule): 14/14 PASS.
+
+Ki dontott: MikroB (card 2f282a31, delta dispatch msg 25707, CYBERSEC GO 39544 F-1/F-2); backend3
+(fix, tests).
+Hivatkozas: kartya 2f282a31; store/fleet-test.sh; store/fleet-test-notify-injection.selftest.sh.
+
 **Vendored-skill sanctioned baseline: 8 known deltas re-recorded after an incidental revert
 (kártya dabc1058, Peti 14791, 2026-11-26).** A 15:12-es cybersec gate-incidens (msg 25105)
 visszaállította `store/vendored-skill-sanctioned.json`-t a committolt verzióra, elvesztve egy

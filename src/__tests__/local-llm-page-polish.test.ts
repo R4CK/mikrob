@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langSource } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_CORE = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
@@ -16,8 +17,6 @@ const LLM_MODULE = readFileSync(join(__dirname, '../../web/app-local-llm.js'), '
 const APP = APP_CORE + '\n' + LLM_MODULE
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
-const HU = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
-const EN = readFileSync(join(__dirname, '../../web/lang/en.js'), 'utf-8')
 
 function fnBody(source: string, startMarker: string): string {
   const start = source.indexOf(startMarker)
@@ -139,7 +138,7 @@ describe('Aktivitás unified view (card 88c00f5e)', () => {
   })
 
   it('i18n title key updated to Aktivitás in both languages', () => {
-    expect(HU).toContain("'Aktivitás (mai nap)'")
-    expect(EN).toContain("'Activity (today)'")
+    expect(langSource('hu')).toContain("'Aktivitás (mai nap)'")
+    expect(langSource('en')).toContain("'Activity (today)'")
   })
 })

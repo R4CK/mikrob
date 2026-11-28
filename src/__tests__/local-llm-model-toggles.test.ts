@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { langHasKey } from './helpers/lang-overlay-key.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -12,8 +13,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const WEB = join(__dirname, '..', '..', 'web')
 const JS = readFileSync(join(WEB, 'app-local-llm.js'), 'utf8')
 const CSS = readFileSync(join(WEB, 'style.css'), 'utf8')
-const HU = readFileSync(join(WEB, 'lang', 'hu.js'), 'utf8')
-const EN = readFileSync(join(WEB, 'lang', 'en.js'), 'utf8')
 
 const NEW_KEYS = [
   'localLlm.models.disabled_badge',
@@ -125,8 +124,8 @@ describe('local-llm model toggles: CSS', () => {
 describe('local-llm model toggles: i18n parity', () => {
   for (const key of NEW_KEYS) {
     it(`hu.js and en.js both define ${key}`, () => {
-      expect(HU).toContain(`'${key}':`)
-      expect(EN).toContain(`'${key}':`)
+      expect(langHasKey('hu', key)).toBe(true)
+      expect(langHasKey('en', key)).toBe(true)
     })
   }
   it('every new key referenced from the JS exists in hu.js', () => {
@@ -135,8 +134,8 @@ describe('local-llm model toggles: i18n parity', () => {
     const unique = new Set(refs)
     expect(unique.size).toBe(NEW_KEYS.length)
     for (const r of unique) {
-      expect(HU).toContain(`'${r}':`)
-      expect(EN).toContain(`'${r}':`)
+      expect(langHasKey('hu', r)).toBe(true)
+      expect(langHasKey('en', r)).toBe(true)
     }
   })
 })
