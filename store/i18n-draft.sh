@@ -41,6 +41,14 @@ done
 # exists only to feed the model, so asking the GPU first is the cheap order here (the opposite of
 # local-llm-rag.sh, where the content router can decide `online` without spending an nvidia-smi).
 #
+# KEPT on purpose (card 090ab223, which removed this same call from 4 of the other 5 dispatchers):
+# this is a LOAD-BEARING pre-check here, not defense-in-depth. The translation loop below (one
+# subprocess per missing key, up to --limit, default 40) has no busy-break logic at all -- unlike
+# route-classify.sh/card-build-route.sh, it does not stop at the first local-llm.sh call that comes
+# back GPU-busy. Removing this would mean, under a real HOLD, up to 40 doomed subprocess spawns
+# (each re-running vram-guard-check.sh itself) instead of one clean early exit, and a different
+# OUTPUT shape besides (today: no .draft.json at all; without this: an empty one). See DECISIONS.md.
+#
 # Exit 3, NOT 4: code 4 in this script means the caller passed something wrong, and a full GPU is not
 # a usage error -- it is a capacity condition the caller can retry unchanged. A separate code lets a
 # wrapper tell "fix your arguments" from "try again later". Missing guard -> skipped; any non-zero

@@ -190,43 +190,13 @@ if ! bash "$INSTALLED" >/dev/null 2>&1; then
   online not-installed
 fi
 
-# --- 0b. VRAM PRESSURE, BEFORE ANYTHING ELSE (card f9bad591) -----------------------------------
-# A CAPACITY question, not a content one, so it belongs before the card is even read: if the GPU
-# cannot take work right now, nothing about this card's text can change that.
-#
-# HOLD -> ONLINE, never a block. This script only ever chooses WHO builds the card; returning ONLINE
-# means "the online agent builds it", which is today's behaviour anyway. The card work itself is
-# never held up -- that distinction is the card's explicit requirement.
-#
-# ANY non-zero exit routes ONLINE, including the guard's usage error (2). That is the same
-# fail-safe direction the guard itself documents: doubt about the measurement resolves ONLINE. A
-# MISSING guard, by contrast, is not doubt -- it is a host that never had one -- so it is skipped
-# rather than treated as HOLD, which would disable local routing forever on such a host.
-# shellcheck source=./kanban-comment-lib.sh
-. "$HERE/kanban-comment-lib.sh"
-
-VRAM_GUARD="${CARD_BUILD_ROUTE_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
-if [ -f "$VRAM_GUARD" ]; then
-  vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)"; vram_rc=$?
-  if [ "$vram_rc" -ne 0 ]; then
-    # The audit PATH stays a stable token, like every other reason here (priority-high,
-    # deterministic-money): a path field that embeds the measurement is not greppable and cannot be
-    # asserted on. The measurement goes to stderr, where a reader wants it anyway.
-    echo "card-build-route: local path closed -- ${vram_line:-no output from the vram guard} (rc=$vram_rc)" >&2
-    # ON THE CARD ITSELF, not the caller's log (card a1c4dc51). The stderr line above answers "why
-    # did this run print ONLINE"; nobody reads that later. The card's own thread is where someone
-    # asking "why didn't this get a local draft" actually looks -- the same reasoning that put
-    # PAUSED-LOAD/RESUMED-LOAD on load-guard-bookkeeping.sh's cards, applied to a per-card decision
-    # rather than a per-agent pause. Only fires when $CARD_ID names a real card (a bare --text call,
-    # used by every selftest and by the advisory path, has none to comment on).
-    if [ "$CARD_ID" != "-" ]; then
-      kanban_comment_on "$CARD_ID" \
-        "INFO-ONLY PAUSED-VRAM: ${vram_line:-no output from the vram guard} (rc=$vram_rc) -- a GPU epp nem vesz fel helyi munkat, ezert ez a kartya ONLINE-ra ment a helyi 7B helyett. A kartya munkaja ettol nem allt meg, csak a helyi-modell draft maradt el." \
-        "card-build-route"
-    fi
-    online vram-hold
-  fi
-fi
+# Card 090ab223: the dispatcher's own direct VRAM pre-check (0b) was removed here after a 46-day
+# measurement found no case where it caught something the local-llm.sh choke point (card 234306ca)
+# would not -- both call the identical default vram-guard-check.sh with the identical "-ne 0 ->
+# online" direction, and the choke point runs strictly closer to the actual GPU call. See
+# DECISIONS.md. The route-classify.sh call below (and, through it, local-llm.sh) still carries the
+# same fail-safe: a GPU HOLD surfaces as route-classify's own UNKNOWN/abstain, which this script
+# already treats as `online route-classify-abstained`.
 
 # --- 1. READ THE CARD --------------------------------------------------------------------------
 if [ -z "$TEXT" ]; then
