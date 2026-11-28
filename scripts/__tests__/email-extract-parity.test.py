@@ -18,6 +18,15 @@ Three layers, because a green diff alone proves nothing:
 Plus expected-value tests for the NEW recipient extraction (to/cc share the
 body's deterministic-or-deny boundary) and the envelope composition.
 
+KNOWN, DELIBERATE DIVERGENCE (card 1b4c566e, GATEBINVAK916 adoption): parity does
+NOT cover curl's @file/-F/-T file-body shapes. email_extract.py's PR2 approval
+gate treats them as unreadable (TOCTOU924: it anchors an approval on what it
+reads, so a file swapped before the real send reads a different letter).
+outgoing-copy-gate.py only AUDITS at call time and never anchors an approval, so
+it reads and audits that same file instead -- same posture as its pre-existing
+`<` redirect handling. See scripts/__tests__/outgoing-copy-gate-outbound-union.test.py
+for that shape's own coverage.
+
 Run: python3 <thisfile>   Exit 0 = all pass.
 """
 import hashlib

@@ -35155,3 +35155,86 @@ Ki döntött: Cybersec (NO-GO 39450); a kör hatókörét MikroB rögzítette (g
 komment 39452, harmadik egymást követő NO-GO után). Végrehajtotta: fullstack (DevO).
 Hivatkozás: kártya c16cd98e; előzmény 26523bf9b; `store/agent-worktree-marveen.sh`,
 `store/worktree-on-create.selftest.sh`, `store/agent-worktree-marveen.selftest.sh`.
+
+## 2026-11-26 15:22 -- Card 1b4c566e: upstream outbound-text gate union (HTTP-channel/Discord/community, inter-agent homoglifa, curl @file)
+
+**Döntés:** rendesen adoptáltam a három, az ee7bc2ba upstream-merge-ből tudatosan kihagyott
+outbound-szöveg kaput (Cybersec NO-GO @ 26f2b4f2: félig bekötött holt kód, hiányzó `_gate_log`),
+mint teljes unió a meglévő `outgoing-copy-gate.py`-jal:
+- GATEHTTP924 (`http_channel_gate`): community (marveen.io) + Discord REST curl-küldés audit.
+- INTERAGENTHOMOGLIF923 (`inter_agent_homoglyph_gate`): homoglifa-csak ellenőrzés a
+  `curl .../api/messages` (inter-agent) útvonalon.
+- GATEBINVAK916: curl `@file`/`-F`/`-T`/wget `--post-file`/`--body-file` fájl-törzs alakok a
+  `collect_bash_body`-ban (eddig csak a `<` redirect olvasódott, ezek az ekvivalens alakok
+  csendben semmit nem auditáltak, exit 0-t adva).
+- Hiányzó helperek pótolva: `_gate_log`/`_GATE_LOG`, `pass_with_warning`.
+- GATENEVSTRIP921 (`strip_for_name`/`NAME_MASK`) már be volt kötve a `_name_search`-be egy
+  korábbi, független fork-döntésen (b4404ed2) -- nem ezen a körön kellett megoldani.
+
+**Egy valódi eltérés az upstream mintától, tudatosan:** a Telegram Bot API NEM célpontja az
+adoptált `http_channel_gate`-nek. Upstream saját verziója fail-CLOSED egy olvashatatlan törzsön;
+ennek a forknak a saját, már létező Telegram-from-Bash kapuja (`telegram_bash_gate`, GATETG816,
+kártya 74181db2) ugyanazon a csatornán szándékosan fail-OPEN (a felügyeleti csatorna némítása
+drágább egy elcsúszott ekezetnél). A Telegram felvétele a `http_channel_gate` céllistájába
+némán megfordította volna ezt az iránya, ha a `http_channel_gate` korábban futott volna le --
+ezért a céllista csak a community + Discord célpontokat tartja, a döntés a kódban is rögzítve.
+
+**Egy pre-existing, nem ezen a körön javított lelet:** a megosztott `mixed_script_words()`
+tokenizáló (`UWORD = r"[^\W\d_]+"`) kihagyja a számjegyeket a "szóból", ezért egy
+számjegyeket-is-tartalmazó azonosítóba (pl. egy hex kártya-ID-be) kevert homoglifa karakter
+NEM esik egy LATIN+egyéb vegyes szóba, és átmegy. Egy betűkből-csak álló azonosítóban (agens-név,
+útvonal-szegmens) a kevert szó helyesen elkapja. Ez a `mixed_script_words` MEGLÉVŐ, más
+hívópontok által is használt viselkedése, nem ezen a kártyán épült be és nem ezen a kártyán
+javítva -- a dispatch a kapu-bekötést kérte, nem a megosztott tokenizáló újratervezését.
+
+**Tesztek:** `scripts/__tests__/outgoing-copy-gate-outbound-union.test.py` (új, 32 eset, mind a
+három kapura és a GATEBINVAK916 fájl-törzs alakokra), mutáció-tesztelve (a két új kapu `main()`-be
+kötését kikommenteltem, 5 eset pirosra vált, visszaállítva zöld). A meglévő
+`outgoing-copy-gate*.test.py` + `email-extract-parity.test.py` suite változatlan és zöld.
+`send-invocation-cases.json` `_comment`-je frissítve: a korábbi "az inter-agent útvonalon jelenleg
+semmilyen copy-ellenőrzés nem fut" állítás már nem igaz, a homoglifa-csak kapu most lefut rajta.
+
+**Ki döntött:** MikroB (dispatch, kártya 1b4c566e, msg 25096); backend2 (implementáció, teszt,
+a Telegram-kizárás és a mixed_script_words-lelet felismerése és dokumentálása).
+Hivatkozás: kártya 1b4c566e (predecessor ee7bc2ba); `scripts/hooks/outgoing-copy-gate.py`,
+`scripts/__tests__/outgoing-copy-gate-outbound-union.test.py`,
+`scripts/__tests__/email-extract-parity.test.py`, `scripts/hooks/send-invocation-cases.json`.
+
+**Utókövetés (kártya 1b4c566e, ugyanazon a kártyán, fleet-test gate előtt talált lelet):**
+a `scripts/__tests__/outgoing-copy-gate-outbound-union.test.py` a shebang-executable-bit
+kapu (`shebang-files-executable.test.ts`) szerint git mode 100644-ként volt commitolva a
+`#!/usr/bin/env python3` shebangje mellett. Javítva `git update-index --chmod=+x`-szel
+(sima `chmod +x` ezen a fájlrendszeren nem marad meg az indexben), ugyanazon blob-sha mellett,
+commit 55be11a67d63f3c6b3a2b11f1d5e1b8f861d2bb5. Tartalmi változás nincs, csak a mód-bit.
+Hivatkozás: kártya 1b4c566e.
+
+**CYBERSEC NO-GO fix round (kártya 1b4c566e, gate-sha 184f8fa42, Peti 14792):**
+1. MUST F-1 (regresszió, javítva): a `<` redirect olvasó lookbeholdja `(?<!<)<(?!<)`-ről
+   `(?<![<=])<(?!<)`-re szélesedett, hogy a curl `-F name=<file` ne kettőzze a találatot a
+   dedikált GATEBINVAK916 olvasóval -- de ez a szélesítés egyúttal megszüntette MINDEN más
+   `x=<fájl` shell-redirect olvasását is (pl. `--body=</path/fajl`, ami bash-ben valódi
+   stdin-redirect), amin keresztül egy valódi, develop-en meglévő kapu (gondolatjel-tiltás)
+   34/40 próbált alakon némán 2-ről 0-ra váltott. A `-F` kettős találat ártalmatlan (mindkét
+   ág ugyanazt a fájlt olvassa, ugyanazt a szöveget fűzi a `parts`-hoz), ezért a lookbehind
+   visszaállítva az eredetire. CONTROL teszt hozzáadva (`--body=<file` küldésen), mutáció-
+   tesztelve: a visszaállított mutáns PONTOSAN ezt az egy esetet buktatja, mást nem.
+2. SHOULD (javítva): a `collect_bash_body` három fail-closed ága (olvashatatlan @file,
+   fel-nem-oldható $-útvonal, heredoc nélküli @-) eddig csak a kilépési kódot pinnelte --
+   mindhárom ág mutánsa (a korai `return` kivéve) zölden futott át, mert a konkrét OK-szöveg
+   nem volt ellenőrizve. Minden háromhoz hozzáadva egy `stderr`-ben megjelenő, ág-specifikus
+   almondat-ellenőrzés; egyenként mutáció-tesztelve, mindegyik PONTOSAN a saját esetét
+   buktatja.
+3. A kódkomment és a teszt-docstring helytelen indoklása javítva (CYBERSEC OBSERVATION): a
+   `main()` diszpécsere if/elif/else, ezért a `http_channel_gate` SOHA nem futhat egy olyan
+   híváson, amit a `telegram_bash_gate` már elvitt -- nincs futási-sorrendi kollízió a két
+   kapu között, a korábbi "némán megfordítaná az irányt" állítás téves volt. A valós ok: a
+   `telegram_bash_enabled()` alapból KI van kapcsolva, és amíg ki van kapcsolva, egy Telegram
+   küldés szándékosan TELJESEN auditálatlan marad -- a Telegram felvétele a
+   `http_channel_gate` céllistájába pont ebben az állapotban auditálná fail-closed irányban,
+   ami ellentétes a funkció saját "ki" alapértelmezésének szándékával.
+4. Telegram Bash küldések alapból (és fájl-törzzsel bekapcsolva is) auditálatlanok maradnak
+   -- ez MEGLÉVŐ, develop-on is azonos viselkedés, nem ezen a kártyán épült be és nem ezen a
+   kártyán változik; CYBERSEC LOW-nak minősítette, a felügyeleti csatorna szándékos
+   fail-open döntése.
+Hivatkozás: kártya 1b4c566e; CYBERSEC NO-GO komment 39236; `scripts/hooks/outgoing-copy-gate.py`,
+`scripts/__tests__/outgoing-copy-gate-outbound-union.test.py`.
