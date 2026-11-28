@@ -34805,3 +34805,83 @@ Ki döntött: MikroB (diagnózis + a szűk javítási irány, msg 25668, "do NOT
 check"); fullstack (gyökérok, implementáció, mérés).
 Hivatkozás: kártya e99c3dc1; MikroB msg 25667/25668; Gate-SHA 45c30ecb312180c6ddcbb6eda785e525e2234b6b
 (a landolás saját shája, változatlan); `src/__tests__/fleet-test-land-priority-verified.test.ts`.
+
+## 2026-11-27 -- fleet-test log persistence closed the gap land runs never opted into (card 2f282a31)
+
+OBSERVATION (MikroB + fullstack 25641): the newest file in /home/neon/marveen-fleet-test-logs was
+from 07:07 CET; three subsequent marveen-land.sh runs (one red, on mopsion-suite-run) wrote
+nothing there, and fleet-test.sh's mktemp run_log is rm -f'd on every exit path.
+
+ROOT CAUSE (grepped, not guessed): log persistence has ALWAYS been a side effect of
+fleet_test_notify_finish(), which only runs when FLEET_TEST_CALLER_AGENT is set -- an explicit,
+agent-initiated self-test opt-in. marveen-land.sh sets a differently-named FLEET_TEST_AGENT (used
+only for an unrelated PAUSED/RESUMED-semaphore kanban-posting mechanism) and never sets
+FLEET_TEST_CALLER_AGENT -- confirmed via grep, zero matches. So a land run's own failure was never
+durably recoverable, on any date. git log confirms zero commits touched fleet-test.sh in the
+2026-11-26 18:00 -- 2026-11-27 08:00 window, ruling out a regression. The apparent "stopped at
+07:07" cutoff coincides with MikroB's own land-queue-priority hold (msgs 25506/25530), which told
+every OTHER agent to stop running fleet-test.sh manually around that time -- making land (which
+never opts in) the sole remaining caller, which is what made a pre-existing gap look like a new
+regression with a precise timestamp.
+
+SECOND DEFECT (criterion 3, found independently): Node's execFileSync throws an error whose
+.message folds in only stderr ("Command failed: <cmd>\n<stderr>"), never stdout. Every OK_SHAPES
+selftest prints its own [ok]/[FAIL] trace to stdout, so that trace was silently absent from the
+thrown error, and therefore from vitest's failure report and from fleet-test.sh's own `tee`'d log
+-- exactly the "selftest's own [FAIL] lines are lost" symptom in the card.
+
+FIX 1 (store/fleet-test.sh): added fleet_test_persist_failure_log()/fleet_test_prune_log_dir(),
+called from fleet_test_on_exit() whenever the run FAILED, regardless of FLEET_TEST_CALLER_AGENT --
+independent of the notify/HTTP path entirely, so it cannot be affected by a missing/unreadable
+dashboard token either. Bounded retention via FLEET_TEST_LOG_RETENTION (default 200, newest N kept
+by mtime). A passing, non-opted-in run still persists nothing, by design: the floor the card asked
+for is failures, and writing a file on every green land run was never requested.
+
+FIX 2 (src/__tests__/store-selftests-all-run.test.ts): execWithKillRetry's catch path now wraps
+the thrown error via withCapturedOutput(), which folds err.stdout (already present as a property,
+just never read) into the new error's .message, tail-bounded to 4000 chars each for stdout/stderr.
+
+TESTS: store/fleet-test-notify-injection.selftest.sh extended with 3 new cases (7: no CALLER_AGENT
++ failing run persists; 8: passing run persists nothing, control; 9: retention bound prunes to N).
+Verified standalone (bash, not via fleet-test.sh): 12/12 green. store-selftests-all-run.test.ts
+gained a positive case (probe script's own stdout trace survives into the thrown error) and a
+mutation-pin control (the same probe run through raw execFileSync, proving the pre-fix message
+would NOT have contained the trace -- guards-that-pin-behaviour point 7). Both verified via scoped
+`vitest run ... -t "[Ss][Tt][Dd][Oo][Uu][Tt] trace"` (2 passed, 178 skipped) while fullstack's
+ee132dfc land held the shared /home/neon/marveen-test.lock -- the full file was deliberately NOT
+rerun during the land (MikroB 25693: mopsion-suite-run in that file reaches the real fleet-test.sh
+and the shared lock). No full fleet-test.sh run was used anywhere for this card, per the standing
+land-queue hold (msgs 25506/25530).
+
+Ki döntött: MikroB (card 2f282a31, dispatch 25663); backend3 (root cause, both fixes, tests).
+Hivatkozás: kártya 2f282a31; store/fleet-test.sh; store/fleet-test-notify-injection.selftest.sh;
+src/__tests__/store-selftests-all-run.test.ts.
+
+## 2026-11-27 -- fleet-test log persistence: prune only our own logs, not the whole shared dir (card 2f282a31 delta)
+
+CYBERSEC GO 39544 on bb08d333 carried F-1 (LOW, evidence-destroying): fleet_test_prune_log_dir
+counted retention over the WHOLE shared FLEET_TEST_LOG_DIR, so the first red land after the
+2f282a31 fix would delete non-log evidence another test deliberately left there (measured live:
+channel-poller-reap-failure-2026-11-25T08-18-15-842Z-pane-parent-not-stopped.json, card a5c827ca
+-- MikroB backed it up to /home/neon/marveen-backups/fleet-test-logs-evidence/ before reporting).
+
+FIX: added FLEET_TEST_OWN_LOG_RE, matching only the two filename shapes this script itself
+writes (fleet_test_persist_failure_log's "<ts>-<pid>-failure.log", fleet_test_notify_finish's
+"<ts>-<pid>.log"). fleet_test_prune_log_dir now filters by this pattern BEFORE ranking by mtime,
+so anything else in the directory is never counted and never touched, no matter how many of our
+own failure logs accumulate.
+
+Also closed F-2 (LOW, previously unpinned): the selftest only asserted the
+FLEET_TEST_LOG_RETENTION=200 assignment line EXISTED, never that its value was actually 200 --
+added an explicit case asserting the sourced default.
+
+TESTS: fleet-test-notify-injection.selftest.sh gained Case 10 (a foreign file matching the real
+a5c827ca evidence shape survives 3 cycles of our own retention-capped pruning) and Case 11 (pins
+the 200 default). Mutation-verified: reverting fleet_test_prune_log_dir to the pre-fix
+whole-directory version turns Case 10 red (confirmed foreign file deleted) while every other case
+stays green -- the fix is load-bearing. Standalone run (bash, not via fleet-test.sh, per the
+standing no-fleet-test.sh-during-land rule): 14/14 PASS.
+
+Ki dontott: MikroB (card 2f282a31, delta dispatch msg 25707, CYBERSEC GO 39544 F-1/F-2); backend3
+(fix, tests).
+Hivatkozas: kartya 2f282a31; store/fleet-test.sh; store/fleet-test-notify-injection.selftest.sh.
