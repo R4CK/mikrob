@@ -15,9 +15,11 @@
 #
 # HERMETIC-ISH: uses a throwaway git repo as MARVEEN_MAIN, but the worktree PATHS themselves are
 # real, disposable directories under /home/neon/marveen-land-<name>-<pid> (cleaned up in the
-# trap) -- unavoidable because wsl-cleanup.sh's pattern for this sweep is an absolute literal
-# prefix (/home/neon/marveen-land-...), not derived from $MARVEEN_MAIN. CLEANCORE_MAIN points at
-# a plain (non-git) temp dir so the sibling cc-land sweep is a no-op and touches nothing.
+# trap). The sweep's pattern is now derived from $MARVEEN_SCRATCH_DIR (card 9918f78d, MEDIUM-2:
+# marveen-land.sh's throwaway worktrees moved under that dir) -- every full-script invocation
+# below pins MARVEEN_SCRATCH_DIR=/home/neon so the pattern still matches these literal fixture
+# paths, same as before the move. CLEANCORE_MAIN points at a plain (non-git) temp dir so the
+# sibling cc-land sweep is a no-op and touches nothing.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -127,7 +129,7 @@ find() {
 export -f find
 export FIND_LEAK_LOG
 
-OUT="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
+OUT="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" MARVEEN_SCRATCH_DIR=/home/neon CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
        WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" \
        bash "$RUN" --dry-run 2>&1)"
 
@@ -163,6 +165,33 @@ fi
 git -C "$MARVEEN_MAIN_TEST" worktree remove --force "$DEAD_DIR" 2>/dev/null
 DEAD_DIR=""
 
+# --- MEDIUM-2 regression pin (card 9918f78d, CYBERSEC NO-GO 39669): the sweep pattern must track
+# $MARVEEN_SCRATCH_DIR, not a hardcoded /home/neon/marveen-land- prefix. A dead-pid worktree under
+# an ARBITRARY scratch root (not /home/neon, not this file's own /home/neon override) must still be
+# matched and removed when MARVEEN_SCRATCH_DIR points there -- proving the pattern is genuinely
+# derived from the variable. If the pattern ever reverts to a hardcoded /home/neon/... literal,
+# this worktree (which never lives under /home/neon at all) would silently stop matching and this
+# case goes red.
+( exit 0 ) &
+SCRATCHVAR_PID=$!
+wait "$SCRATCHVAR_PID" 2>/dev/null
+CUSTOM_SCRATCH_ROOT="$TMP/custom-scratch-root"
+mkdir -p "$CUSTOM_SCRATCH_ROOT"
+SCRATCHVAR_DIR="$CUSTOM_SCRATCH_ROOT/marveen-land-selftestscratchvar-${SCRATCHVAR_PID}"
+git -C "$MARVEEN_MAIN_TEST" worktree add -q --detach "$SCRATCHVAR_DIR" HEAD
+touch -d "@$PAST" "$SCRATCHVAR_DIR"
+
+SCRATCHVAR_OUT="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" MARVEEN_SCRATCH_DIR="$CUSTOM_SCRATCH_ROOT" \
+                   CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" WSL_CLEANUP_MIN_AGE_MIN=120 \
+                   WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" bash "$RUN" --dry-run 2>&1)"
+
+if echo "$SCRATCHVAR_OUT" | grep -qF "worktree remove --force $SCRATCHVAR_DIR"; then
+  ok "sweep pattern tracks a non-default MARVEEN_SCRATCH_DIR (removable worktree there is matched)"
+else
+  bad "sweep pattern did NOT match a worktree under a non-default MARVEEN_SCRATCH_DIR" "$SCRATCHVAR_OUT"
+fi
+git -C "$MARVEEN_MAIN_TEST" worktree remove --force "$SCRATCHVAR_DIR" 2>/dev/null
+
 # --- section-1 guard pins (Cybered LOW, card c9c1f159, comment 32973 condition 3: these four
 # worktree-sweep mutants left the ORIGINAL suite green) ---------------------------------------
 
@@ -177,7 +206,7 @@ FIND_LEAK_LOG="$(mktemp)"
 find() { printf '%s\n' "$1" >>"$FIND_LEAK_LOG"; command find "$@"; }
 export -f find
 export FIND_LEAK_LOG
-out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
+out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" MARVEEN_SCRATCH_DIR=/home/neon CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
        WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" bash "$RUN" --dry-run 2>&1)"
 unset -f find
 assert_sandbox_leak_guard "$FIND_LEAK_LOG"
@@ -203,7 +232,7 @@ FIND_LEAK_LOG="$(mktemp)"
 find() { printf '%s\n' "$1" >>"$FIND_LEAK_LOG"; command find "$@"; }
 export -f find
 export FIND_LEAK_LOG
-out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
+out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" MARVEEN_SCRATCH_DIR=/home/neon CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
        WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" bash "$RUN" --dry-run 2>&1)"
 unset -f find
 assert_sandbox_leak_guard "$FIND_LEAK_LOG"
@@ -238,7 +267,7 @@ FIND_LEAK_LOG="$(mktemp)"
 find() { printf '%s\n' "$1" >>"$FIND_LEAK_LOG"; command find "$@"; }
 export -f find
 export FIND_LEAK_LOG
-out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
+out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" MARVEEN_SCRATCH_DIR=/home/neon CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
        WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" bash "$RUN" --dry-run 2>&1)"
 unset -f stat find
 assert_sandbox_leak_guard "$FIND_LEAK_LOG"
@@ -276,7 +305,7 @@ FIND_LEAK_LOG="$(mktemp)"
 find() { printf '%s\n' "$1" >>"$FIND_LEAK_LOG"; command find "$@"; }
 export -f find
 export FIND_LEAK_LOG
-out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
+out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" MARVEEN_SCRATCH_DIR=/home/neon CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
        WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" bash "$RUN" --dry-run 2>&1)"
 unset -f git find
 assert_sandbox_leak_guard "$FIND_LEAK_LOG"
@@ -328,7 +357,7 @@ run_c1_case() {
   find() { printf '%s\n' "$1" >>"$FIND_LEAK_LOG"; command find "$@"; }
   export -f find
   export FIND_LEAK_LOG
-  out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
+  out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" MARVEEN_SCRATCH_DIR=/home/neon CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
          WSL_CLEANUP_MIN_AGE_MIN=120 WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" \
          GIT_FAIL_CMD="$GIT_FAIL_CMD" GIT_FAIL_RC="$GIT_FAIL_RC" \
          bash "$RUN" --dry-run 2>&1)"
@@ -369,7 +398,7 @@ export TMP3
 PAST3=$(( $(date +%s) - 3000 * 60 ))  # 3000m old, well past the 2880m (48h) default threshold
 
 run_tmp_sweep() {
-  WSL_CLEANUP_TMP_DIR="$TMP3" MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
+  WSL_CLEANUP_TMP_DIR="$TMP3" MARVEEN_MAIN="$MARVEEN_MAIN_TEST" MARVEEN_SCRATCH_DIR=/home/neon CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
     bash "$RUN" --dry-run 2>&1
 }
 
@@ -910,7 +939,7 @@ FIND_LEAK_LOG="$(mktemp)"
 find() { printf '%s\n' "$1" >>"$FIND_LEAK_LOG"; command find "$@"; }
 export -f find
 export FIND_LEAK_LOG
-MINAGE_KNOB_OUT="$(MARVEEN_MAIN="$MARVEEN_MAIN_KNOB" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
+MINAGE_KNOB_OUT="$(MARVEEN_MAIN="$MARVEEN_MAIN_KNOB" MARVEEN_SCRATCH_DIR=/home/neon CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
                    WSL_CLEANUP_MIN_AGE_MIN=lots WSL_CLEANUP_TMP_DIR="$WT_TMP_SANDBOX" \
                    bash "$RUN" --dry-run 2>&1)"
 unset -f find

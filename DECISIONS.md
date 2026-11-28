@@ -35238,3 +35238,108 @@ Hivatkozás: kártya 1b4c566e.
    fail-open döntése.
 Hivatkozás: kártya 1b4c566e; CYBERSEC NO-GO komment 39236; `scripts/hooks/outgoing-copy-gate.py`,
 `scripts/__tests__/outgoing-copy-gate-outbound-union.test.py`.
+
+## 2026-11-28 -- card 9918f78d (parts 1+2): throwaway worktrees redirected into a dedicated scratch dir, ORPHAN cleanup class added
+
+**Mi történt.** `/home/neon` 229 top-level elemből állt, 59 árva worktree (gitdir cél nem létezik),
+38 a `src/__tests__/agent-worktree-marveen.test.ts` szivárgott fixture-je volt. Gyökér:
+`marveen-land.sh` négy helyen `/home/neon/marveen-land-<agent|batch>-<pid>` alakot hardcode-olt a
+saját, eldobható landolási worktree-jének -- egy kill (killed selftest, vitest execFileSync
+timeout, process-group kill) a saját cleanup()-trap elérése ELŐTT ezt a könyvtárat (és a git
+worktree-regisztrációját) a valódi home gyökerében hagyta, nem egy eldobható teszt-gyökérben.
+Élőben mérve: tucatnyi `marveen-land-*` árva, 2026. augusztusig visszamenőleg.
+
+**Mit csináltam (ez a kártya eredeti, 2026-11-15-i, akkor nem landolt munkája -- ugyanaz az
+ügynök, most folytatva, nem újraírva).**
+1. `marveen-land.sh`: a négy hardcode-olt hely helyett `MARVEEN_SCRATCH_DIR` env-változó (alapérték:
+   `/home/neon/marveen-scratch-worktrees` -- ez MÁR a `wsl-home-cleanup.sh` KEEP_NAMES listáján
+   szereplő, kijelölt scratch-terület, amit más eldobható-worktree mechanizmusok is már használnak).
+   A beágyazott selftestek (`--selftest-land-lock-release`, `--selftest-land-batch`) saját fixture-
+   gyökerükre állítják (`MARVEEN_LAND_WORKTREE_ROOT` -> most `MARVEEN_SCRATCH_DIR`), a vitest-fájl
+   a saját tmpdir-jére.
+2. `wsl-home-cleanup.sh`: új ORPHAN osztály -- `.git` FÁJL (nem könyvtár), amelynek gitdir célja már
+   nem létezik. Tartalom-listával jelenik meg a dry-run-ban, `--apply` alatt `rm -rf`-fel távolítja el
+   (nincs élő git-állapot, amit védeni kellene).
+
+**Mit NEM csináltam még (a kártya 3. és 4. pontja).** A 3. pont (marveen-land.sh a saját worktree-jét
+már eltávolítja sikeres landolás után -- ez a `cleanup()` trap MINDIG-fut viselkedése, meglévő, nem
+új kód; a `--selftest-land-lock-release` case B már igazolja) nem igényelt új kódot, csak
+megerősítést. A 4. pont (heti ütemezett dry-run riport Petinek) NEM az én jogköröm --
+sub-agent-ként nem ütemezhetek saját jövőbeli futást (`/api/schedules` írás governance-kapuval
+tiltva) -- MikroB-nak kell létrehoznia.
+
+**Mérve.** `agent-worktree-marveen.test.ts` 36/36 zöld (a saját, MARVEEN_SCRATCH_DIR-re állított
+futással). `marveen-land.sh --selftest-land-lock-release`: 3/3 PASS. `marveen-land.sh
+--selftest-land-batch`: 21/21 PASS (a J-TERM/J-HUP/J-INT esetek kifejezetten "no orphan"-t
+igazolnak SIGKILL/TERM/HUP/INT alatt). `wsl-home-cleanup.sh --dry-run` a valódi `/home/neon`-on
+(229 elem) ORPHAN=50 sorral fut, tartalom-listával (élő mérés, 2026-11-28).
+
+**Ki döntött:** fullstack (eredeti terv és implementáció 2026-11-15, befejezés és landolás
+2026-11-28); MikroB kéri a 4. pont ütemezését (lásd inter-agent jelzés).
+**Hivatkozás:** kártya 9918f78d; store/marveen-land.sh, store/wsl-home-cleanup.sh,
+src/__tests__/agent-worktree-marveen.test.ts.
+
+## 2026-11-28 -- card 9918f78d (gate round): ORPHAN removal bypassed every TOCTOU guard, fixed
+
+**Mi történt.** A fenti ORPHAN osztály CYBERSEC NO-GO-t kapott (lelet 39669, HIGH-1): a dangling-
+gitdir ellenőrzés a DISPOSABLE név+kor-kapu ELŐTT futott, és a talált elemeket egy sima `rm -rf`-fel
+távolította el, megkerülve `remove_entry()` minden TOCTOU-védelmét (friss élő-folyamat- és
+kor-ellenőrzés közvetlenül a törlés előtt). CYBERSEC 4 próba-forgatókönyvéből mind a 4 korábban
+biztonságosan megtartott eset most törlésre került volna. Egyúttal QA2 FAIL (39673) a 2. kritériumot
+is hiányolta: a `--dry-run` "uncommitted" SKIP-arány mérése a fix előtt/után.
+
+**Javítás.** `classify()`-ban az ORPHAN-ellenőrzés most a MEGLÉVŐ DISPOSABLE név+kor-kapun BELÜL fut,
+plusz egy mount-elérhetőségi ellenőrzéssel (a dangling gitdir szülő-könyvtára létezzen, a gitdir maga
+ne). Új `remove_orphan_entry()` reprodukálja `remove_entry()` friss élő-folyamat + kor-ellenőrzés
+végét, közvetlenül a `rm -rf` előtt (git-állapot nincs, amit védeni kellene). `worktree_dirty_for_
+removal()` (QA2 2. kritérium): egy worktree csak akkor számít "elég tisztának" a törléshez, ha a
+commitolatlan változása KIZÁRÓLAG generált-tartalom útvonalakon van (`node_modules/`, `dist/`,
+`build/`, `.next/`); minden más szennyeződés, vagy egy sikertelen `git status`, feltétel nélkül
+"dirty"-nek számít (fail-closed megtartva minden korábbi esetre).
+
+**Mérve.** 8 új selftest eset pontosan a CYBERSEC/QA által reprodukált forgatókönyveket rögzíti
+(friss/ismeretlen-nevű/nem-elérhető-szülős dangling gitdir sosem lesz ORPHAN; egy élő folyamat, ami
+a törlés KÖZBEN indul, SKIP-elteti; csak-generált szennyeződés törölhető, valós szennyeződés mellette
+mégis blokkol) -- 75/75 zöld (67 eredeti, változatlan-viselkedésű eset + 8 új). Élő `/home/neon`
+dry-run a javítás UTÁN: KEEP=14 ACTIVE=6 DISPOSABLE=173 ORPHAN=2 UNKNOWN=130; a 173 DISPOSABLE-ból
+155 "uncommitted changes" okkal SKIP, összesen 170/173 SKIP (csak 3 lenne tényleg törölve), a 2
+ORPHAN mindkettő az új `remove_orphan_entry()` úton menne (nem bare `rm -rf`). A korábbi (hibás
+kódon mért) alapérték 126 DISPOSABLE elemből 108 "uncommitted", 123/126 SKIP volt -- a populáció
+mérete közben nőtt (új worktree-k keletkeztek a két mérés között), tehát az abszolút számok nem
+közvetlenül összevethetők, de az arány és a kategória-elosztás ugyanazt a mintát mutatja.
+
+**Nyitott kérdés MikroB felé.** CYBERSEC NO-GO MEDIUM-2 lelete (`store/wsl-cleanup.sh` meglévő
+sweep-mintája nem egyezik az új `MARVEEN_SCRATCH_DIR` hellyel, így egy meglévő automatikus-
+visszanyerési kontroll csendben kikapcsolódott) MikroB saját Fix-Direction-jében NEM volt
+számozva a HIGH-1/QA2 pontok mellett -- ennek a körnek a hatóköre vagy egy következő kártyáé,
+MikroB döntése kell hozzá, nem feltételeztem.
+
+**Ki döntött:** fullstack (fix, selftest, mérés); CYBERSEC/QA2/QA (lelet); MikroB (Fix-Direction).
+**Hivatkozás:** kártya 9918f78d; CYBERSEC NO-GO 39669; QA2 FAIL 39673; QA FAIL 39674;
+store/wsl-home-cleanup.sh, store/wsl-home-cleanup.selftest.sh.
+
+## 2026-11-28 -- card 9918f78d (round 2): MEDIUM-2 folded in, TOCTOU re-check deduped, generated-content exception tightened
+
+**MikroB három kérése az előző REVIEW-ra.**
+1. MEDIUM-2 (CYBERSEC NO-GO 39669, az első Fix-Direction-ben nem volt számozva) befoglalása erre a
+   kártyára: `wsl-cleanup.sh` throwaway-worktree sweepje a `marveen-land.sh` RÉGI, hardcode-olt
+   `/home/neon/marveen-land-<agent|batch>-<pid>` alakját kereste -- mivel az eldobható worktree-k
+   már `MARVEEN_SCRATCH_DIR` alá kerülnek, ez a kontroll csendben semmit nem talált. Javítva: a
+   minta most `$MARVEEN_SCRATCH_DIR`-ből épül (ugyanaz az alapérték/env-felülírás, mint
+   `marveen-land.sh`-ban), ERE-escape-elve.
+2. `remove_orphan_entry()` szó szerint duplikálta `remove_entry()` friss élő-folyamat+kor
+   újra-ellenőrzését -- kiszervezve egy közös `toctou_recheck_blocks_removal()` segédfüggvénybe,
+   amit mindkettő hív, hogy a két másolat ne tudjon szétcsúszni.
+3. `worktree_dirty_for_removal()` generált-tartalom kivétele csak ÚTVONAL alapján döntött -- egy
+   TRACKELT, de node_modules/dist/build/.next alatt módosított fájl (pl. szándékosan commitolt,
+   patchelt vendor-fájl) hibásan "biztonságosan ignorálható"-nak minősült volna. Egy új teszt ELŐSZÖR
+   pirosan igazolta a hibát, majd a javítás zöldre fordította: `_dirty_is_generated_only()` mostantól
+   MINDEN sornál megköveteli a "??" (untracked) státuszt is, nem csak az útvonal-egyezést.
+
+**Mérve.** `wsl-home-cleanup.selftest.sh`: 77/77 zöld (75 korábbi + 2 új, az egyik ELŐSZÖR
+reprodukálta, majd igazolta a trackelt-fájl javítást). `wsl-cleanup.selftest.sh`: 68/68 zöld (67
+korábbi + 1 új, a scratch-dir-függő minta igazolására).
+
+**Ki döntött:** MikroB (a három követő kérés); fullstack (fix, selftest, mérés).
+**Hivatkozás:** kártya 9918f78d; store/wsl-cleanup.sh, store/wsl-cleanup.selftest.sh,
+store/wsl-home-cleanup.sh, store/wsl-home-cleanup.selftest.sh.

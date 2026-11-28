@@ -22,6 +22,16 @@
 #                   an in_progress/waiting kanban card (branch name "agent/<x>/work", "card/<id>",
 #                   or a sort_order/dir-name match against the dashboard API -- best effort; if the
 #                   dashboard is unreachable, fail OPEN to ACTIVE, never to DISPOSABLE).
+#   ORPHAN      -- a DISPOSABLE candidate (name match + age gate, see below) whose .git FILE (not
+#                   dir) points to a gitdir that no longer exist, AND that gitdir's own parent
+#                   directory IS reachable (so this is a pruned/deleted worktree, not an unmounted
+#                   filesystem making a live gitdir look missing). CYBERSEC NO-GO 39669 / QA FAIL
+#                   39674 (card 9918f78d): ORPHAN used to bypass the name+age gate entirely and its
+#                   removal used a bare rm -rf, skipping every TOCTOU guard DISPOSABLE removal has
+#                   (live-process re-check, age re-check) -- fixed to be a refinement of DISPOSABLE,
+#                   never a bypass. Removed by --apply through remove_orphan_entry() (same fresh
+#                   re-check tail as remove_entry(), minus the git checks -- there is no live git
+#                   state to check).
 #   DISPOSABLE  -- name matches a known one-off pattern (see DISPOSABLE_PATTERNS) AND mtime is
 #                   older than $MIN_AGE_HOURS hours AND it did not already classify as ACTIVE.
 #   UNKNOWN     -- none of the above. Reported, never removed automatically -- a human decides.
@@ -145,6 +155,61 @@ git_dirty_or_failed() {
   local out rc
   out="$("$@" 2>&1)"; rc=$?
   [ -n "$out" ] || [ "$rc" -ne 0 ]
+}
+
+# QA2 FAIL 39673 (card 9918f78d): "uncommitted changes" used to mean "git status printed ANY
+# line", which counts leaked, regenerable build output (node_modules/, dist/, build/, .next/ that
+# predates a .gitignore rule, or a build artifact .gitignore doesn't cover) as real, protected
+# work. Every reported path is checked against these patterns; a porcelain line whose path does
+# NOT match any of them means real dirt is present.
+GENERATED_CONTENT_PATTERNS=(
+  '(^|/)node_modules/' '(^|/)dist/' '(^|/)build/' '(^|/)\.next/'
+)
+
+# Reads `git status --porcelain` lines on stdin. Returns 0 (true) only if EVERY reported line is
+# BOTH untracked ("??" -- never a tracked add/modify/delete/rename/copy/conflict) AND matches a
+# generated-content pattern above -- an empty input is NOT "generated-only", it is simply not
+# dirty at all, and callers only reach this after already confirming some output exists, so this
+# never silently turns "nothing reported" into "safe".
+#
+# MikroB round-2 request (card 9918f78d): the path-only check used to wave through a TRACKED,
+# modified file living under node_modules/dist/build/.next (e.g. a deliberately committed,
+# patched vendor file) -- its path matches the pattern, but a tracked change is real, protected
+# work regardless of where it lives. The "??" status check closes this: only genuinely untracked
+# (never-committed) content gets the exception, exactly the leaked-build-output case this was
+# built for.
+_dirty_is_generated_only() {
+  local line status path matched pat saw_any=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    saw_any=1
+    status="${line:0:2}"
+    [ "$status" = '??' ] || return 1
+    # porcelain v1: "XY PATH" (renames: "XY OLD -> NEW" -- the NEW side is what matters)
+    path="${line:3}"
+    case "$path" in
+      *' -> '*) path="${path#*' -> '}" ;;
+    esac
+    matched=0
+    for pat in "${GENERATED_CONTENT_PATTERNS[@]}"; do
+      [[ "$path" =~ $pat ]] && { matched=1; break; }
+    done
+    [ "$matched" = 1 ] || return 1
+  done
+  [ "$saw_any" = 1 ]
+}
+
+# Replaces the bare `git_dirty_or_failed git --no-optional-locks -C "$path" status --porcelain`
+# call at all 4 sites below (would_skip_removal x2, remove_entry x2): a git FAILURE (non-zero rc)
+# still fails closed unconditionally, exactly as before -- only a SUCCESSFUL call whose entire
+# porcelain output matches known generated-content patterns is treated as not dirty.
+worktree_dirty_for_removal() {
+  local path="$1" out rc
+  out="$(git --no-optional-locks -C "$path" status --porcelain 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] || return 0
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out" | _dirty_is_generated_only && return 1
+  return 0
 }
 
 # CONDITION 1 (Cybered GO 32903 on 3bcdc0a6c, card 09ed7ef6): the three `find -mmin` age re-checks
@@ -274,6 +339,30 @@ classify() {
       echo "UNKNOWN"
       return
     fi
+    # CYBERSEC NO-GO 39669 HIGH-1 / QA FAIL 39674 / MikroB GATE-BOUNCE 39675 decision (card
+    # 9918f78d): this ORPHAN check used to run BEFORE the name+age gate above, unconditionally --
+    # a freshly-edited or unknown-name dir with a dangling gitdir classified ORPHAN and got removed
+    # with no age/name protection at all (CYBERSEC's probe: 4 of 4 old-kept dirs became new-removed
+    # regressions). Now it only RUNS inside the already-DISPOSABLE branch, as an upgrade that adds
+    # information (a content listing), never as a path that skips the gate the branch is already
+    # inside of.
+    if [ -f "$path/.git" ]; then
+      local _gitdir; _gitdir="$(grep '^gitdir:' "$path/.git" 2>/dev/null | sed 's/^gitdir: //')"
+      if [ -n "$_gitdir" ]; then
+        # resolve relative gitdir (git stores them relative to the worktree root)
+        if [[ "$_gitdir" != /* ]]; then _gitdir="$path/$_gitdir"; fi
+        # Fix-direction (c): a gitdir whose own PARENT directory is unreachable is indistinguishable
+        # from an unmounted filesystem (CYBERSEC's unmounted-mopsion probe row) -- that ambiguity
+        # must not resolve to "safe to delete". Only treat this as a genuine orphan when the parent
+        # IS reachable (proves the filesystem is mounted) and the specific gitdir target is still
+        # simply absent from it.
+        local _gitdir_parent; _gitdir_parent="$(dirname "$_gitdir")"
+        if [ -d "$_gitdir_parent" ] && [ ! -d "$_gitdir" ]; then
+          echo "ORPHAN"
+          return
+        fi
+      fi
+    fi
     echo "DISPOSABLE"
     return
   fi
@@ -287,7 +376,7 @@ classify() {
 would_skip_removal() {
   local path="$1" owner="${WORKTREE_OWNER[$1]:-}"
   if [ -n "$owner" ]; then
-    if git_dirty_or_failed git --no-optional-locks -C "$path" status --porcelain; then
+    if worktree_dirty_for_removal "$path"; then
       echo "uncommitted changes in registered worktree"
       return 0
     fi
@@ -298,7 +387,7 @@ would_skip_removal() {
     return 1
   fi
   if [ -d "$path/.git" ] || [ -f "$path/.git" ]; then
-    if git_dirty_or_failed git --no-optional-locks -C "$path" status --porcelain; then
+    if worktree_dirty_for_removal "$path"; then
       echo "uncommitted changes in unregistered git dir"
       return 0
     fi
@@ -315,6 +404,28 @@ would_skip_removal() {
   return 1
 }
 
+# Shared TOCTOU re-check tail used by remove_entry() and remove_orphan_entry() immediately before
+# the destructive call (N1, RedHat LOW 16849): a fresh live-process-under-path check and a fresh
+# age/freshness re-check, run LAST so the gap between "confirmed nothing live" and the actual
+# deletion stays at this check's own runtime, not the runtime of whatever git checks ran before it.
+# Extracted (card 9918f78d, MikroB round-2 request) so remove_entry()'s and remove_orphan_entry()'s
+# copies of this logic cannot drift apart from each other. $2 is the noun used in both SKIP
+# messages ("this dir" for a registered/unregistered worktree, "this orphaned worktree" for an
+# ORPHAN). Returns 0 (already said a SKIP message) when removal must be blocked, 1 when it is
+# safe to proceed.
+toctou_recheck_blocks_removal() {
+  local path="$1" noun="${2:-this dir}"
+  if path_under_targets "$path" "$(scan_live_proc_targets)"; then
+    say "SKIP (a live process now has cwd/fd under $noun -- re-checked at removal time): $path"
+    return 0
+  fi
+  if find_recent_or_failed "$path"; then
+    say "SKIP (a file under $noun was modified since classification -- re-checked at removal time): $path"
+    return 0
+  fi
+  return 1
+}
+
 remove_entry() {
   local path="$1" owner="${WORKTREE_OWNER[$1]:-}"
 
@@ -326,7 +437,7 @@ remove_entry() {
     # really an ordering accident, not a real guard (the actual missing guard was the unregistered-
     # clone rev-list check added to would_skip_removal/below). --no-optional-locks keeps this a pure
     # read: no index write, so it can no longer feed the age re-check a false "just modified" signal.
-    if git_dirty_or_failed git --no-optional-locks -C "$path" status --porcelain; then
+    if worktree_dirty_for_removal "$path"; then
       say "SKIP (uncommitted changes in registered worktree): $path"
       return 1
     fi
@@ -345,12 +456,7 @@ remove_entry() {
     # actual deletion below. Moved to run LAST, immediately before the destructive call, so the
     # gap the B1' re-check is meant to close stays at the git-command's own runtime, not the
     # runtime of two git commands PLUS this check.
-    if path_under_targets "$path" "$(scan_live_proc_targets)"; then
-      say "SKIP (a live process now has cwd/fd under this dir -- re-checked at removal time): $path"
-      return 1
-    fi
-    if find_recent_or_failed "$path"; then
-      say "SKIP (a file under this dir was modified since classification -- re-checked at removal time): $path"
+    if toctou_recheck_blocks_removal "$path" "this dir"; then
       return 1
     fi
     say "removing registered worktree: $path (owner $owner)"
@@ -364,7 +470,7 @@ remove_entry() {
     return "$rc"
   fi
   if [ -d "$path/.git" ] || [ -f "$path/.git" ]; then
-    if git_dirty_or_failed git --no-optional-locks -C "$path" status --porcelain; then
+    if worktree_dirty_for_removal "$path"; then
       say "SKIP (uncommitted changes, unregistered git dir): $path"
       return 1
     fi
@@ -378,15 +484,26 @@ remove_entry() {
   fi
   # N1 (RedHat LOW 16849): same reorder as the registered-worktree branch above -- fresh re-check
   # immediately before rm -rf, after any git check this branch performed, not before it.
-  if path_under_targets "$path" "$(scan_live_proc_targets)"; then
-    say "SKIP (a live process now has cwd/fd under this dir -- re-checked at removal time): $path"
-    return 1
-  fi
-  if find_recent_or_failed "$path"; then
-    say "SKIP (a file under this dir was modified since classification -- re-checked at removal time): $path"
+  if toctou_recheck_blocks_removal "$path" "this dir"; then
     return 1
   fi
   say "removing: $path"
+  rm -rf "$path"
+}
+
+# CYBERSEC NO-GO 39669 HIGH-1 / QA FAIL 39674 fix-direction (b) (card 9918f78d): ORPHAN removal
+# used to be a bare `rm -rf` in main()'s apply loop, bypassing every TOCTOU guard remove_entry()
+# has. An ORPHAN's gitdir is dead by construction, so the git status/rev-list checks remove_entry()
+# runs cannot run here (there is no live git state to ask) -- but the live-process and age
+# re-checks are not git-specific, and skipping them was the actual bug (not the missing git check).
+# This replicates remove_entry()'s fresh-re-check TAIL only, immediately before the destructive
+# call, same ordering rationale as N1 (shrink the TOCTOU window to this check's own runtime).
+remove_orphan_entry() {
+  local path="$1"
+  if toctou_recheck_blocks_removal "$path" "this orphaned worktree"; then
+    return 1
+  fi
+  say "removing orphaned worktree: $path"
   rm -rf "$path"
 }
 
@@ -433,8 +550,8 @@ main() {
   LIVE_PROC_TARGETS_PRIMED=1
   trap 'rm -f "$OPEN_CARD_IDS_FILE"; LIVE_PROC_TARGETS_PRIMED=0; LIVE_PROC_TARGETS=""' RETURN
 
-  local keep_count=0 active_count=0 disposable_count=0 removable_count=0 unknown_count=0
-  local disposable_paths=() path name cls reason
+  local keep_count=0 active_count=0 disposable_count=0 removable_count=0 unknown_count=0 orphan_count=0
+  local disposable_paths=() orphan_paths=() path name cls reason
 
   for path in "$HOME_DIR"/*/ "$HOME_DIR"/.[!.]*/; do
     [ -d "$path" ] || continue
@@ -457,20 +574,30 @@ main() {
           removable_count=$((removable_count + 1))
         fi
         ;;
+      # card 9918f78d: orphaned worktree -- .git file present but gitdir target gone.
+      # Treated as removable (no live git state), listed with contents for human review.
+      ORPHAN)
+        orphan_count=$((orphan_count + 1))
+        orphan_paths+=("$path")
+        # show up to 5 entries so the report is useful without being overwhelming
+        local _n_entries; _n_entries="$(ls -A "$path" 2>/dev/null | wc -l)"
+        local _first5; _first5="$(ls -A "$path" 2>/dev/null | head -5 | tr '\n' ' ')"
+        reason="orphaned gitdir, ${_n_entries} entries: ${_first5}"
+        ;;
       UNKNOWN) unknown_count=$((unknown_count + 1)) ;;
     esac
     if [ -n "$reason" ]; then
-      printf '%-11s %s  (apply would SKIP: %s)\n' "$cls" "$path" "$reason"
+      printf '%-11s %s  (%s)\n' "$cls" "$path" "$reason"
     else
       printf '%-11s %s\n' "$cls" "$path"
     fi
   done
 
-  say "summary: KEEP=$keep_count ACTIVE=$active_count DISPOSABLE=$disposable_count UNKNOWN=$unknown_count"
+  say "summary: KEEP=$keep_count ACTIVE=$active_count DISPOSABLE=$disposable_count ORPHAN=$orphan_count UNKNOWN=$unknown_count"
   [ "$DASHBOARD_UP" = 1 ] || say "note: dashboard unreachable during this run -- every registered worktree with no live process was failed OPEN to ACTIVE (not guessed into DISPOSABLE)"
 
   if [ "$MODE" = "dry-run" ]; then
-    say "dry-run: nothing removed. Re-run with --apply --yes to remove $removable_count of the $disposable_count DISPOSABLE entries above ($((disposable_count - removable_count)) would be SKIPPED -- see reasons above)."
+    say "dry-run: nothing removed. Re-run with --apply --yes to remove $removable_count of the $disposable_count DISPOSABLE + $orphan_count ORPHAN entries above ($((disposable_count - removable_count)) DISPOSABLE would be SKIPPED -- see reasons above)."
     return 0
   fi
 
@@ -482,6 +609,16 @@ main() {
   local removed=0 skipped=0
   for path in "${disposable_paths[@]}"; do
     if remove_entry "$path"; then
+      removed=$((removed + 1))
+    else
+      skipped=$((skipped + 1))
+    fi
+  done
+  # CYBERSEC NO-GO 39669 HIGH-1 (card 9918f78d): routed through remove_orphan_entry() now, not a
+  # bare rm -rf -- it re-checks live-process and age immediately before deleting, same as a
+  # DISPOSABLE entry gets from remove_entry().
+  for path in "${orphan_paths[@]}"; do
+    if remove_orphan_entry "$path"; then
       removed=$((removed + 1))
     else
       skipped=$((skipped + 1))
