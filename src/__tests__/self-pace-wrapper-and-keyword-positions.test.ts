@@ -50,6 +50,29 @@ function cpuMsSince(start: NodeJS.CpuUsage): number {
   return (diff.user + diff.system) / 1000
 }
 
+// Card 9aa41834: cpuMsSince already isolated this measurement from wall-clock preemption (see the
+// comment above it), but an ABSOLUTE cpu-ms budget is still not immune to land-time contention --
+// measured live, the round-7 test below genuinely took 2264ms of CPU under a concurrent land,
+// against its 2000ms budget, with nothing wrong in the code: shared cache/memory-bandwidth
+// contention from other CPU-bound processes can slow down real work this process does, not just
+// delay it. A RATIO is immune to that a constant-factor slowdown scales both measurements equally,
+// so it cancels out; a genuine quadratic blowup does not, because the larger input's extra work
+// grows faster than the slowdown factor. sizeFactor=4 (not 2) for signal-to-noise: linear growth
+// yields ~4x, quadratic ~16x, leaving a wide, noise-tolerant gap for the ratioBound to sit in.
+function assertLinearGrowth(run: (input: string) => void, make: (n: number) => string, n: number, ratioBound = 8): void {
+  const t0 = process.cpuUsage()
+  run(make(n))
+  const small = cpuMsSince(t0)
+  const t1 = process.cpuUsage()
+  run(make(n * 4))
+  const large = cpuMsSince(t1)
+  // A near-zero `small` measurement makes the ratio meaningless (division noise); the sibling
+  // absolute floor (100000+ chars) that every call site below uses keeps both measurements well
+  // above that, but guard it explicitly rather than let a future call site discover it via a flake.
+  expect(small).toBeGreaterThan(0)
+  expect(large / small).toBeLessThan(ratioBound)
+}
+
 describe('a shell KEYWORD is a command position too (card ec20dd23)', () => {
   const KEYWORDS: Array<[string, string]> = [
     ['then arm (reported)', `if true; then ${CT} -; fi`],
@@ -671,12 +694,10 @@ describe('round 7: an UNQUOTED payload is executable text too (card ec20dd23)', 
   })
 
   it('the new word scan grows LINEARLY, not quadratically', () => {
-    // Same budget the sibling quadratic suites enforce. The word pattern's alternatives are disjoint
-    // on their first character, so no position has two ways to match -- but that is the claim, and
-    // this is the measurement.
-    const t0 = process.cpuUsage()
-    bash(`echo ${'a'.repeat(400000)} | sh`)
-    expect(cpuMsSince(t0)).toBeLessThan(2000)
+    // The word pattern's alternatives are disjoint on their first character, so no position has
+    // two ways to match -- but that is the claim, and this is the measurement. See
+    // assertLinearGrowth's own comment for why this asserts a growth RATIO, not an absolute budget.
+    assertLinearGrowth((cmd) => bash(cmd), (n) => `echo ${'a'.repeat(n)} | sh`, 100000)
   })
 })
 
@@ -787,11 +808,7 @@ describe('round 8: printf format semantics and source/. execution (card ec20dd23
   })
 
   it('both new paths grow LINEARLY, not quadratically', () => {
-    const t0 = process.cpuUsage()
-    bash(`source <(echo ${'a'.repeat(400000)})`)
-    expect(cpuMsSince(t0)).toBeLessThan(2000)
-    const t1 = process.cpuUsage()
-    bash(`printf ${SQ}%s${SQ} ${'a'.repeat(400000)} | sh`)
-    expect(cpuMsSince(t1)).toBeLessThan(2000)
+    assertLinearGrowth((cmd) => bash(cmd), (n) => `source <(echo ${'a'.repeat(n)})`, 100000)
+    assertLinearGrowth((cmd) => bash(cmd), (n) => `printf ${SQ}%s${SQ} ${'a'.repeat(n)} | sh`, 100000)
   })
 })

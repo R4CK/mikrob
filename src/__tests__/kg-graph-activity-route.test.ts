@@ -1,7 +1,14 @@
 // Card a1d57d99: GET /api/kg/graph, GET /api/kg/activity, and the search-event recording hook
 // on the EXISTING /api/kg/search handler (must not change that route's own response shape --
 // kg-search-route.test.ts already pins that; this file only adds the new side effect/routes).
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+//
+// Card 9aa41834: /api/kg/search's hybrid search awaits a REAL generateEmbedding() call (kg/search.ts
+// -> db.js), which fetches the live Ollama embedding backend with a 5000ms AbortSignal timeout. Under
+// land-time load (another process busy on the same backend) the fetch genuinely took close to that
+// budget, and vitest's own 5000ms default test timeout fired first -- "Embedding generation failed --
+// embedding backend unreachable" in the log, test marked timed out. db.js is mocked below so this file
+// never performs that network call; the fetch spy proves it structurally, not just by inspection.
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import http from 'node:http'
 import Database from 'better-sqlite3'
 import type { RouteContext } from '../web/routes/types.js'
@@ -10,6 +17,20 @@ let kgEnabledValue = '1'
 let fadeMs = 15000
 let retentionRows = 5000
 let graphMaxNodes = 500
+
+vi.mock('../db.js', async () => {
+  const real = await vi.importActual<typeof import('../db.js')>('../db.js')
+  return { ...real, generateEmbedding: async () => null }
+})
+
+const fetchSpy = vi.spyOn(globalThis, 'fetch')
+afterAll(() => {
+  // STRUCTURAL PIN, not inspection: if the db.js mock above were ever removed or widened to call
+  // through, kg/search.ts's real generateEmbedding would reach for the live embedding backend via
+  // fetch -- exactly the live network call this file exists to never make. Asserting zero calls
+  // catches that regardless of whether a backend happens to be reachable in the run environment.
+  expect(fetchSpy).not.toHaveBeenCalled()
+})
 
 vi.mock('../settings-store.js', () => ({
   getEffectiveSettingValue: (key: string) => {

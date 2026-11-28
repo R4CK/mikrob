@@ -285,7 +285,16 @@ function scanTree(dir: string, base: string = dir): string[] {
       // name (the fleet's own convention, belt-and-suspenders); `isNestedWorktreeRoot` catches the
       // same shape structurally wherever it sits, including a gate worktree created at some other
       // path under agents/.
-      if (entry.name === '.worktrees' || isNestedWorktreeRoot(full)) continue
+      // Card 9aa41834: store/drafts is a GITIGNORED RUNTIME dir (.gitignore's `store/*` line) --
+      // never shipped, so out of scope for a guard over what we ship, and under active read/write
+      // churn from local-LLM draft reviews while this suite runs. Walking it raced with
+      // gemini-orchestrator-draft-review.test.ts's beforeEach/afterAll, which creates and removes a
+      // real file at store/drafts/ghostlocal1/1-leaf.md -- this scan snapshots that file's presence
+      // at collection time, and a later readFileSync() in this file's own tests threw ENOENT when
+      // the other file's afterAll had already removed it. Same exclusion shape as `.worktrees`
+      // above: a name, not a conditional on which root is being walked, since no shipped tree needs
+      // a directory named `drafts` and none currently has one (checked).
+      if (entry.name === '.worktrees' || entry.name === 'drafts' || isNestedWorktreeRoot(full)) continue
       out.push(...scanTree(full, base))
     } else if (TEXT_FILE.test(entry.name)) out.push(relative(base, full))
   }
@@ -1320,5 +1329,29 @@ describe('scanTree excludes nested gate/QA worktrees under agents/ (card 7c72640
     mkdirSync(join(dir, '.git'), { recursive: true })
     writeFileSync(join(dir, 'CLAUDE.md'), 'hello\n')
     expect(scanTree(root)).toEqual([join('agent-x', 'CLAUDE.md')])
+  })
+})
+
+// Card 9aa41834: a `drafts` directory is gitignored runtime state (local-LLM draft files under
+// store/drafts/<cardId>/), never shipped, and under active create/remove churn from
+// gemini-orchestrator-draft-review.test.ts while this suite runs -- scanning it raced that
+// churn and threw ENOENT on a file the other test's afterAll had already deleted.
+describe('scanTree excludes a `drafts` directory (card 9aa41834)', () => {
+  let root: string
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'token-argv-guard-drafts-test-')) })
+  afterEach(() => { rmSync(root, { recursive: true, force: true }) })
+
+  it('a file under a `drafts` directory is NOT walked, even with a real leak shape', () => {
+    const draftDir = join(root, 'drafts', 'ghostlocal1')
+    mkdirSync(draftDir, { recursive: true })
+    writeFileSync(join(draftDir, '1-leaf.md'), 'curl -s -H "Authorization: Bearer $TOK" "$DASH/api/x"\n')
+    expect(scanTree(root)).toEqual([])
+  })
+
+  it('CONTROL: a sibling directory with a similar but different name is still walked', () => {
+    const dir = join(root, 'draft-notes')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'x.md'), 'hello\n')
+    expect(scanTree(root)).toEqual([join('draft-notes', 'x.md')])
   })
 })
