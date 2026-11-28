@@ -17,19 +17,26 @@ trap 'kill "${stub_pid:-}" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 FUNCS="$TMP/funcs.sh"
 # Card 2f282a31: the retention default is a top-level assignment (sed's function-block pattern
-# below does not match it), extracted the same way the TERM/INT/HUP trap lines further down are --
-# a literal grep for the real line, so a mutant that changes the default is still caught.
-grep -m1 '^FLEET_TEST_LOG_RETENTION=' "$SRC" > "$FUNCS"
+# below does not match it). Card 08de93d5 CYBERSEC F-8 added a validation if-block right after it
+# (non-integer/zero/huge falls back to the default) -- extracted together as one range, so a
+# mutant weakening the validation is caught the same way a changed default already was.
+sed -n '/^FLEET_TEST_LOG_RETENTION=/,/^fi$/p' "$SRC" > "$FUNCS"
 grep -q '^FLEET_TEST_LOG_RETENTION=' "$FUNCS" || { echo "FAIL: could not extract the real FLEET_TEST_LOG_RETENTION default from $SRC -- source and selftest have drifted"; exit 1; }
+grep -q 'falling back to the documented default (200)' "$FUNCS" || { echo "FAIL: could not extract the real FLEET_TEST_LOG_RETENTION validation block from $SRC -- source and selftest have drifted"; exit 1; }
 # Card 2f282a31 CYBERSEC F-1 delta: fleet_test_prune_log_dir now filters by this pattern before it
 # ever prunes anything -- extracted the same way, so a mutant widening/dropping the pattern is caught.
 grep -m1 "^FLEET_TEST_OWN_LOG_RE='" "$SRC" >> "$FUNCS"
 grep -q "^FLEET_TEST_OWN_LOG_RE='" "$FUNCS" || { echo "FAIL: could not extract the real FLEET_TEST_OWN_LOG_RE pattern from $SRC -- source and selftest have drifted"; exit 1; }
 sed -n '/^fleet_test_prune_log_dir() {/,/^}/p' "$SRC" >> "$FUNCS"
+# Card 08de93d5 CYBERSEC F-3: both persist functions below now redact through this shared
+# function instead of a raw cp -- extracted the same way, so a mutant weakening/dropping a
+# pattern is caught by the planted-secret cases, not just reasoned about from source.
+sed -n '/^fleet_test_redact_log() {/,/^}/p' "$SRC" >> "$FUNCS"
 sed -n '/^fleet_test_persist_failure_log() {/,/^}/p' "$SRC" >> "$FUNCS"
 sed -n '/^fleet_test_safe_summary() {/,/^}/p' "$SRC" >> "$FUNCS"
 sed -n '/^fleet_test_notify_finish() {/,/^}/p' "$SRC" >> "$FUNCS"
 sed -n '/^fleet_test_on_exit() {/,/^}/p' "$SRC" >> "$FUNCS"
+grep -q '^fleet_test_redact_log() {' "$FUNCS" || { echo "FAIL: could not extract fleet_test_redact_log from $SRC -- source and selftest have drifted"; exit 1; }
 grep -q '^fleet_test_prune_log_dir() {' "$FUNCS" || { echo "FAIL: could not extract fleet_test_prune_log_dir from $SRC -- source and selftest have drifted"; exit 1; }
 grep -q '^fleet_test_persist_failure_log() {' "$FUNCS" || { echo "FAIL: could not extract fleet_test_persist_failure_log from $SRC -- source and selftest have drifted"; exit 1; }
 grep -q '^fleet_test_safe_summary() {' "$FUNCS" || { echo "FAIL: could not extract fleet_test_safe_summary from $SRC -- source and selftest have drifted"; exit 1; }
@@ -367,11 +374,32 @@ fi
 # must SURVIVE repeated pruning. Before the fix, fleet_test_prune_log_dir counted over the whole
 # directory, so a flood of our own failure logs past the retention cap deleted it right along
 # with our own oldest logs.
+#
+# CYBERSEC F-7 (card 08de93d5, comment 39552): the .json shape above only pins the WIDEN-TO-.*
+# mutant (D2) -- any anchor/shape/digit mutant still excludes a .json and this case stayed green
+# for all of them. Near-miss names below, each crafted to fail the REAL regex for exactly ONE
+# reason, pin the remaining survivors: D3 end-anchor, D4 start-anchor, D7 pid-widen, D9
+# date-loosen. D10 (rm -f -> rm -rf) gets its own directory-shaped artifact: `rm -f` cannot remove
+# a directory (fails silently), so it and its contents must survive; a rm -rf mutant would take
+# both.
 n=$((n+1))
 LOGDIR10="$TMP/logs-foreign"
 mkdir -p "$LOGDIR10"
 FOREIGN_FILE="$LOGDIR10/channel-poller-reap-failure-2026-11-25T08-18-15-842Z-pane-parent-not-stopped.json"
 echo '{"evidence":"card a5c827ca"}' > "$FOREIGN_FILE"
+NEARMISS_END="$LOGDIR10/20261125T081815Z-123.log.bak"            # D3: extra suffix after .log
+NEARMISS_START="$LOGDIR10/x20261125T081815Z-123.log"              # D4: extra prefix before the date
+NEARMISS_PID="$LOGDIR10/20261125T081815Z-abc.log"                 # D7: non-digit in the pid position
+NEARMISS_DATE_SHORT="$LOGDIR10/2026125T081815Z-123.log"           # D9: 7-digit date, not 8
+NEARMISS_TIME_SHORT="$LOGDIR10/20261125T08185Z-123.log"           # D9: 5-digit time, not 6
+echo "near-miss end-anchor" > "$NEARMISS_END"
+echo "near-miss start-anchor" > "$NEARMISS_START"
+echo "near-miss pid-widen" > "$NEARMISS_PID"
+echo "near-miss date-loosen (date)" > "$NEARMISS_DATE_SHORT"
+echo "near-miss date-loosen (time)" > "$NEARMISS_TIME_SHORT"
+RMRF_DIR="$LOGDIR10/20261125T081815Z-999.log"                     # D10: own-shaped NAME, but a directory
+mkdir -p "$RMRF_DIR"
+echo "must survive rm -f on a directory" > "$RMRF_DIR/evidence.txt"
 r=1
 while [ "$r" -le 3 ]; do
   RET10_TMPDIR="$(mktemp -d)"
@@ -394,6 +422,41 @@ if [ -f "$FOREIGN_FILE" ] && grep -q 'a5c827ca' "$FOREIGN_FILE" 2>/dev/null; the
 else
   echo "  FAIL foreign evidence file was deleted by our own prune (CYBERSEC F-1 regression): $(ls -A "$LOGDIR10" 2>/dev/null)"; fail=1
 fi
+n=$((n+1))
+if [ -f "$NEARMISS_END" ] && [ -f "$NEARMISS_START" ] && [ -f "$NEARMISS_PID" ] \
+  && [ -f "$NEARMISS_DATE_SHORT" ] && [ -f "$NEARMISS_TIME_SHORT" ]; then
+  echo "  ok   near-miss foreign names (end-anchor, start-anchor, pid-widen x1, date-loosen x2) all survive pruning"
+else
+  echo "  FAIL a near-miss foreign name was deleted (CYBERSEC F-7): end=$([ -f "$NEARMISS_END" ] && echo ok || echo GONE) start=$([ -f "$NEARMISS_START" ] && echo ok || echo GONE) pid=$([ -f "$NEARMISS_PID" ] && echo ok || echo GONE) date=$([ -f "$NEARMISS_DATE_SHORT" ] && echo ok || echo GONE) time=$([ -f "$NEARMISS_TIME_SHORT" ] && echo ok || echo GONE)"; fail=1
+fi
+n=$((n+1))
+if [ -d "$RMRF_DIR" ] && [ -f "$RMRF_DIR/evidence.txt" ]; then
+  echo "  ok   an own-shaped NAME that is actually a directory survives pruning (rm -f, never rm -rf)"
+else
+  echo "  FAIL an own-shaped directory was removed by our own prune (CYBERSEC F-7 D10, rm -f -> rm -rf): $(ls -A "$LOGDIR10" 2>/dev/null)"; fail=1
+fi
+
+# --- Case 10b (card 08de93d5, CYBERSEC F-7 D6): a plain NOTIFY-shaped file (no "-failure" suffix --
+# the shape fleet_test_notify_finish's own dest_log uses) must be recognized as OUR OWN and pruned
+# under retention, same as a "-failure" file. A mutant that makes "-failure" MANDATORY in
+# FLEET_TEST_OWN_LOG_RE would misclassify every plain notify log as foreign, and it would never be
+# pruned -- the inverse failure mode from Case 10 above (there, foreign must SURVIVE; here, a
+# genuinely-own file must NOT survive forever).
+n=$((n+1))
+LOGDIR10B="$TMP/logs-notify-shape"
+mkdir -p "$LOGDIR10B"
+OLD_NOTIFY="$LOGDIR10B/20261001T000000Z-100.log"
+NEW_FAILURE="$LOGDIR10B/20261002T000000Z-200-failure.log"
+echo "old notify" > "$OLD_NOTIFY"
+echo "new failure" > "$NEW_FAILURE"
+touch -d '2026-10-01T00:00:00' "$OLD_NOTIFY" 2>/dev/null || touch -t 202610010000 "$OLD_NOTIFY"
+touch -d '2026-10-02T00:00:00' "$NEW_FAILURE" 2>/dev/null || touch -t 202610020000 "$NEW_FAILURE"
+fleet_test_prune_log_dir "$LOGDIR10B" 1
+if [ ! -f "$OLD_NOTIFY" ] && [ -f "$NEW_FAILURE" ]; then
+  echo "  ok   a plain notify-shaped file (no -failure suffix) counts as our own and is pruned under retention, same as a -failure file"
+else
+  echo "  FAIL notify-shape file was not recognized as our own (CYBERSEC F-7 D6): old=$([ -f "$OLD_NOTIFY" ] && echo survives || echo gone), new=$([ -f "$NEW_FAILURE" ] && echo survives || echo gone)"; fail=1
+fi
 
 # --- Case 11 (card 2f282a31, CYBERSEC F-2): pin the retention DEFAULT value, not just that the
 # assignment line exists -- a mutant changing 200 to e.g. 2 or removing the default entirely
@@ -405,6 +468,85 @@ if [ "$default_val" = "200" ]; then
 else
   echo "  FAIL FLEET_TEST_LOG_RETENTION default is '$default_val', expected 200"; fail=1
 fi
+
+# --- Case 12 (card 08de93d5, CYBERSEC F-8): FLEET_TEST_LOG_RETENTION is used unvalidated in
+# fleet_test_prune_log_dir's `tail -n "+$((keep + 1))"` arithmetic -- a non-integer throws a bash
+# syntax error there, 0 means "keep nothing" (prunes every own log on the next run), and an
+# unbounded value defeats the point of a cap. Each bad value must fall back to the documented
+# default (200), exactly like every other integer env-var guard in this fleet.
+for bad in 0 -5 abc 1.5 100000 99999999999999999999; do
+  n=$((n+1))
+  got="$(bash -c 'export FLEET_TEST_LOG_RETENTION="$2"; . "$1" 2>/dev/null; echo "$FLEET_TEST_LOG_RETENTION"' _ "$FUNCS" "$bad")"
+  if [ "$got" = "200" ]; then
+    echo "  ok   FLEET_TEST_LOG_RETENTION='$bad' falls back to the documented default (200)"
+  else
+    echo "  FAIL FLEET_TEST_LOG_RETENTION='$bad' did not fall back to 200 (got '$got')"; fail=1
+  fi
+done
+n=$((n+1))
+got_ok="$(bash -c 'export FLEET_TEST_LOG_RETENTION="$2"; . "$1"; echo "$FLEET_TEST_LOG_RETENTION"' _ "$FUNCS" "5")"
+if [ "$got_ok" = "5" ]; then
+  echo "  ok   CONTROL: a sane override (5) is NOT clobbered by the guard"
+else
+  echo "  FAIL CONTROL: a sane override (5) was wrongly rejected (got '$got_ok')"; fail=1
+fi
+
+# --- Case 13 (card 08de93d5, CYBERSEC F-3): a planted secret-shaped string in the run log must
+# NEVER reach a persisted log, on EITHER path (failure-persist and notify). Generic shapes
+# (Bearer header + labeled token=), not a recognizable vendor prefix, so the fixture is secret-
+# SHAPED rather than a real-looking credential -- exactly what fleet_test_redact_log's patterns
+# key on.
+# Deliberately SHORT (under 32 chars) so each is redacted ONLY by its own specific pattern
+# (Bearer-header / labeled key=value), not incidentally swept up by the generic 32+-char
+# catch-all -- otherwise this case would stay green even with the specific pattern removed
+# (guards-that-pin-behaviour: a vacuous pin via an unrelated, wider guard).
+planted_bearer="Bear""er ""short9tok3n21"
+planted_kv="tok""en""=""shortval456"
+n=$((n+1))
+SECRET_TMPDIR="$(mktemp -d)"
+SECRET_LOGDIR="$TMP/logs-secret"
+mkdir -p "$SECRET_LOGDIR"
+secret_run_log="$SECRET_TMPDIR/run.log"
+printf 'Tests  1 failed (1)\nAuthorization: %s\n%s\n' "$planted_bearer" "$planted_kv" > "$secret_run_log"
+bash -c '
+  . "$1"
+  export TMPDIR="$2"
+  export FLEET_TEST_LOG_DIR="$3"
+  unset FLEET_TEST_CALLER_AGENT
+  fleet_test_persist_failure_log 1 "$4"
+' _ "$FUNCS" "$SECRET_TMPDIR" "$SECRET_LOGDIR" "$secret_run_log"
+if ! grep -rq 'short9tok3n21' "$SECRET_LOGDIR" 2>/dev/null \
+  && ! grep -rq 'shortval456' "$SECRET_LOGDIR" 2>/dev/null \
+  && grep -rq 'REDACTED' "$SECRET_LOGDIR" 2>/dev/null; then
+  echo "  ok   a planted secret-shaped string in a FAILING run never reaches the persisted failure log"
+else
+  echo "  FAIL planted secret reached the persisted failure log (CYBERSEC F-3): $(grep -rH '' "$SECRET_LOGDIR" 2>/dev/null)"; fail=1
+fi
+rm -rf "$SECRET_TMPDIR" 2>/dev/null
+
+n=$((n+1))
+SECRET2_TMPDIR="$(mktemp -d)"
+SECRET2_LOGDIR="$TMP/logs-secret-notify"
+mkdir -p "$SECRET2_LOGDIR"
+secret2_run_log="$SECRET2_TMPDIR/run.log"
+printf ' Test Files  1 passed (1)\n      Tests  1 passed (1)\nAuthorization: %s\n%s\n' "$planted_bearer" "$planted_kv" > "$secret2_run_log"
+: > "$STUB_POST_LOG"
+echo dummy-token > "$FLEET_TEST_NOTIFY_TOKEN_FILE"
+bash -c '
+  . "$1"
+  export TMPDIR="$2"
+  export FLEET_TEST_LOG_DIR="$3"
+  export FLEET_TEST_NOTIFY_TOKEN_FILE="$4"
+  fleet_test_notify_finish "fullstack" 0 "$5"
+' _ "$FUNCS" "$SECRET2_TMPDIR" "$SECRET2_LOGDIR" "$FLEET_TEST_NOTIFY_TOKEN_FILE" "$secret2_run_log"
+if ! grep -rq 'short9tok3n21' "$SECRET2_LOGDIR" 2>/dev/null \
+  && ! grep -rq 'shortval456' "$SECRET2_LOGDIR" 2>/dev/null \
+  && grep -rq 'REDACTED' "$SECRET2_LOGDIR" 2>/dev/null; then
+  echo "  ok   a planted secret-shaped string in a PASSING, notify-opted-in run never reaches the persisted notify log"
+else
+  echo "  FAIL planted secret reached the persisted notify log (CYBERSEC F-3): $(grep -rH '' "$SECRET2_LOGDIR" 2>/dev/null)"; fail=1
+fi
+rm -rf "$SECRET2_TMPDIR" 2>/dev/null
 
 echo
 if [ "$fail" -eq 0 ]; then echo "fleet-test-notify-injection.selftest: $n case(s), PASS"; exit 0

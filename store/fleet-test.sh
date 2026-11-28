@@ -177,6 +177,20 @@ print(summary if summary and len(summary) <= CAP else FALLBACK)
 # card asked for is failures, and the common case (most land runs are green) should not start
 # writing a file nobody asked for on every single one.
 FLEET_TEST_LOG_RETENTION="${FLEET_TEST_LOG_RETENTION:-200}"
+# NON-INTEGER/ZERO/HUGE GUARD (card 08de93d5, CYBERSEC F-8 on 2f282a31 round-1 comment 39552): this
+# value feeds fleet_test_prune_log_dir's `tail -n "+$((keep + 1))"` arithmetic unvalidated -- a
+# non-integer value throws a bash syntax error and aborts pruning (and, upstream of it, the
+# failing-run persist path) instead of falling back to the documented default; 0 would mean "keep
+# nothing", pruning every one of our own logs on the very next run instead of bounding growth; an
+# unbounded/huge value defeats the point of a retention cap. Reject anything outside a sane,
+# positive, bounded range (1..99999) -- same shape as every other integer env-var guard in this
+# fleet (offload-dispatch.sh's OFFLOAD_* guards: bare positive digits only, capped well under
+# bash's 64-bit arithmetic range).
+if ! [[ "$FLEET_TEST_LOG_RETENTION" =~ ^[1-9][0-9]{0,4}$ ]]; then
+  printf -v retention_val_q '%q' "$FLEET_TEST_LOG_RETENTION"
+  echo "fleet-test: FLEET_TEST_LOG_RETENTION=$retention_val_q is not a sane positive integer -- falling back to the documented default (200)" >&2
+  FLEET_TEST_LOG_RETENTION=200
+fi
 # Matches ONLY the filenames this script itself writes into FLEET_TEST_LOG_DIR -- the
 # fleet_test_persist_failure_log "<ts>-<pid>-failure.log" shape and the fleet_test_notify_finish
 # "<ts>-<pid>.log" shape. CYBERSEC F-1 (card 2f282a31, QA PASS 39543 + CYBERSEC GO 39544 delta):
@@ -197,13 +211,44 @@ fleet_test_prune_log_dir() { # $1=dir $2=keep (newest N of OUR OWN logs survive,
   done
 }
 
+# SECRET REDACTION ON PERSISTED LOGS (card 08de93d5, CYBERSEC F-3 on 2f282a31 round-1 comment
+# 39544/39552): neither this function nor fleet_test_notify_finish below redacted anything --
+# both just cp'd the tee'd run log verbatim, and CYBERSEC's planted-GitHub-token probe landed in
+# the persisted file unchanged. Same regex set as offload-dispatch.sh's freellm err_redacted
+# (duplicated on purpose, not imported -- no shared bash-module mechanism exists here, same
+# reasoning as that function's own header comment about store/secret-shape-scan.py), minus that
+# function's line-collapse-and-300-char-truncate step, which is specific to its short stderr
+# diagnostic use and would destroy a full multi-line log here.
+fleet_test_redact_log() { # $1=src $2=dest -- writes a secret-redacted copy of $1 to $2
+  local src="$1" dest="$2" rc
+  FLEET_TEST_REDACT_SRC="$src" python3 -I -c '
+import os, re
+with open(os.environ["FLEET_TEST_REDACT_SRC"], "r", errors="replace") as f:
+    text = f.read()
+text = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [REDACTED]", text)
+text = re.sub(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+:[^\s/@]+@", r"\1[REDACTED]@", text)
+text = re.sub(r"(?i)\b(api[_-]?key|token|secret|passwd|password|auth)\s*[:=]\s*\S+", r"\1=[REDACTED]", text)
+text = re.sub(r"\b[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_-]{6,}){2,}\b", "[REDACTED]", text)
+text = re.sub(r"\b(?:AKIA|ASIA|ABIA|ACCA|AGPA|AIDA|AIPA|ANPA|ANVA|AROA|APKA|A3T)[0-9A-Z]{16}\b", "[REDACTED]", text)
+text = re.sub(r"\bxox[baprs]-[0-9A-Za-z-]{10,}", "[REDACTED]", text)
+text = re.sub(r"[A-Za-z0-9_-]{32,}", "[REDACTED]", text)
+print(text, end="")
+' > "$dest" 2>/dev/null
+  rc=$?
+  # python3 -I writing via shell redirection does not inherit the source's restrictive mode the
+  # way `cp` did (CYBERSEC OBSERVATION: mode 600 under umask 022) -- set it explicitly so this
+  # switch does not loosen permissions on files that may still carry an unredacted secret shape.
+  chmod 600 "$dest" 2>/dev/null
+  return "$rc"
+}
+
 fleet_test_persist_failure_log() { # $1=status $2=run_log_path
   local st="$1" src_log="$2"
   [ "$st" -ne 0 ] || return 0
   [ -n "$src_log" ] && [ -r "$src_log" ] || return 0
   mkdir -p "$FLEET_TEST_LOG_DIR" 2>/dev/null || return 0
   local dest_log="$FLEET_TEST_LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$$-failure.log"
-  cp "$src_log" "$dest_log" 2>/dev/null || return 0
+  fleet_test_redact_log "$src_log" "$dest_log" || return 0
   fleet_test_prune_log_dir "$FLEET_TEST_LOG_DIR" "$FLEET_TEST_LOG_RETENTION"
 }
 
@@ -212,7 +257,7 @@ fleet_test_notify_finish() { # $1=caller_agent $2=status $3=run_log_path
   [ -r "$tok" ] || return 0
   mkdir -p "$FLEET_TEST_LOG_DIR" 2>/dev/null || return 0
   local dest_log="$FLEET_TEST_LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$$.log"
-  cp "$src_log" "$dest_log" 2>/dev/null || return 0
+  fleet_test_redact_log "$src_log" "$dest_log" || return 0
   local verdict="PASS"; [ "$st" -eq 0 ] || verdict="FAIL"
   local summary
   summary="$(fleet_test_safe_summary "$dest_log")"
