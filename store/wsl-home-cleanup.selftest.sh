@@ -950,5 +950,46 @@ reason="$(would_skip_removal "$realdirt_dir")"
   && ok "QA2 fix control: real dirt mixed with generated-content dirt is STILL flagged (not over-widened)" \
   || bad "QA2 regression: real uncommitted change alongside generated content was wrongly treated as clean"
 
+# --- MikroB round-2 request (card 9918f78d): the generated-content exception matches by PATH
+# only -- it must not accidentally cover a TRACKED file that happens to live under one of those
+# paths (an unusual but real shape: a vendored/patched file deliberately committed inside
+# node_modules/) when that file is actually modified. A tracked, modified file's porcelain line
+# (" M path") carries real, protected work exactly like any other tracked change -- it must stay
+# fail-closed, never be waved through just because its path matches node_modules/.
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+trackedmod_dir="$FAKE_HOME/qa-tracked-modified-under-generated"
+git -C "$FAKE_MAIN" branch qa-trackedmod-branch >/dev/null 2>&1
+git -C "$FAKE_MAIN" worktree add -q "$trackedmod_dir" qa-trackedmod-branch >/dev/null 2>&1
+mkdir -p "$trackedmod_dir/node_modules"
+echo "vendored, committed on purpose" > "$trackedmod_dir/node_modules/patched-vendor-file.js"
+git -C "$trackedmod_dir" add node_modules/patched-vendor-file.js >/dev/null 2>&1
+git -C "$trackedmod_dir" -c user.email=t@t -c user.name=t commit -q -m "commit a tracked file under node_modules/ on purpose"
+echo "modified after commit" > "$trackedmod_dir/node_modules/patched-vendor-file.js"
+find "$trackedmod_dir" -exec touch -d '2 days ago' {} + 2>/dev/null
+WORKTREE_OWNER["$trackedmod_dir"]="$FAKE_MAIN"
+reason="$(would_skip_removal "$trackedmod_dir")"
+[ -n "$reason" ] \
+  && ok "MikroB r2: a TRACKED file modified under node_modules/ still blocks removal (fail-closed)" \
+  || bad "MikroB r2 regression: a tracked, modified file under node_modules/ was wrongly treated as generated-only-safe"
+
+# --- MikroB round-2 request, second half: an untracked SOURCE file sitting NEXT TO the generated
+# dirs (not under any of them) must still block removal -- the generated-content exception must
+# never widen to cover real, non-generated untracked work just because it shares a worktree with
+# node_modules/dist/build/.next clutter.
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+untracked_sibling_dir="$FAKE_HOME/qa-untracked-sibling-source"
+git -C "$FAKE_MAIN" branch qa-untracked-sibling-branch >/dev/null 2>&1
+git -C "$FAKE_MAIN" worktree add -q "$untracked_sibling_dir" qa-untracked-sibling-branch >/dev/null 2>&1
+mkdir -p "$untracked_sibling_dir/node_modules/.pnpm" "$untracked_sibling_dir/dist"
+: > "$untracked_sibling_dir/node_modules/.pnpm/marker"
+: > "$untracked_sibling_dir/dist/bundle.js"
+echo "new, uncommitted source file" > "$untracked_sibling_dir/new-feature.ts"
+find "$untracked_sibling_dir" -exec touch -d '2 days ago' {} + 2>/dev/null
+WORKTREE_OWNER["$untracked_sibling_dir"]="$FAKE_MAIN"
+reason="$(would_skip_removal "$untracked_sibling_dir")"
+[ -n "$reason" ] \
+  && ok "MikroB r2: an untracked source file next to generated dirs still blocks removal (fail-closed)" \
+  || bad "MikroB r2 regression: an untracked, non-generated source file was wrongly treated as generated-only-safe"
+
 echo "selftest: $passed passed, $fail failed"
 [ "$fail" = 0 ] || exit 1

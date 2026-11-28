@@ -35062,3 +35062,29 @@ MikroB döntése kell hozzá, nem feltételeztem.
 **Ki döntött:** fullstack (fix, selftest, mérés); CYBERSEC/QA2/QA (lelet); MikroB (Fix-Direction).
 **Hivatkozás:** kártya 9918f78d; CYBERSEC NO-GO 39669; QA2 FAIL 39673; QA FAIL 39674;
 store/wsl-home-cleanup.sh, store/wsl-home-cleanup.selftest.sh.
+
+## 2026-11-28 -- card 9918f78d (round 2): MEDIUM-2 folded in, TOCTOU re-check deduped, generated-content exception tightened
+
+**MikroB három kérése az előző REVIEW-ra.**
+1. MEDIUM-2 (CYBERSEC NO-GO 39669, az első Fix-Direction-ben nem volt számozva) befoglalása erre a
+   kártyára: `wsl-cleanup.sh` throwaway-worktree sweepje a `marveen-land.sh` RÉGI, hardcode-olt
+   `/home/neon/marveen-land-<agent|batch>-<pid>` alakját kereste -- mivel az eldobható worktree-k
+   már `MARVEEN_SCRATCH_DIR` alá kerülnek, ez a kontroll csendben semmit nem talált. Javítva: a
+   minta most `$MARVEEN_SCRATCH_DIR`-ből épül (ugyanaz az alapérték/env-felülírás, mint
+   `marveen-land.sh`-ban), ERE-escape-elve.
+2. `remove_orphan_entry()` szó szerint duplikálta `remove_entry()` friss élő-folyamat+kor
+   újra-ellenőrzését -- kiszervezve egy közös `toctou_recheck_blocks_removal()` segédfüggvénybe,
+   amit mindkettő hív, hogy a két másolat ne tudjon szétcsúszni.
+3. `worktree_dirty_for_removal()` generált-tartalom kivétele csak ÚTVONAL alapján döntött -- egy
+   TRACKELT, de node_modules/dist/build/.next alatt módosított fájl (pl. szándékosan commitolt,
+   patchelt vendor-fájl) hibásan "biztonságosan ignorálható"-nak minősült volna. Egy új teszt ELŐSZÖR
+   pirosan igazolta a hibát, majd a javítás zöldre fordította: `_dirty_is_generated_only()` mostantól
+   MINDEN sornál megköveteli a "??" (untracked) státuszt is, nem csak az útvonal-egyezést.
+
+**Mérve.** `wsl-home-cleanup.selftest.sh`: 77/77 zöld (75 korábbi + 2 új, az egyik ELŐSZÖR
+reprodukálta, majd igazolta a trackelt-fájl javítást). `wsl-cleanup.selftest.sh`: 68/68 zöld (67
+korábbi + 1 új, a scratch-dir-függő minta igazolására).
+
+**Ki döntött:** MikroB (a három követő kérés); fullstack (fix, selftest, mérés).
+**Hivatkozás:** kártya 9918f78d; store/wsl-cleanup.sh, store/wsl-cleanup.selftest.sh,
+store/wsl-home-cleanup.sh, store/wsl-home-cleanup.selftest.sh.

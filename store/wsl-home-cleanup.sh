@@ -166,15 +166,25 @@ GENERATED_CONTENT_PATTERNS=(
   '(^|/)node_modules/' '(^|/)dist/' '(^|/)build/' '(^|/)\.next/'
 )
 
-# Reads `git status --porcelain` lines on stdin. Returns 0 (true) only if EVERY reported path
-# matches a generated-content pattern above -- an empty input is NOT "generated-only", it is
-# simply not dirty at all, and callers only reach this after already confirming some output
-# exists, so this never silently turns "nothing reported" into "safe".
+# Reads `git status --porcelain` lines on stdin. Returns 0 (true) only if EVERY reported line is
+# BOTH untracked ("??" -- never a tracked add/modify/delete/rename/copy/conflict) AND matches a
+# generated-content pattern above -- an empty input is NOT "generated-only", it is simply not
+# dirty at all, and callers only reach this after already confirming some output exists, so this
+# never silently turns "nothing reported" into "safe".
+#
+# MikroB round-2 request (card 9918f78d): the path-only check used to wave through a TRACKED,
+# modified file living under node_modules/dist/build/.next (e.g. a deliberately committed,
+# patched vendor file) -- its path matches the pattern, but a tracked change is real, protected
+# work regardless of where it lives. The "??" status check closes this: only genuinely untracked
+# (never-committed) content gets the exception, exactly the leaked-build-output case this was
+# built for.
 _dirty_is_generated_only() {
-  local line path matched pat saw_any=0
+  local line status path matched pat saw_any=0
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     saw_any=1
+    status="${line:0:2}"
+    [ "$status" = '??' ] || return 1
     # porcelain v1: "XY PATH" (renames: "XY OLD -> NEW" -- the NEW side is what matters)
     path="${line:3}"
     case "$path" in
@@ -394,6 +404,28 @@ would_skip_removal() {
   return 1
 }
 
+# Shared TOCTOU re-check tail used by remove_entry() and remove_orphan_entry() immediately before
+# the destructive call (N1, RedHat LOW 16849): a fresh live-process-under-path check and a fresh
+# age/freshness re-check, run LAST so the gap between "confirmed nothing live" and the actual
+# deletion stays at this check's own runtime, not the runtime of whatever git checks ran before it.
+# Extracted (card 9918f78d, MikroB round-2 request) so remove_entry()'s and remove_orphan_entry()'s
+# copies of this logic cannot drift apart from each other. $2 is the noun used in both SKIP
+# messages ("this dir" for a registered/unregistered worktree, "this orphaned worktree" for an
+# ORPHAN). Returns 0 (already said a SKIP message) when removal must be blocked, 1 when it is
+# safe to proceed.
+toctou_recheck_blocks_removal() {
+  local path="$1" noun="${2:-this dir}"
+  if path_under_targets "$path" "$(scan_live_proc_targets)"; then
+    say "SKIP (a live process now has cwd/fd under $noun -- re-checked at removal time): $path"
+    return 0
+  fi
+  if find_recent_or_failed "$path"; then
+    say "SKIP (a file under $noun was modified since classification -- re-checked at removal time): $path"
+    return 0
+  fi
+  return 1
+}
+
 remove_entry() {
   local path="$1" owner="${WORKTREE_OWNER[$1]:-}"
 
@@ -424,12 +456,7 @@ remove_entry() {
     # actual deletion below. Moved to run LAST, immediately before the destructive call, so the
     # gap the B1' re-check is meant to close stays at the git-command's own runtime, not the
     # runtime of two git commands PLUS this check.
-    if path_under_targets "$path" "$(scan_live_proc_targets)"; then
-      say "SKIP (a live process now has cwd/fd under this dir -- re-checked at removal time): $path"
-      return 1
-    fi
-    if find_recent_or_failed "$path"; then
-      say "SKIP (a file under this dir was modified since classification -- re-checked at removal time): $path"
+    if toctou_recheck_blocks_removal "$path" "this dir"; then
       return 1
     fi
     say "removing registered worktree: $path (owner $owner)"
@@ -457,12 +484,7 @@ remove_entry() {
   fi
   # N1 (RedHat LOW 16849): same reorder as the registered-worktree branch above -- fresh re-check
   # immediately before rm -rf, after any git check this branch performed, not before it.
-  if path_under_targets "$path" "$(scan_live_proc_targets)"; then
-    say "SKIP (a live process now has cwd/fd under this dir -- re-checked at removal time): $path"
-    return 1
-  fi
-  if find_recent_or_failed "$path"; then
-    say "SKIP (a file under this dir was modified since classification -- re-checked at removal time): $path"
+  if toctou_recheck_blocks_removal "$path" "this dir"; then
     return 1
   fi
   say "removing: $path"
@@ -478,12 +500,7 @@ remove_entry() {
 # call, same ordering rationale as N1 (shrink the TOCTOU window to this check's own runtime).
 remove_orphan_entry() {
   local path="$1"
-  if path_under_targets "$path" "$(scan_live_proc_targets)"; then
-    say "SKIP (a live process now has cwd/fd under this orphaned worktree -- re-checked at removal time): $path"
-    return 1
-  fi
-  if find_recent_or_failed "$path"; then
-    say "SKIP (a file under this orphaned worktree was modified since classification -- re-checked at removal time): $path"
+  if toctou_recheck_blocks_removal "$path" "this orphaned worktree"; then
     return 1
   fi
   say "removing orphaned worktree: $path"

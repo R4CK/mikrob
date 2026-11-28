@@ -56,6 +56,11 @@ if ! [[ "$TMP_MIN_AGE_MIN" =~ ^[1-9][0-9]{0,8}$ ]]; then
 fi
 
 MARVEEN_MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
+# card 9918f78d (MEDIUM-2, CYBERSEC NO-GO 39669): marveen-land.sh's throwaway worktrees moved from
+# a hardcoded "/home/neon/marveen-land-<agent|batch>-<pid>" to "$MARVEEN_SCRATCH_DIR/marveen-land-
+# <agent|batch>-<pid>" -- this sweep's pattern (below) MUST track the same variable/default, or it
+# silently stops matching anything and this reclaim control goes dark without any error.
+MARVEEN_SCRATCH_DIR="${MARVEEN_SCRATCH_DIR:-/home/neon/marveen-scratch-worktrees}"
 # env-overridable (default unchanged) so a selftest can point the /tmp sweep at a throwaway
 # sandbox dir instead of the real /tmp -- same pattern as MARVEEN_MAIN/CLEANCORE_MAIN above.
 WSL_CLEANUP_TMP_DIR="${WSL_CLEANUP_TMP_DIR:-/tmp}"
@@ -98,6 +103,14 @@ freed_worktrees=0
 skipped_dirty=0
 skipped_git_rc=0
 skipped_live_pid=0
+
+# ERE-escapes a literal path so it can be dropped into a `[[ =~ ]]` pattern without its own
+# characters (most likely '.', but any ERE metachar in an overridden dir) being read as regex
+# syntax. Mirrors kanban-decisions-guard.ts's cardIdInAddedLineRx() -- same need, different
+# language.
+escape_ere_literal() {
+  printf '%s' "$1" | sed -e 's/[][\\.^$*+?(){}|]/\\&/g'
+}
 
 # --- 1. throwaway land/test worktrees, per repo -----------------------------------------
 sweep_throwaway_worktrees() {
@@ -169,7 +182,7 @@ sweep_throwaway_worktrees() {
 # the real machine's caches.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 
-sweep_throwaway_worktrees "$MARVEEN_MAIN" '^/home/neon/marveen-land-[a-zA-Z0-9]+-[0-9]+$'
+sweep_throwaway_worktrees "$MARVEEN_MAIN" "^$(escape_ere_literal "$MARVEEN_SCRATCH_DIR")/marveen-land-[a-zA-Z0-9]+-[0-9]+\$"
 sweep_throwaway_worktrees "$CLEANCORE_MAIN" '^/home/neon/cc-land(-base)?-[a-zA-Z0-9]+-[0-9]+$'
 
 run "git -C '$MARVEEN_MAIN' worktree prune 2>/dev/null"
