@@ -34983,3 +34983,41 @@ every time.
 Ki döntött: backend2 (investigation, fix, mutation proof); MikroB (verification protocol:
 hold the real lock for the duration, max 5 runs). Hivatkozás: kártya 18cd7193; 7f3cbe92;
 2f282a31; `store/mopsion-suite-run.selftest.sh`.
+
+## 2026-11-28 -- 0fb941e2 -- offload-dispatch.selftest M1 (c) capacity-hold pin flaked 3/10 under load: a host-global /tmp lock keyed only by the literal test card id
+
+**Kontextus:** MikroB meresse (backend3 msg 25803): a 090ab223-cel bekerult "M1 (c): real entry
+point, capacity-hold branch ... DOES reach freellm-call.sh" pin 3/10-szer piros lett fleet-test
+terheles alatt, es minden land lefuttatja a store-selftests-all-run-t, tehat ez idegen landokat is
+pirosra tudott vinni (ugyanugy mint bd60ea87-nek a c16cd98e-et).
+
+**Gyokerok (LEVEZETES):** `offload-dispatch.sh` per-kartya in-flight lock-ja
+(`lock_file="/tmp/offload-dispatch-$CARD.lock"`, sor 2334) egy HOST-SZINTU, a kartya-azonosito
+LITERAL sztringjevel kulcsolt utvonal -- NEM a selftest sajat `$TMPDIR`-jehez van kotve. A selftest
+M1 (a)/M1 (c) blokkja fix, literal "m1caphold"/"m1capok" azonositokat hasznalt minden futasnal --
+ket PARHUZAMOS selftest-futas (pl. ket egyidejű land ugyanazon a gepen, mindketto
+store-selftests-all-run-t futtatva) ezert UGYANAZT a lock-fajlt probalja flock-olni kozel egy
+idoben. Amelyik veszit a race-en, "already in flight, skipping duplicate"-et ir es exit 0-val
+kilep ANELKUL, hogy elerte volna `freellm_fallback_capacity_hold_site`-ot, tehat a
+`FREELLM_ATTEMPT_MARKER` sosem jon letre -- M1 (c) (ami "reached"-et var) pirosra megy. M1 (a)
+(ami "clean"/hianyzo markert var) NEM tudja megkulonbozteti a skip-elt futast egy valosan
+blokkolt futastol, tehat zold marad igy is -- ez magyarazza, miert CSAK M1 (c)-n jelent meg a
+flake, aszimmetrikusan. Kozvetlenul reprodukalva: ket parhuzamos `bash "$DISPATCH" m1capok`
+hivas a valodi lock_file ellen -- az egyik megkapja a lock-ot es eleri a stub-ot, a masik a
+skip-sort irja es sosem jut el oda.
+
+**Dontes:** a selftest-ben a ket azonositot a FUTAS SAJAT `$TMPDIR`-jebol (mar `mktemp -d`-vel
+veletlenszerusitett) es a sajat `$$` PID-bol szarmaztatott egyedi sztringge alakitottuk
+(`m1caphold-<tmpdir-suffix>-<pid>`, `m1capok-<tmpdir-suffix>-<pid>`), ezert ket parhuzamos
+selftest-futas SOHA nem oszthat meg lock-fajl-utvonalat -- determinisztikus zaras, nem csak
+kisebb eselyu utkozes. A production lock-ot (a valodi dedup-viselkedest) szandekosan nem
+nyultunk hozza -- az helyes, kivant viselkedes, nem hiba. Mutacio-igazolas: a
+`freellm_fallback_capacity_hold_site`-bol kivett fallback-agat (a try_freellm_for_leaf hivast)
+M1 (c)-t PIROSRA forditja a javitott selftesttel is (nincs gyengites). 20x parhuzamos futas a
+javitott selftesttel: M1 (c) 20/20 zold (a 20-bol 4 futason egy MASIK, ettol fuggetlen,
+elozetesen letezo flake -- "EXCLUDED REASON (vram-hold/deterministic-multi-decision)" es "NO CAP:
+4 template types match" -- piros lett, kulon triage kell, ez a kartya nem erinti azt a kodutat).
+
+**Ki döntött:** a lelet MikroB mereseböl jon (backend3 msg 25803, kartya 0fb941e2), a javitast
+backend3 irta.
+**Hivatkozás:** kártya 0fb941e2 (elozmeny 090ab223, bd60ea87), store/offload-dispatch.selftest.sh.

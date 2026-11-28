@@ -1365,11 +1365,31 @@ check "shadow mode with a missing table script: no log line is written at all (f
 #       both bodies, which this immediately flags. This is a call-SITE-location check, not the
 #       presence/substring check 28818 already found too weak (that one looked for the guard
 #       TEXT inside the function; this one looks at every CALL across the whole file).
+# card 0fb941e2: offload-dispatch.sh's per-card in-flight lock (lock_file=/tmp/offload-dispatch-
+# $CARD.lock) is a HOST-GLOBAL path keyed only by the literal card id -- it is NOT namespaced to
+# this selftest's own $TMPDIR. A fixed, literal id ("m1caphold"/"m1capok") therefore collides with
+# any OTHER concurrent run of this exact selftest under fleet-test load (two lands in flight at
+# once, each running store-selftests-all-run): whichever `bash "$DISPATCH" m1capok` loses the
+# flock race prints "already in flight, skipping duplicate" and exits 0 WITHOUT ever reaching
+# freellm_fallback_capacity_hold_site, so FREELLM_ATTEMPT_MARKER never gets created -- M1 (c)
+# (which expects "reached") goes red; M1 (a) (which expects "clean"/absent) cannot tell a skipped
+# run from a correctly-blocked one, so it stays green either way, matching the asymmetric 3/10
+# flake MikroB observed only on M1 (c). Reproduced directly: two concurrent `bash "$DISPATCH"
+# m1capok` invocations against the real lock_file, one gets the lock and reaches the stub, the
+# other prints the skip line and never does. Fix: make the ids unique PER SELFTEST RUN (derived
+# from this run's own $TMPDIR, which mktemp -d already randomizes, plus $$ as a second factor) so
+# two concurrent selftest runs never share a lock_file path, without touching the dedup lock
+# itself -- that lock's behavior is real, intended production semantics, not a bug.
+M1_CAP_HOLD_ID="m1caphold-${TMPDIR##*/}-$$"
+M1_CAP_OK_ID="m1capok-${TMPDIR##*/}-$$"
 M1_CAP_KANBAN="$TMPDIR/m1cap-kanban.json"
-cat > "$M1_CAP_KANBAN" << 'EOF'
-[{"id":"m1caphold","title":"[BE] egyszeru feladat","description":"irj egy fuggvenyt","status":"planned","assignee":"backend2","project":"mikrob","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]},
- {"id":"m1capok","title":"[BE] egyszeru feladat","description":"irj egy fuggvenyt","status":"planned","assignee":"backend2","project":"mikrob","parent_id":null,"sort_order":1,"archived_at":null,"labels":[{"name":"gemini-ok"}]}]
-EOF
+python3 -c "
+import json
+json.dump([
+    {'id': '$M1_CAP_HOLD_ID', 'title': '[BE] egyszeru feladat', 'description': 'irj egy fuggvenyt', 'status': 'planned', 'assignee': 'backend2', 'project': 'mikrob', 'parent_id': None, 'sort_order': 1, 'archived_at': None, 'labels': []},
+    {'id': '$M1_CAP_OK_ID', 'title': '[BE] egyszeru feladat', 'description': 'irj egy fuggvenyt', 'status': 'planned', 'assignee': 'backend2', 'project': 'mikrob', 'parent_id': None, 'sort_order': 1, 'archived_at': None, 'labels': [{'name': 'gemini-ok'}]},
+], open('$M1_CAP_KANBAN', 'w'))
+"
 cat > "$TMPDIR/m1cap-stub.py" << 'PYEOF'
 import http.server, sys, os
 LOGDIR = sys.argv[1]; PORT = int(sys.argv[2]); KANBAN_FILE = sys.argv[3]
@@ -1417,7 +1437,7 @@ timeout 20 env DASHBOARD_URL="http://127.0.0.1:$M1_CAP_PORT" OFFLOAD_INSTALLED="
   OFFLOAD_VRAM_GUARD="$M1_CAP_VRAM_BUSY" OFFLOAD_FREELLM_CALL="$FREELLM_STUB" FREELLM_ATTEMPT_MARKER="$MARKER" \
   ATTEMPTS_FILE="$TMPDIR/m1cap-attempts.json" ATTEMPTS_LOCK="$TMPDIR/m1cap-attempts.lock" \
   OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
-  bash "$DISPATCH" m1caphold >/dev/null 2>&1
+  bash "$DISPATCH" "$M1_CAP_HOLD_ID" >/dev/null 2>&1
 check "M1 (a): real entry point (bash DISPATCH <card>, not --test-* hook), capacity-hold branch: blocked shape never reaches freellm-call.sh" \
   "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
 
@@ -1432,7 +1452,7 @@ timeout 20 env DASHBOARD_URL="http://127.0.0.1:$M1_CAP_PORT" OFFLOAD_INSTALLED="
   OFFLOAD_VRAM_GUARD="$M1_CAP_VRAM_BUSY" OFFLOAD_FREELLM_CALL="$FREELLM_STUB" FREELLM_ATTEMPT_MARKER="$MARKER" \
   ATTEMPTS_FILE="$TMPDIR/m1capok-attempts.json" ATTEMPTS_LOCK="$TMPDIR/m1capok-attempts.lock" \
   OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
-  bash "$DISPATCH" m1capok >/dev/null 2>&1
+  bash "$DISPATCH" "$M1_CAP_OK_ID" >/dev/null 2>&1
 check "M1 (c): real entry point, capacity-hold branch, a leaf WITH the gemini-ok marker under a forced HOLD DOES reach freellm-call.sh (the fallback 4eb3743e exists to provide)" \
   "$([[ -f "$MARKER" ]] && echo reached || echo missing)" "reached"
 
