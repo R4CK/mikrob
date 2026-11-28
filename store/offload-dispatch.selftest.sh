@@ -1367,7 +1367,8 @@ check "shadow mode with a missing table script: no log line is written at all (f
 #       TEXT inside the function; this one looks at every CALL across the whole file).
 M1_CAP_KANBAN="$TMPDIR/m1cap-kanban.json"
 cat > "$M1_CAP_KANBAN" << 'EOF'
-[{"id":"m1caphold","title":"[BE] egyszeru feladat","description":"irj egy fuggvenyt","status":"planned","assignee":"backend2","project":"mikrob","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]}]
+[{"id":"m1caphold","title":"[BE] egyszeru feladat","description":"irj egy fuggvenyt","status":"planned","assignee":"backend2","project":"mikrob","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]},
+ {"id":"m1capok","title":"[BE] egyszeru feladat","description":"irj egy fuggvenyt","status":"planned","assignee":"backend2","project":"mikrob","parent_id":null,"sort_order":1,"archived_at":null,"labels":[{"name":"gemini-ok"}]}]
 EOF
 cat > "$TMPDIR/m1cap-stub.py" << 'PYEOF'
 import http.server, sys, os
@@ -1419,6 +1420,21 @@ timeout 20 env DASHBOARD_URL="http://127.0.0.1:$M1_CAP_PORT" OFFLOAD_INSTALLED="
   bash "$DISPATCH" m1caphold >/dev/null 2>&1
 check "M1 (a): real entry point (bash DISPATCH <card>, not --test-* hook), capacity-hold branch: blocked shape never reaches freellm-call.sh" \
   "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
+
+# M1 (c) (card 090ab223): the POSITIVE complement to (a), and the pin MikroB asked for -- a leaf
+# that IS allowed to reach FreeLLM (the "gemini-ok" marker, same gate as above) under the SAME
+# forced OFFLOAD_VRAM_GUARD HOLD must actually reach freellm-call.sh. Without this, (a) alone could
+# pass on a mutant that routes EVERY leaf to "blocked" under capacity-hold (never calling
+# freellm_fallback_capacity_hold_site's try_freellm_for_leaf path at all) -- which would silently
+# undo card 4eb3743e's whole point while this file still showed green.
+rm -f "$MARKER"
+timeout 20 env DASHBOARD_URL="http://127.0.0.1:$M1_CAP_PORT" OFFLOAD_INSTALLED="$M1_CAP_INSTALLED" \
+  OFFLOAD_VRAM_GUARD="$M1_CAP_VRAM_BUSY" OFFLOAD_FREELLM_CALL="$FREELLM_STUB" FREELLM_ATTEMPT_MARKER="$MARKER" \
+  ATTEMPTS_FILE="$TMPDIR/m1capok-attempts.json" ATTEMPTS_LOCK="$TMPDIR/m1capok-attempts.lock" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
+  bash "$DISPATCH" m1capok >/dev/null 2>&1
+check "M1 (c): real entry point, capacity-hold branch, a leaf WITH the gemini-ok marker under a forced HOLD DOES reach freellm-call.sh (the fallback 4eb3743e exists to provide)" \
+  "$([[ -f "$MARKER" ]] && echo reached || echo missing)" "reached"
 
 kill "$M1_CAP_SRV_PID" 2>/dev/null
 wait "$M1_CAP_SRV_PID" 2>/dev/null

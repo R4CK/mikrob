@@ -408,31 +408,13 @@ NODE
 )"
   ROUTE="${VERDICT%%$'\t'*}"; REASON="${VERDICT#*$'\t'}"
 
-  # VRAM PRESSURE (card f9bad591), checked AFTER the content router and only when it said local.
-  # Order matters and is deliberate: asking the GPU first would spend an nvidia-smi call on every
-  # task, including the ones that were going online anyway on their content. The guard is about
-  # capacity, so it is the LAST question, not the first.
-  #
-  # A MISSING guard is skipped (a host that never had one is not doubt); any non-zero exit, usage
-  # errors included, routes online -- the direction the guard itself documents.
-  if [[ "$ROUTE" == "local" ]]; then
-    VRAM_GUARD="${LOCAL_LLM_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
-    if [[ -f "$VRAM_GUARD" ]]; then
-      # `|| vram_rc=$?`, NOT `; vram_rc=$?` -- this script runs under `set -e` (unlike the other two
-      # call sites card f9bad591 wired, which use `set -uo pipefail`). With the plain form, a HOLD
-      # killed the script AT THE ASSIGNMENT: the lines below that set ROUTE=online with a vram-hold
-      # reason were never reached, so the documented behaviour never happened. MEASURED on the live
-      # main clone before this fix: exit 1, NO output at all. The safe direction was preserved by
-      # accident (a dead script drafts nothing), but the reason was never logged and a caller that
-      # reads a non-zero exit as a fault saw a healthy machine as a broken one. Card 108c7b10.
-      vram_rc=0
-      vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)" || vram_rc=$?
-      if [[ "$vram_rc" -ne 0 ]]; then
-        ROUTE=online
-        REASON="vram-hold (${vram_line:-no output}, rc=$vram_rc)"
-      fi
-    fi
-  fi
+  # Card 090ab223: the dispatcher's own direct VRAM pre-check (card f9bad591) was removed here
+  # after a 46-day measurement found no case where it caught something the local-llm.sh choke
+  # point (card 234306ca) would not -- this dispatcher's own pre-check even read the SAME
+  # LOCAL_LLM_VRAM_GUARD override var the choke point does, so the two were never distinguishable
+  # by behavior, only by which one happened to run first. A GPU HOLD now surfaces one call later,
+  # at local-llm.sh's own choke point (stage 1's route-classify.sh call above already fails fast
+  # on it too). See DECISIONS.md.
 
   if [[ "$ROUTE" != "local" ]]; then
     # In advisory mode `online` RETURNS instead of exiting (card ee43a6ac), so everything below --

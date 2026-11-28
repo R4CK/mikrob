@@ -2585,6 +2585,14 @@ $leaf_desc"
 # each leaf still goes through the one existing writer/reader (no second one, see
 # offload-draft-nudge.test.ts's single-writer/single-reader regression guard), just routed to
 # try_freellm_for_leaf instead of try_leaf. Still exits 0 either way (best-effort, see header).
+#
+# KEPT on purpose (card 090ab223, which removed this same call from 4 of the other 5 dispatchers):
+# this is LOAD-BEARING ROUTING here, not defense-in-depth. CAPACITY_HOLD is what decides whether
+# each leaf in the sweep tries FreeLLM instead of the local model -- it is not merely an earlier,
+# redundant copy of the choke point inside local-llm.sh. Removing it would make CAPACITY_HOLD stay
+# 0 forever, so under a real GPU hold every leaf would attempt try_leaf -> local-llm-rag.sh, fail at
+# the choke point, and the FreeLLM fallback 4eb3743e exists to provide would never fire. See
+# DECISIONS.md.
 CAPACITY_HOLD=0
 VRAM_GUARD="${OFFLOAD_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
 if [[ -f "$VRAM_GUARD" ]]; then

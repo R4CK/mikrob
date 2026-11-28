@@ -34630,40 +34630,392 @@ Ki döntött: CYBERED (NO-GO 39527, fix direction); backend (implementation, tes
 proof). Hivatkozás: kártya 01b10349; `src/kg/import-findings.ts`; `store/kg-import-mt10.sh`;
 `store/kg-import-mt10.selftest.sh`; `src/kg/import-mt10-cli.ts`.
 
-2026-11-28: land-time flaky test fixes (kártya 9aa41834). Három, külön okú, land-time flake
-fixe egy kártyán: (1) kg-graph-activity-route.test.ts most mockolja a db.js generateEmbedding-et,
-így a fájl soha nem ér a live Ollama embedding backendhez (korábban ~5000ms-es timeout versenyben
-a vitest sajat 5000ms default limitjevel, fetch-spy strukturalisan pinneli); (2)
-self-pace-wrapper-and-keyword-positions.test.ts 7/8. kore most CPU-time NOVEKEDESI ARANYT
-(n vs 4n, bound 8) mér abszolút ms-budget helyett, hogy a land-time concurrent terhelesből jövő
-konstans-szorzós lassulas ne adjon false red, de egy valodi O(n^2) meg elkapja (szintetikus
-linear/quadratic mérés igazolta); (3) token-in-argv-guard.test.ts scanTree-je nevre kizárja a
-`drafts` könyvtárat (ugyanaz a minta mint a meglevő .worktrees kizárás) -- a store/drafts
-gitignorelt runtime allapot, amit gemini-orchestrator-draft-review.test.ts ír/törol valódi fájlt
-beforeEach/afterAll alatt, mikozben ez a suite fut; a scanTree a kollekciós időben pillanatfelvétel
-az ott talalt fájlokról, kesobb olvassa be -- ez ENOENT-et okozott. Mind harom mutacio-tesztelt
-(a javitas eltavolitasa reprodukalja az eredeti hibat), 10 egymast koveto futas zold volt a harom
-erintett teszt-fajlon egyutt (3/3 fajl, 26754/26754 teszt mindegyik koron).
+## 2026-11-26 -- card e99c3dc1: FLEET_TEST_PRIORITY=land ancestor-lock verification + distinguishable LAND-queue timeout message
 
-Ki döntött: MikroB (kártya felvétele, komment 1795811127, harmadik flake hozzáadása); backend
-(implementáció, tesztek, mutáció-bizonyítás). Hivatkozás: kártya 9aa41834;
-`src/__tests__/kg-graph-activity-route.test.ts`; `src/__tests__/self-pace-wrapper-and-keyword-positions.test.ts`;
-`src/__tests__/token-in-argv-guard.test.ts`. Fix commit: 47df10abb54c62c8c69c386e99e8beb5d183068d
-(unlanded, card/9aa41834 branch).
+Előzmény: a gate-store-selftests vs. land starvation kártyán (e99c3dc1) a per-tree lock
+exemption-kísérlet 4 egymást követő NO-GO/FAIL után bounce-olt (39178/39179); MikroB döntése
+(39179) a tree-lock exemption RETIRE-elése és egy scheduling-szintű re-plan volt. Az első posztolt
+terv (39188) egy TELJESEN ÚJ ticket-class/`--land`-flag mechanizmust javasolt, de a kódolás előtt
+kiderült: a FLEET_TEST_PRIORITY=land priority-ticket ütemezés (kártya b7d8ecc4) MÁR LÉTEZIK és már
+élesben van (`fleet_test_resolve_priority_rank`, `FLEET_TEST_AGING_S`, `marveen-land.sh` már
+exportálja `FLEET_TEST_PRIORITY=land`-et minden fleet-test.sh hívás előtt). Korrekció posztolva
+(39196), MikroB jóváhagyta szűkített hatókörrel, egy szigorítással (msg 25163): a nyitott fd
+önmagában gyenge bizonyíték, az ellenőrzésnek a TÉNYLEGESEN tartott flock-ot kell néznie.
 
-2026-11-28 (follow-up): QA2 FAIL 39589 on e5c1d9f5a reproduced live the SAME flake class as the
-drafts-dir fix above, against a DIFFERENT live-churning path: token-in-argv-guard.test.ts's
-scanTree() enumerates the live `agents/` tree at collection time (INSTALLED_AGENTS_DIR), and a
-later readFileSync() in several it.each cases raced a live agent session creating/removing its own
-runtime cache file (agents/backend2/.claude-config/mcp-needs-auth-cache.json), 2/6 solo runs and
-2/4 combined runs failed with ENOENT. Per CYBERED Fix-Direction (same comment): a name-based
-exclusion does not generalize (the set of live-churning paths under agents/ is open-ended, not one
-fixed name) -- added `readLiveFile(dir, file)`, a readFileSync wrapper that returns null (treated
-as skip-this-case) on ENOENT and rethrows any other error, used in all 5 it.each bodies that read
-from the live-scanned corpus (`cases`/`shellCases`/`corpus`). Mutation-tested: reverting the
-helper back to a bare readFileSync reproduces the exact ENOENT QA2 measured. Reproduced the repeat-
-run check QA2 used: 6/6 solo runs green, 10/10 combined runs green (3/3 files, 26717/26717 tests
-each), under current live fleet activity (multiple agents landing post land-hold-lift).
+MI KÉSZÜLT EL:
+1. `fleet_test_verify_land_priority()` (store/fleet-test.sh): a FLEET_TEST_PRIORITY=land állítást
+   az ős-PID lánc bejárásával ellenőrzi (bound: FLEET_TEST_PRIORITY_ANCESTOR_DEPTH, alap 10) --
+   a lánc azért nem az azonnali szülőn áll meg, mert run_fg_killable (marveen-land.sh) a SAJÁT
+   lock-fd-másolatát lezárja a subshellben MIELŐTT exec-eli a fleet-test.sh-t (kártya 81c6fbb5
+   Q3) -- a fd csak a marveen-land.sh fő processzén él, azon túl. Egy ős csak akkor számít
+   igazoltnak, ha MIND a három igaz: (a) van nyitott fd-je a develop-lock fájlon, (b) azon a fd-n
+   TÉNYLEGESEN tart flock-ot, (c) a saját cmdline-ja `store/marveen-land.sh`-t nevez meg. Bármelyik
+   ellenőrzés befejezhetetlensége (nincs /proc, olvashatatlan, nincs találat a bound-on belül) ->
+   normal priority, soha nem land (fail-closed).
+2. MÉRÉSI LELET, ami a tervezett primitívet megváltoztatta: MikroB 25163 a `/proc/locks`
+   globális listát kérte a flock-ellenőrzéshez. MÉRVE (nem feltételezve): egy valódi, másik
+   processz `flock -n`-jét helyesen blokkoló és `fuser -v`-vel helyesen kimutatott flock
+   EGYÁLTALÁN NEM jelent meg a `/proc/locks`-ban ezen a platformon (WSL2) -- as a globális
+   listából hiányzott a teljes mérés alatt. A `/proc/<pid>/fdinfo/<fd>` SAJÁT "lock:" sora
+   viszont helyesen jelezte mindkét irányban (pozitív és negatív kontroll is mérve). A kódot
+   ezért a fd-specifikus fdinfo-ellenőrzésre írtam, nem a globális /proc/locks-ra -- szemantikailag
+   ugyanazt vagy szigorúbbat ad (nem keverhető össze egy MÁSIK processz ugyanazon inode-on tartott
+   lock-jával), és tényleg működik ezen a platformon. Nem kértem újra jóváhagyást a primitívváltásra
+   (a cél -- tényleges flock, nem csak nyitott fd -- változatlan, és a fail-closed szemantika miatt
+   egy rossz primitívválasztás legrosszabb esete is csak extra starvation, nem jogosultság-szivárgás),
+   de a REVIEW-ban és itt is jelezve, mérési bizonyítékkal.
+3. `fleet_test_any_land_ticket_pending()` + a timeout `die()` ág (TREE_TICKET_DIR vizsgálata a
+   timeout pillanatában): ha a várakozó sajat ticket törlése után marad rank-0 (land) ticket a
+   sorban, a die() üzenet explicit megnevezi ("queued behind a LAND ticket") -- egy teszt ezentúl
+   a stderr szövegén tud assertálni, nem csak az exit kódon.
+4. `--effective-priority` introspekciós flag (ugyanaz a minta mint `--lock-path`): a VERIFIKÁLT
+   effektív prioritást nyomtatja ki, lock/tree/CPU-slot machinery futtatása nélkül.
 
-Ki döntött: QA2 (FAIL 39589, fix direction); backend (implementation, tests, mutation proof).
-Hivatkozás: kártya 9aa41834; `src/__tests__/token-in-argv-guard.test.ts`.
+Hermetikus teszt (src/__tests__/fleet-test-land-priority-verified.test.ts, 8 teszt, mind zöld):
+valódi folyamatfát épít fel (egy "ős" bash -c processz, ami opcionálisan tart egy flock-ot a
+develop-lock fájlon és/vagy a cmdline-jában hordozza a `store/marveen-land.sh` jelölőt, egy
+subshell ami lezárja a saját fd-másolatát a 81c6fbb5 Q3 minta szerint, majd a script a valódi
+`--effective-priority`-val), minden lock-fájl saját mktemp könyvtárban -- SEM `/home/neon/marveen`,
+SEM `/home/neon/marveen-test` literál nincs a tesztfájlban (a fájl sajátmagát grep-eli ennek
+bizonyítására). Négy manuális mutáció (cmdline-ellenőrzés elhagyása, flock-ellenőrzés elhagyása
+nyitott-fd-elfogadásra, a teljes verifikáció kikapcsolása, a timeout-ág törlése) mindegyike PIROS
+lett, majd az eredeti visszaállítva és `diff`-fel igazolva, hogy byte-azonos az eredetivel.
+
+Ellenőrzés: `fleet-test-land-priority-verified.test.ts` 8/8; a meglévő fleet-test.sh guard-suite
+(fleet-test-serialises-runs, fleet-test-shares-cleancore-cpu-pool, fleet-test-no-test-tree-
+reassignment-after-guard, fleet-test-refuses-test-tree-is-root, fleet-test-relative-tree-is-root)
+56/56 együtt. `npx tsc --noEmit -p .` tiszta. `lint-ratchet.sh`: nem romlott semelyik szabály
+(459 lelet, baseline tartja). Kézi smoke-teszt: `--lock-path`, `--cpu-slots`, `--path`,
+`--effective-priority` (sima hívás és `FLEET_TEST_PRIORITY=land` self-report ellenőrzés nélkül
+is `normal`-t ad, ahogy a fail-closed szemantika várja).
+
+Mi maradt ki: élő marveen-land.sh lefutás elleni teszt (valódi landolás a valódi lock-kal) --
+ez a hermetikus keret direkt azért épült, hogy ez SOHA ne kelljen (MikroB 25163 constraint,
+a kártya korábbi körének 15:12:35-ös incidense pont ezt a mintát okozta). A gate-selftests
+fájlok (ami a RETIRED tree_lock_exempt() mechanizmust tesztelte) nincs felújítva -- az a kód
+sosem landolt, nem is lesz (MikroB 39179 döntés).
+
+Ki döntött: MikroB (retire + re-plan 39179, korrekció-jóváhagyás + primitív-szigorítás 25163);
+fullstack (implementáció, mérés, teszt).
+Hivatkozás: kártya e99c3dc1; kapcsolódó b7d8ecc4, 81c6fbb5 (Q3), 2f0c7d24; komment 39178/39179/
+39188/39196; msg 25149/25160/25163; `store/fleet-test.sh`,
+`src/__tests__/fleet-test-land-priority-verified.test.ts`.
+
+## 2026-11-26 -- card e99c3dc1 fix-kör 2: két env-override bypass zárása (CYBERSEC NO-GO 39208)
+
+Az első kör Gate-SHA-ján (6bab004a) CYBERSEC NO-GO 39208 két MUST (F-1, F-2) és egy SHOULD
+(F-3) leletet talált, mindhárom MÉRVE, nem feltételezve (3/3 próba).
+
+F-1 (MUST): a `fleet_test_verify_land_priority()` első köre a develop-lock útvonalat a
+`MARVEEN_LAND_DEVELOP_LOCK_FILE` env-ből olvasta -- UGYANAZT a változót, amit maga a
+marveen-land.sh is olvas. Bármelyik fleet-test.sh hívó beállíthatta ezt SAJÁT tetszés szerinti
+lock-fájlra, saját maga flockolhatta, és a saját cmdline-jába írhatta a "marveen-land.sh"
+szöveget -- mindhárom ellenőrzést kielégítve egy olyan lock ellen, amin senki más nem versenyez.
+Javítás: a produkciós hívási pont a kanonikus, `$ROOT`-ból (hardcode-olt, env-ből SOHA nem jövő
+érték) származó útvonalat olvassa, az env-override-nak semmilyen hatása nincs többé a valódi
+ellenőrzésre. `fleet_test_verify_land_priority()` maga továbbra is paraméterként kapja az
+útvonalat (így egy teszt közvetlenül, saját eldobható úttal hívhatja), de a SAJÁT hívási pontja
+fixen a kanonikus konstansra van pinnelve.
+
+F-2 (MUST, előzőleg is létező, b7d8ecc4-ből örökölt hiba, ugyanebben a körben javítva): a
+`FLEET_TEST_AGING_S` is a hívó env-jéből jött. `FLEET_TEST_AGING_S=0`-val BÁRMELYIK normál
+(rank-1) ticket a SAJÁT első pollján rank-0-ra promotálta magát -- land-imitálás nélkül is
+megelőzve minden valódi land ticketet. Javítás: hardcode-olt konstans (180), nem olvasható env-ből.
+
+F-3 (SHOULD, lefedettség-bővítés, nem új funkció): pin a megosztott lock-path konstansra (V4),
+az inode-kötésre (V6, egy DIFFERENT fájl nem keverhető össze az igazival), és a depth-bound
+(V5) teszt újraírva VALÓDI, egymásba ágyazott `bash -c`/fájlalapú folyamatlánccal -- a korábbi
+egyetlen `(...)` subshell-es változatot bash saját tail-exec optimalizációja egy lépéssel
+rövidebbre húzhatta a valódinál, ami a bound-tesztet hamisan zölddé tehette volna anélkül, hogy
+tényleg a produkciós mélységet gyakorolta volna.
+
+MÉRÉSI/IMPLEMENTÁCIÓS MELLÉKHATÁS: a teszt-harness beágyazott `bash -c '...'` string-jeinek
+TÖBBSZÖRÖS egyszeres-idézőjel escape-elése (a kinyert bash-függvények SAJÁT idézőjeleivel,
+pl. `stat -c '%i'`) a gyakorlatban törékenynek bizonyult -- egy mutáció-teszt közben csendben
+"normal"-t adott vissza arra a positive esetre, ami helyesen "land"-et kellett volna. A harness
+ÁTÍRVA valós FÁJLOKBA írt, `bash <fájl>`-lal hívott szkriptekre -- semmilyen idézőjel-escape
+nem kell, a hiba teljesen megszűnt.
+
+Ellenőrzés: `fleet-test-land-priority-verified.test.ts` 14/14 (6 új teszt az előző kör 8-ából).
+Mutáció-teszt mindhárom MUST/F-3-mélység fixre (F-1 env-override visszaállítása, F-2
+env-override visszaállítása) kézzel futtatva, mindegyik PIROS lett a megfelelő teszten, majd az
+eredeti fájl visszaállítva és `diff`-fel igazolva byte-azonosnak. A meglévő fleet-test.sh
+guard-suite (ugyanaz az öt fájl mint az első körben) + az új teszt együtt: 62/62.
+`npx tsc --noEmit -p .` tiszta. `lint-ratchet.sh`: nem romlott semelyik szabály (459 lelet).
+Kézi smoke-teszt: `--effective-priority` sima hívásra és `FLEET_TEST_PRIORITY=land`
+self-report-re is `normal`-t ad (nincs valódi ős); a meglévő
+`fleet-test-priority-lane.selftest.sh` (b7d8ecc4 saját selftestje) változatlanul 13/13.
+
+Mi maradt ki: a SHOULD F-3 lefedettség-bővítés a V4/V5/V6 pontokra korlátozva -- a kártya 39177
+kommentben lezárt gate-selftests/tree_lock_exempt() terület továbbra sem éled fel (MikroB 39179
+döntése).
+
+Ki döntött: MikroB (NO-GO + a két MUST pontos javítási iránya, msg 39208); fullstack
+(implementáció, mérés, teszt).
+Hivatkozás: kártya e99c3dc1; CYBERSEC NO-GO 39208; msg 25177; `store/fleet-test.sh`,
+`src/__tests__/fleet-test-land-priority-verified.test.ts`.
+
+## 2026-11-27 -- card e99c3dc1 fix-kör 3: F-1 teszt hermetikussá tétele valódi land-ősre (élő red landolásnál talált lelet)
+
+Tény: a kártya 2. gate-körének landolása (45c30ecb sha, QA PASS + CYBERSEC GO) VALÓS landolás
+közben pirosra fordult -- az `src/__tests__/fleet-test-land-priority-verified.test.ts` saját F-1
+tesztje ("MARVEEN_LAND_DEVELOP_LOCK_FILE no longer has ANY effect") `expect(out).toBe('normal')`
+helyett `'land'`-et kapott. MikroB diagnózisa (msg 25668): a teszt hibásan feltételezte, hogy
+sosincs VALÓS land-ős a saját futása közben -- ez minden olyan landoláskor hamis, ahol ez a
+tesztfájl maga is `marveen-land.sh`-n át fut (vagyis MINDEN landoláskor).
+
+Javítás (MikroB engedélye, msg 25668: "do NOT weaken the production check" -- a produkciós
+`fleet-test.sh` logikája NEM változott, csak a teszt-harness): az F-1 teszt p1-ese most
+DUPLA-FORK + `setsid`-del FUT ("( setsid bash target & )", a befogó subshell azonnal kilép és
+elárvul a child), így a kernel a legközelebbi subreaper alá (`systemd --user`) reparentálja --
+mérve ezen a gépen: a VALÓS ős-lánc sosem éri el a tesztet elindító landoló-láncot. Ugyanez a
+technika került a `runDetached` segédfüggvénybe, amit az eredeti F-1 teszt is használ.
+
+Nem-vacuitás bizonyítva két új teszttel (ÚJ describe blokk, "F-1 HERMETICITY"):
+1. A javított szkript egy VALÓS, a valódi kanonikus lock-ot tartó "fake land" ős alá ágyazva is
+   'normal'-t ad (a kanonikus útvonalat SOHA nem írjuk le literálban -- a futó SOURCE-ból
+   olvassuk ki `ROOT=`-ot, ugyanaz a "names no real install path" önteszt védi).
+2. Az F-1 hiba VISSZAÁLLÍTOTT mutánsa (env-override ismét hatásos) ugyanebben a beágyazott
+   forgatókönyvben és önállóan futtatva is 'land'-et ad -- a hermetikus javítás nem rejt el egy
+   valódi regressziót.
+
+MÉRÉSI MELLÉKHATÁS, útkeresés közben talált, ÖNMAGÁBAN is load-bearing: a "fake land" ős saját
+nyitott+flockolt fd-je (a kanonikus fájlon) öröklődik MINDEN leszármazott forkon át, akkor is, ha
+az ősi láncot egyébként detacheljük -- az ős-lánc (ppid-lánc) és az fd-öröklés KÉT KÜLÖNBÖZŐ
+dolog, a detach csak az elsőt törli. Emiatt az attacker p1-je (ami a saját argv-jében már eleve
+hordozza a 'store/marveen-land.sh' markert) öröklött fd-n át "tartja" a kanonikus lock-ot is,
+függetlenül az ős-lánc állapotától -- ez PONTOSAN az a hibaosztály, amit a `marveen-land.sh`
+`run_fg_killable`-je kártya 81c6fbb5 Q3 alatt már egyszer lezárt (minden subshell lezárja a SAJÁT
+fd-másolatát `exec`-elés előtt). A teszt-harness "fake land" ősének most ugyanez a fegyelme: a
+kanonikus fd-t a külső wrapper lezárja, MIELŐTT a detachelt láncot elágaztatja.
+
+Másik, függetlenül talált és javított hiba: a detach-wrapper eredetileg a kimeneti fájl
+MÉRETÉRE ("$OUT" nem üres) várt, nem a futás TÉNYLEGES befejezésére -- mivel a `fleet-test.sh`
+köztes sorokat (pl. `env_compat_get` figyelmeztetést) is írhat stdout-ra a végső válasz előtt, ez
+csonkolt capture-t eredményezett. Javítás: a detachelt futó maga írja ki a DONE-jelzőt, utolsó
+lépésként, a wrapper ARRA vár, nem a fájl méretére.
+
+Ellenőrzés: `fleet-test-land-priority-verified.test.ts` 17/17 (3 új teszt a 14-ből), háromszor
+egymás után lefuttatva stabilan zöld. `npx tsc --noEmit -p .` tiszta. Csak ez az egy fájl futott
+(MikroB: "Run only that test file directly, no fleet-test"), nincs teljes fleet-test ebben a
+körben. A valódi kanonikus develop-lock fájl a futás előtt és után is szabad (ellenőrizve
+`flock -n`-nel), semmilyen árva fd/folyamat nem maradt utána.
+
+Ki döntött: MikroB (diagnózis + a szűk javítási irány, msg 25668, "do NOT weaken the production
+check"); fullstack (gyökérok, implementáció, mérés).
+Hivatkozás: kártya e99c3dc1; MikroB msg 25667/25668; Gate-SHA 45c30ecb312180c6ddcbb6eda785e525e2234b6b
+(a landolás saját shája, változatlan); `src/__tests__/fleet-test-land-priority-verified.test.ts`.
+
+## 2026-11-27 -- fleet-test log persistence closed the gap land runs never opted into (card 2f282a31)
+
+OBSERVATION (MikroB + fullstack 25641): the newest file in /home/neon/marveen-fleet-test-logs was
+from 07:07 CET; three subsequent marveen-land.sh runs (one red, on mopsion-suite-run) wrote
+nothing there, and fleet-test.sh's mktemp run_log is rm -f'd on every exit path.
+
+ROOT CAUSE (grepped, not guessed): log persistence has ALWAYS been a side effect of
+fleet_test_notify_finish(), which only runs when FLEET_TEST_CALLER_AGENT is set -- an explicit,
+agent-initiated self-test opt-in. marveen-land.sh sets a differently-named FLEET_TEST_AGENT (used
+only for an unrelated PAUSED/RESUMED-semaphore kanban-posting mechanism) and never sets
+FLEET_TEST_CALLER_AGENT -- confirmed via grep, zero matches. So a land run's own failure was never
+durably recoverable, on any date. git log confirms zero commits touched fleet-test.sh in the
+2026-11-26 18:00 -- 2026-11-27 08:00 window, ruling out a regression. The apparent "stopped at
+07:07" cutoff coincides with MikroB's own land-queue-priority hold (msgs 25506/25530), which told
+every OTHER agent to stop running fleet-test.sh manually around that time -- making land (which
+never opts in) the sole remaining caller, which is what made a pre-existing gap look like a new
+regression with a precise timestamp.
+
+SECOND DEFECT (criterion 3, found independently): Node's execFileSync throws an error whose
+.message folds in only stderr ("Command failed: <cmd>\n<stderr>"), never stdout. Every OK_SHAPES
+selftest prints its own [ok]/[FAIL] trace to stdout, so that trace was silently absent from the
+thrown error, and therefore from vitest's failure report and from fleet-test.sh's own `tee`'d log
+-- exactly the "selftest's own [FAIL] lines are lost" symptom in the card.
+
+FIX 1 (store/fleet-test.sh): added fleet_test_persist_failure_log()/fleet_test_prune_log_dir(),
+called from fleet_test_on_exit() whenever the run FAILED, regardless of FLEET_TEST_CALLER_AGENT --
+independent of the notify/HTTP path entirely, so it cannot be affected by a missing/unreadable
+dashboard token either. Bounded retention via FLEET_TEST_LOG_RETENTION (default 200, newest N kept
+by mtime). A passing, non-opted-in run still persists nothing, by design: the floor the card asked
+for is failures, and writing a file on every green land run was never requested.
+
+FIX 2 (src/__tests__/store-selftests-all-run.test.ts): execWithKillRetry's catch path now wraps
+the thrown error via withCapturedOutput(), which folds err.stdout (already present as a property,
+just never read) into the new error's .message, tail-bounded to 4000 chars each for stdout/stderr.
+
+TESTS: store/fleet-test-notify-injection.selftest.sh extended with 3 new cases (7: no CALLER_AGENT
++ failing run persists; 8: passing run persists nothing, control; 9: retention bound prunes to N).
+Verified standalone (bash, not via fleet-test.sh): 12/12 green. store-selftests-all-run.test.ts
+gained a positive case (probe script's own stdout trace survives into the thrown error) and a
+mutation-pin control (the same probe run through raw execFileSync, proving the pre-fix message
+would NOT have contained the trace -- guards-that-pin-behaviour point 7). Both verified via scoped
+`vitest run ... -t "[Ss][Tt][Dd][Oo][Uu][Tt] trace"` (2 passed, 178 skipped) while fullstack's
+ee132dfc land held the shared /home/neon/marveen-test.lock -- the full file was deliberately NOT
+rerun during the land (MikroB 25693: mopsion-suite-run in that file reaches the real fleet-test.sh
+and the shared lock). No full fleet-test.sh run was used anywhere for this card, per the standing
+land-queue hold (msgs 25506/25530).
+
+Ki döntött: MikroB (card 2f282a31, dispatch 25663); backend3 (root cause, both fixes, tests).
+Hivatkozás: kártya 2f282a31; store/fleet-test.sh; store/fleet-test-notify-injection.selftest.sh;
+src/__tests__/store-selftests-all-run.test.ts.
+
+## 2026-11-27 -- fleet-test log persistence: prune only our own logs, not the whole shared dir (card 2f282a31 delta)
+
+CYBERSEC GO 39544 on bb08d333 carried F-1 (LOW, evidence-destroying): fleet_test_prune_log_dir
+counted retention over the WHOLE shared FLEET_TEST_LOG_DIR, so the first red land after the
+2f282a31 fix would delete non-log evidence another test deliberately left there (measured live:
+channel-poller-reap-failure-2026-11-25T08-18-15-842Z-pane-parent-not-stopped.json, card a5c827ca
+-- MikroB backed it up to /home/neon/marveen-backups/fleet-test-logs-evidence/ before reporting).
+
+FIX: added FLEET_TEST_OWN_LOG_RE, matching only the two filename shapes this script itself
+writes (fleet_test_persist_failure_log's "<ts>-<pid>-failure.log", fleet_test_notify_finish's
+"<ts>-<pid>.log"). fleet_test_prune_log_dir now filters by this pattern BEFORE ranking by mtime,
+so anything else in the directory is never counted and never touched, no matter how many of our
+own failure logs accumulate.
+
+Also closed F-2 (LOW, previously unpinned): the selftest only asserted the
+FLEET_TEST_LOG_RETENTION=200 assignment line EXISTED, never that its value was actually 200 --
+added an explicit case asserting the sourced default.
+
+TESTS: fleet-test-notify-injection.selftest.sh gained Case 10 (a foreign file matching the real
+a5c827ca evidence shape survives 3 cycles of our own retention-capped pruning) and Case 11 (pins
+the 200 default). Mutation-verified: reverting fleet_test_prune_log_dir to the pre-fix
+whole-directory version turns Case 10 red (confirmed foreign file deleted) while every other case
+stays green -- the fix is load-bearing. Standalone run (bash, not via fleet-test.sh, per the
+standing no-fleet-test.sh-during-land rule): 14/14 PASS.
+
+Ki dontott: MikroB (card 2f282a31, delta dispatch msg 25707, CYBERSEC GO 39544 F-1/F-2); backend3
+(fix, tests).
+Hivatkozas: kartya 2f282a31; store/fleet-test.sh; store/fleet-test-notify-injection.selftest.sh.
+
+## 2026-11-27 -- 090ab223 -- Opció A levéve 4/6 dispatcherből, megtartva a maradék 2-ben (supersedes the "Opció A marad" closing line of the 2026-09-25 234306ca entry)
+
+**A döntés.** A 2026-09-25-i 234306ca bejegyzés zárósora ("Opció A marad... az eltávolítás KÜLÖN
+follow-up kártya lesz, egy hét tiszta mérés után") szerinti mérés lefutott. DECISIONS.md append-only
+(root CLAUDE.md), ezért ez a bejegyzés ÚJ sorban rögzíti a kimenetét, nem írja át a régit -- a régi
+bejegyzés a döntés akkori indoka, ez itt a mérés utáni frissítés.
+
+**A mérés (MikroB döntés 18807, 2026-10-14; nyitott kérdés 18035).** A kapcsoló (`local-first-draft`)
+2026-10-12 óta folyamatosan ON (a fájl mtime-ja változatlan, ellenőrizve `stat`-tal), tehát a mérési
+ablak valójában ~46 nap, jóval a kért 7 fölött. A kártya aacb8ceb (hiányzó guard-fájl a törökpontnál)
+közben lezárult, és a második nyitott kérdésre -- fedi-e a törökpont a 79aeaeb1 gpu-util-hold ágát is
+-- a válasz IGEN, élő próbával igazolva: a `vram-guard-check.sh` a VRAM és az util-tier HOLD-ot egy
+közös exit-kóddá vonja össze (`verdict = HOLD if vram_hold_now or util_hold_now`), és a törökpont
+(`local-llm.sh`) csak ezt a kódot nézi (`-ne 0`), tier-independensen -- reprodukálva egy tiszta
+util-hold állapottal, a törökpont ugyanúgy exit 6-ot adott, mint VRAM-HOLD-nál.
+
+**Eltávolítva 4/6 dispatcherből** (card-build-route.sh, route-classify.sh, local-llm-rag.sh,
+gate-pretriage.sh): mind a négyen UGYANAZT az alapértelmezett `vram-guard-check.sh` utat hívták,
+amit a törökpont is hív, ugyanabban a "`-ne 0` -> online" irányban -- a kettő sosem volt
+megkülönböztethető viselkedés szerint, csak afelől, melyik fut előbb. Az eltávolítás után a HOLD egy
+hívással később, a törökpontnál csapódik le; a költség a kieső elő-szűrés miatt NÖVEKEDETT, de csak
+olcsó, GPU-t nem használó előkészítő munkával (API-olvasás, regex, max 1 extra model-call-kísérlet,
+ami maga is gyorsan HOLD-dal tér vissza) -- részletesen a 090ab223 kártya FINDING-kommentjeiben
+(39550, 39553).
+
+**MEGTARTVA 2/6 dispatcherben** (offload-dispatch.sh, i18n-draft.sh) -- ez ÚJ felismerés ehhez a
+kártyához, nem volt benne a 234306ca eredeti elemzésében: ezeknél a saját hívás NEM puszta
+védelmi-többlet, hanem VISELKEDÉST hordoz.
+- `i18n-draft.sh`: a kulcsonkénti fordító-ciklusban NINCS busy-break logika (a `route-classify.sh`/
+  `card-build-route.sh` ablak-ciklusaival szemben) -- HOLD alatt az eltávolítás akár `--limit`
+  (alapértelmezés 40) darab halálra ítélt `local-llm.sh` hívást indítana egymás után, és a kimenet
+  alakja is megváltozna (üres `.draft.json` íródna, a mai tiszta `exit 3`, fájl nélkül helyett).
+- `offload-dispatch.sh`: a `CAPACITY_HOLD` zászló (kártya 4eb3743e) nem védelmi többlet, hanem
+  ROUTING -- HOLD esetén minden leaf a FreeLLM-fallback-ra megy (`freellm_fallback_capacity_hold_site`)
+  a lokális próbálkozás (`try_leaf`) helyett. Az eltávolítás NÉMÁN kiiktatta volna a 4eb3743e által
+  bevezetett FreeLLM-fallbacket minden GPU-HOLD alatti sweep-ciklusra.
+MikroB jóváhagyása (msg 25721): mindkét fájlban a hívásnál egy rövid komment rögzíti, miért marad --
+"load-bearing pre-check itt, nem védelmi-többlet" -- ne csak ez a bejegyzés mondja.
+
+**Új teszt offload-dispatch.sh-ra (MikroB kérése, msg 25721): pin, hogy a FreeLLM-fallback valóban
+elsül forszírozott HOLD alatt.** `offload-dispatch.selftest.sh` M1 (a) már megvolt (egy BLOKKOLT leaf
+sosem éri el a freellm-call.sh-t forszírozott `OFFLOAD_VRAM_GUARD` HOLD alatt, a VALÓDI belépési
+ponton, `bash DISPATCH <card>`) -- ez önmagában csak a negatívot igazolta. Új M1 (c) eset: egy
+AZONOS leaf, de "gemini-ok" labellel (a pozitív-marker kapu, lásd `is_gemini_blocked`), ugyanazon
+forszírozott HOLD alatt TÉNYLEG eléri a freellm-call.sh-t (a marker-fájl létrejön) -- ez a pozitív
+komplementer, ami nélkül (a) mutánsa (minden leaf "blocked"-ra esik HOLD alatt, a FreeLLM-fallback
+sosem fut) is zölden futna. 328/328 PASS a teljes `offload-dispatch.selftest.sh`-on (a case-szám
++1 az M1 (c)-vel).
+
+**Tesztek (MÉRVE, mutáció-pinnelve).** `vram-guard-wiring.selftest.sh` újraírva: a négy levett
+dispatcher ÉS a megmaradt kettő is egy sorban szerepel -- a négynél a `local-llm.sh`-ból SED-del
+kinyert (nem újraírt) valódi törökpont-blokkot egy stub-ba csomagolva igazolja, hogy HOLD alatt
+helyesen ONLINE/UNKNOWN-ra esnek, ADMIT alatt eléri a modellt, ÉS egy "fail-open" mutáns (a kinyert
+blokk nélkül) ugyanazon HOLD alatt NEM azt az eredményt adja -- bizonyítva, hogy a teszt a valódi
+védelemtől függ, nem vákuum. `local-llm-rag.sh` és `gate-pretriage.sh` esetén a VALÓDI `local-llm.sh`-t
+hívtuk (nincs LLM-override náluk), `LOCAL_LLM_VRAM_GUARD`-dal kényszerített HOLD-dal -- élő ollama
+nélkül is determinisztikus, mert a törökpont a hálózati hívás ELŐTT fut. `i18n-draft.sh` és
+`offload-dispatch.sh` saját, változatlan VRAM_GUARD-hívását a selftest külön, érintetlen szekcióban
+továbbra is lefedi. 23/23 PASS, standalone bash futással (nincs fleet-test.sh). `card-build-route.
+selftest.sh`-ból a két, most már nem-létező viselkedést (0b VRAM-hold ág, PAUSED-VRAM komment)
+tesztelő szekció (B4, B4b) törölve, 64/64 PASS marad. `local-llm-vram-choke-point.test.ts`
+(a törökpont saját tesztje, érintetlen kód) 6/6 zöld ugyanezen a Gate-SHA-n. `tsc --noEmit` tiszta.
+
+**Ki döntött:** MikroB (card 090ab223, msg 25717: "GO for the removal... check one thing before you
+cut"); backend3 (a per-dispatcher kockázat-elemzés, ami a 2/6 megtartását eredményezte, és a
+teszt-újraírás).
+**Hivatkozás:** kártya 090ab223 (korábban 234306ca, aacb8ceb, 79aeaeb1, 4eb3743e); store/card-build-
+route.sh, store/route-classify.sh, store/local-llm-rag.sh, store/gate-pretriage.sh, store/vram-guard-
+wiring.selftest.sh, store/card-build-route.selftest.sh.
+
+## 2026-11-27 -- mopsion-suite-run.selftest.sh: env_common never mocked the memory precondition
+
+7f3cbe92's first land went red only on `store-selftests-all-run > mopsion-suite-run`
+(1471/1472 green), green 80/80 standalone twice on the same sha; the [FAIL] line was lost
+(card 2f282a31). Root cause, measured directly against `store/mopsion-suite-run.sh` on the
+real box: `env_common` in `mopsion-suite-run.selftest.sh` never overrode
+`CLEANCORE_SUITE_MIN_AVAIL_MB`/`CLEANCORE_SUITE_MEMINFO`, so 39 of 45 real-script
+invocations silently depended on the box's actual `/proc/meminfo` `MemAvailable` staying
+above the script's own 4096MB default floor -- despite the file's own header calling itself
+HERMETIC. Forcing `MIN_AVAIL_MB=999999` flipped the result to rc=3 "not enough free memory"
+on the live box, confirming the mechanism; under full-suite load (concurrent fleet-test runs
+consuming real memory) a genuine dip below 4096MB would non-deterministically fail whichever
+of the 39 cases happened to run during it, matching the symptom exactly.
+
+Fix: `env_common` now sets `CLEANCORE_SUITE_MIN_AVAIL_MB=0`, disabling the precondition by
+default; the cases that deliberately test memory already set their own override after
+`env_common` in the same `env` invocation, which wins per bash's later-assignment-wins
+semantics (confirmed empirically). New guard case ("2b") pins this with a critically-low
+`MEMINFO` fixture and no per-case override; mutation-tested (reverting the fix line turns it
+red, 77/78; restoring brings it back to 78/78 green). Verified 5x under the real shared
+`/home/neon/marveen-test.lock` held for each run's duration, so the selftest's own case 15
+(which shells out to the real `fleet-test.sh` when that lock is free) took its SKIP path
+every time.
+
+Ki döntött: backend2 (investigation, fix, mutation proof); MikroB (verification protocol:
+hold the real lock for the duration, max 5 runs). Hivatkozás: kártya 18cd7193; 7f3cbe92;
+2f282a31; `store/mopsion-suite-run.selftest.sh`.
+
+## 2026-11-28 -- 9aa41834 -- land-time flaky test fixes (3 files)
+
+Three separately-caused land-time flakes fixed on one card: (1)
+kg-graph-activity-route.test.ts now mocks db.js's generateEmbedding, so the file never reaches the
+live Ollama embedding backend (previously a ~5000ms fetch raced vitest's own 5000ms default
+timeout; a fetch-spy afterAll pins this structurally); (2)
+self-pace-wrapper-and-keyword-positions.test.ts's round 7/8 now asserts a CPU-time GROWTH RATIO
+(n vs 4n, bound 8) instead of an absolute ms budget, so a constant-factor slowdown from land-time
+concurrent load cancels out while a real O(n^2) blowup still trips it (verified against synthetic
+linear/quadratic workloads); (3) token-in-argv-guard.test.ts's scanTree() excludes a `drafts`
+directory by name (same shape as the existing .worktrees exclusion) -- store/drafts is gitignored
+runtime state that gemini-orchestrator-draft-review.test.ts creates/removes real files under while
+this suite runs, and the collection-time snapshot raced that churn (ENOENT). All three
+mutation-tested (reverting each fix reproduces the exact original failure). 10 consecutive runs of
+the three files together: 10/10 green, 26754/26754 tests each.
+
+Follow-up (same day): QA2 FAIL 39589 on e5c1d9f5a reproduced live the SAME flake class against a
+DIFFERENT live-churning path: token-in-argv-guard.test.ts's scanTree() also enumerates the live
+`agents/` tree (INSTALLED_AGENTS_DIR) at collection time, and a later readFileSync() in several
+it.each cases raced a live agent session creating/removing its own runtime cache file
+(agents/backend2/.claude-config/mcp-needs-auth-cache.json) -- 2/6 solo and 2/4 combined runs
+failed with ENOENT. Per the Fix-Direction in that comment, a name-based exclusion does not
+generalize (the set of live-churning paths under agents/ is open-ended, not one fixed name), so
+added `readLiveFile(dir, file)`, a readFileSync wrapper that returns null (treated as
+skip-this-case) on ENOENT and rethrows any other error, used in all 5 it.each bodies that read
+from the live-scanned corpus. Mutation-tested: reverting the helper to a bare readFileSync
+reproduces the exact ENOENT QA2 measured. Reproduced QA2's own repeat-run check: 6/6 solo runs
+green, 10/10 combined runs green (3/3 files, 26717/26717 tests each), under current live fleet
+activity.
+
+Ki döntött: MikroB (kártya felvétele, komment 1795811127, harmadik flake hozzáadása); QA2 (FAIL
+39589, fix direction for the agents/ tree race); backend (implementation, tests, mutation proof).
+Hivatkozás: kártya 9aa41834; `src/__tests__/kg-graph-activity-route.test.ts`;
+`src/__tests__/self-pace-wrapper-and-keyword-positions.test.ts`;
+`src/__tests__/token-in-argv-guard.test.ts`.

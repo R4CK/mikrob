@@ -398,28 +398,17 @@ if [[ "$EXPLAIN" == "1" ]]; then
   HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   echo
   echo "-- ADVISORY local-model summary (DRAFT, not evidence, not a verdict) --"
-  # VRAM PRESSURE (card 108c7b10), and the ADVISORY nature is not an exemption -- it is the reason.
-  # card f9bad591 settled this for local-llm-rag.sh in so many words: the advisory path calls the
-  # SAME local model, so letting it run puts work on exactly the GPU the guard just said is full.
-  # "Advisory" describes what the OUTPUT is worth, not what the RUN costs.
-  #
-  # Missing guard -> skipped (a host that never had a GPU is not doubt); any non-zero exit, usage
-  # errors included, skips the summary -- the direction the guard itself documents. Nothing else in
-  # this report depends on it: the mechanical findings above are already printed.
-  VRAM_GUARD="${PRETRIAGE_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
-  vram_rc=0; vram_line=""
-  if [[ -f "$VRAM_GUARD" ]]; then
-    vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)"; vram_rc=$?
-  fi
-  # MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01, Peti Telegram 10951), checked alongside the
-  # VRAM guard above -- same direction (local model not asked), same reason (advisory-only, never
-  # evidence, so skipping it costs nothing this report depends on).
+  # Card 090ab223: the dispatcher's own direct VRAM pre-check (card 108c7b10) was removed here
+  # after a 46-day measurement found no case where it caught something the local-llm.sh choke
+  # point (card 234306ca) would not. A GPU HOLD now surfaces one call later, as the existing
+  # "local model unavailable" fallback below (the call to local-llm.sh already fails, same
+  # `||` path a down/missing ollama already took). See DECISIONS.md.
+  # MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01, Peti Telegram 10951) -- cheaper than ever
+  # spawning local-llm.sh at all, so still checked first.
   # shellcheck source=./local-first-draft-check.sh
   . "$HERE/local-first-draft-check.sh"
   if ! local_first_draft_enabled; then
     echo "(local model not asked -- local-first-draft is OFF (dashboard switch); the mechanical report above stands on its own)"
-  elif [[ "$vram_rc" -ne 0 ]]; then
-    echo "(local model not asked -- ${vram_line:-no output from the vram guard} (rc=$vram_rc); the mechanical report above stands on its own)"
   else
     git diff --stat "$BASE" "$HEAD_REF" 2>/dev/null | tail -40 \
       | "$HERE/local-llm.sh" --task summarize --caller gate-pretriage 2>/dev/null \
