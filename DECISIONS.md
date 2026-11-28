@@ -34629,3 +34629,24 @@ fleet-test (per MikroB 25684's scope).
 Ki döntött: CYBERED (NO-GO 39527, fix direction); backend (implementation, tests, mutation
 proof). Hivatkozás: kártya 01b10349; `src/kg/import-findings.ts`; `store/kg-import-mt10.sh`;
 `store/kg-import-mt10.selftest.sh`; `src/kg/import-mt10-cli.ts`.
+
+2026-11-28: land-time flaky test fixes (kártya 9aa41834). Három, külön okú, land-time flake
+fixe egy kártyán: (1) kg-graph-activity-route.test.ts most mockolja a db.js generateEmbedding-et,
+így a fájl soha nem ér a live Ollama embedding backendhez (korábban ~5000ms-es timeout versenyben
+a vitest sajat 5000ms default limitjevel, fetch-spy strukturalisan pinneli); (2)
+self-pace-wrapper-and-keyword-positions.test.ts 7/8. kore most CPU-time NOVEKEDESI ARANYT
+(n vs 4n, bound 8) mér abszolút ms-budget helyett, hogy a land-time concurrent terhelesből jövő
+konstans-szorzós lassulas ne adjon false red, de egy valodi O(n^2) meg elkapja (szintetikus
+linear/quadratic mérés igazolta); (3) token-in-argv-guard.test.ts scanTree-je nevre kizárja a
+`drafts` könyvtárat (ugyanaz a minta mint a meglevő .worktrees kizárás) -- a store/drafts
+gitignorelt runtime allapot, amit gemini-orchestrator-draft-review.test.ts ír/törol valódi fájlt
+beforeEach/afterAll alatt, mikozben ez a suite fut; a scanTree a kollekciós időben pillanatfelvétel
+az ott talalt fájlokról, kesobb olvassa be -- ez ENOENT-et okozott. Mind harom mutacio-tesztelt
+(a javitas eltavolitasa reprodukalja az eredeti hibat), 10 egymast koveto futas zold volt a harom
+erintett teszt-fajlon egyutt (3/3 fajl, 26754/26754 teszt mindegyik koron).
+
+Ki döntött: MikroB (kártya felvétele, komment 1795811127, harmadik flake hozzáadása); backend
+(implementáció, tesztek, mutáció-bizonyítás). Hivatkozás: kártya 9aa41834;
+`src/__tests__/kg-graph-activity-route.test.ts`; `src/__tests__/self-pace-wrapper-and-keyword-positions.test.ts`;
+`src/__tests__/token-in-argv-guard.test.ts`. Fix commit: 47df10abb54c62c8c69c386e99e8beb5d183068d
+(unlanded, card/9aa41834 branch).
