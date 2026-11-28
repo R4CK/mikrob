@@ -35238,3 +35238,38 @@ Hivatkozás: kártya 1b4c566e.
    fail-open döntése.
 Hivatkozás: kártya 1b4c566e; CYBERSEC NO-GO komment 39236; `scripts/hooks/outgoing-copy-gate.py`,
 `scripts/__tests__/outgoing-copy-gate-outbound-union.test.py`.
+
+## 2026-11-28 -- 64d9aa19 -- agent-worktree-marveen.sh: per-branch flock released before identity-config writes, two concurrent same-card callers race git's own config lock
+
+MEGFIGYELES (MikroB, 2026-11-28 11:4x): store/agent-worktree-marveen.selftest.sh failed 1 of 3
+standalone runs on origin/develop (after c16cd98e), case "expected 2x rc=0 + exactly 1 hook call",
+with "error: could not lock config file <main>/.git/worktrees/<card>/config.worktree: File
+exists". Also red-failed the 9918f78d land (fullstack msg 25898).
+
+LEVEZETES. agent-worktree-marveen.sh's per-$BRANCH flock (scoped to the create-or-reuse decision)
+was released (`flock -u 9`) right after the create/reuse if/else block, but the identity-config
+writes (`git -C "$MAIN" config extensions.worktreeConfig true` + two `git -C "$TREE" config
+--worktree ...` calls, card 3adca529) ran AFTER that release, unconditionally on EVERY call
+including the "already present" reuse path. Two concurrent callers for the SAME card both reach
+these git-config writes on the SAME $TREE at roughly the same time (the first right after its
+hook finishes, the second right after it sees "already present"), racing git's own config-write
+lock (a `.lock` file next to config.worktree). The loser's `git config --worktree` call fails
+with "could not lock config file ...: File exists"; `set -e` aborts the whole script (rc=255).
+Measured directly: 4 of 40 standalone selftest runs failed with this exact error on the
+unmodified script; 20/20 parallel runs also showed it at a similar rate.
+
+Same root cause and fix as card 44803250 (CYBERED GO 39460 on c16cd98e, assignee fullstack,
+status planned, LOW) -- that card's own measurement (3/30) and Kész-ha criteria match this one
+exactly. Recommending to MikroB that 44803250 be closed/dedup'd as resolved by this card, to
+avoid fullstack duplicating the same fix.
+
+Fix (surgical): move `flock -u 9` to AFTER the identity-config writes instead of before them, so
+the same per-card lock that already serializes create-or-reuse also serializes the config writes.
+No new lock, no behaviour change for a single caller.
+
+Mutation-proof (true A/B, not a synthetic mutant): unmodified script (lock released early) failed
+4/40 standalone runs with the exact "could not lock config file" error; the fix applied: 0/30 +
+0/40 standalone, 0/20 parallel (90 total runs, 0 failures).
+
+Hivatkozás: kártya 64d9aa19; kártya 44803250 (CYBERED GO 39460 on c16cd98e, komment 740857cc);
+kártya 3adca529 (identity isolation, the writes being raced); `store/agent-worktree-marveen.sh`.

@@ -222,7 +222,32 @@ else
     die 3 "on_create hook failed for $TREE (see above) -- worktree removed"
   fi
 fi
+
+# GIT IDENTITY ISOLATION (card 3adca529, mirrors the hooksPath isolation above on the mopsion
+# side (store/agent-worktree.sh, card 420ef7b4) -- same `extensions.worktreeConfig` + `git config
+# --worktree` mechanism, applied to `user.name`/`user.email` instead of `core.hooksPath`). Without
+# this, every worktree shared the ONE [user] section in $MAIN/.git/config: any agent's `git config
+# user.name` call (or a stale/shared default) rewrote the author seen by every OTHER agent's NEXT
+# commit in ANY worktree, because `git config` with no --worktree/--local/--global flag writes to
+# the repository config, and worktrees share that file unless extensions.worktreeConfig splits it.
+# Measured: the shared [user] held user.name=s (not even an agent name) with extensions.worktreeConfig
+# unset, and landed commits on agent/backend/work and agent/fullstack/work carried author "s",
+# "fleet-agent-unattributed", or "MikroB" instead of the owning agent -- see DECISIONS.md for the
+# since-when measurement. Idempotent: re-running this on an existing worktree just re-asserts the
+# same two keys, matching the top-up shape of every other block in this script.
+#
+# Card 64d9aa19: the identity-config writes below (`git config --worktree`) run unconditionally on
+# EVERY call, including the "already present" reuse branch above -- they used to run AFTER the
+# unlock, so two concurrent callers for the SAME card both raced `git config --worktree` on the
+# SAME $TREE/.git/worktrees/<card>/config.worktree file. Git's own config write takes a lock file
+# next to it; the loser's `git config --worktree` failed with "could not lock config file ...:
+# File exists" and (set -e) aborted the whole script (measured: rc=255, 2/15 standalone runs).
+# Keeping the lock held through these writes serializes them exactly like the create-or-reuse
+# decision above -- same per-$BRANCH (per-card) lock, no new lock needed.
 flock -u 9
+git -C "$MAIN" config extensions.worktreeConfig true
+git -C "$TREE" config --worktree user.name "$AGENT"
+git -C "$TREE" config --worktree user.email "${AGENT}@marveen.local"
 
 # node_modules (card 0b23ec28, extended to --card mode by card cf678d23). A directory symlink
 # here is the enabler behind the 9dc0fba8 class: `cd $TREE/node_modules && rm -rf ../src` resolves
@@ -260,22 +285,6 @@ else
     echo "node_modules: linked from $MAIN/node_modules (shared; run \`bash store/agent-worktree-deps.sh $AGENT\` to make it a real directory)"
   fi
 fi
-
-# GIT IDENTITY ISOLATION (card 3adca529, mirrors the hooksPath isolation above on the mopsion
-# side (store/agent-worktree.sh, card 420ef7b4) -- same `extensions.worktreeConfig` + `git config
-# --worktree` mechanism, applied to `user.name`/`user.email` instead of `core.hooksPath`). Without
-# this, every worktree shared the ONE [user] section in $MAIN/.git/config: any agent's `git config
-# user.name` call (or a stale/shared default) rewrote the author seen by every OTHER agent's NEXT
-# commit in ANY worktree, because `git config` with no --worktree/--local/--global flag writes to
-# the repository config, and worktrees share that file unless extensions.worktreeConfig splits it.
-# Measured: the shared [user] held user.name=s (not even an agent name) with extensions.worktreeConfig
-# unset, and landed commits on agent/backend/work and agent/fullstack/work carried author "s",
-# "fleet-agent-unattributed", or "MikroB" instead of the owning agent -- see DECISIONS.md for the
-# since-when measurement. Idempotent: re-running this on an existing worktree just re-asserts the
-# same two keys, matching the top-up shape of every other block in this script.
-git -C "$MAIN" config extensions.worktreeConfig true
-git -C "$TREE" config --worktree user.name "$AGENT"
-git -C "$TREE" config --worktree user.email "${AGENT}@marveen.local"
 
 echo "path:   $TREE"
 echo "branch: $(git -C "$TREE" rev-parse --abbrev-ref HEAD) @ $(git -C "$TREE" rev-parse --short HEAD)"
